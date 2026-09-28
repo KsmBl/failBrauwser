@@ -6,7 +6,7 @@
 //! `answer <replace|skip|keepboth|cancel|delete>`, `text <reply for the next text prompt>`,
 //! `wait-idle`, `wait-exists <path>`, `wait-missing <path>`, `expect-rows <n>`,
 //! `expect-selected <name>`, `expect-location <text>`, `screenshot <file>`, `sleep <ms>`,
-//! `size <w> <h>`, `quit`. Blank lines and `#` comments are ignored.
+//! `size <w> <h>`, `expect-tree-root <path>`, `wait-tree-selected <path>`, `tree-click <path>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
 use super::window::Window;
@@ -50,6 +50,8 @@ struct Runner {
     window: Rc<Window>,
     app: Rc<AppCtx>,
     waiting: Option<(Instant, Box<dyn Fn(&Runner) -> Result<bool, String>>)>,
+    /// The step being run or waited for, for failure messages.
+    current: (usize, String),
 }
 
 fn fail(line: usize, msg: &str) -> ! {
@@ -70,7 +72,7 @@ pub fn start(app: &Rc<AppCtx>, window: &Rc<Window>) {
         .map(|(i, l)| (i + 1, l.trim().to_string()))
         .filter(|(_, l)| !l.is_empty() && !l.starts_with('#'))
         .collect();
-    let runner = Rc::new(RefCell::new(Runner { steps, window: window.clone(), app: app.clone(), waiting: None }));
+    let runner = Rc::new(RefCell::new(Runner { steps, window: window.clone(), app: app.clone(), waiting: None, current: (0, String::new()) }));
     glib::timeout_add_local(Duration::from_millis(50), move || {
         let mut r = runner.borrow_mut();
         if let Some((since, check)) = r.waiting.take() {
@@ -80,14 +82,15 @@ pub fn start(app: &Rc<AppCtx>, window: &Rc<Window>) {
                     r.waiting = Some((since, check));
                     return glib::ControlFlow::Continue;
                 }
-                Ok(false) => fail(0, "timed out waiting"),
-                Err(e) => fail(0, &e),
+                Ok(false) => fail(r.current.0, &format!("{}: timed out", r.current.1)),
+                Err(e) => fail(r.current.0, &format!("{}: {e}", r.current.1)),
             }
         }
         let Some((line, step)) = r.steps.pop_front() else {
             println!("SELFTEST OK");
             std::process::exit(0);
         };
+        r.current = (line, step.clone());
         if let Err(e) = run_step(&mut r, &step) {
             fail(line, &format!("{step}: {e}"));
         }
@@ -177,6 +180,27 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             if loc != arg {
                 return Err(format!("location is {loc}"));
             }
+        }
+        "expect-tree-root" => {
+            let sb = super::sidebar::for_window(&w).ok_or("no sidebar")?;
+            let root = sb.root_path().map(|p| p.display().to_string()).unwrap_or_default();
+            if root != arg {
+                return Err(format!("tree root is {root}"));
+            }
+        }
+        "wait-tree-selected" => {
+            let want = arg.to_string();
+            wait(r, move |r| {
+                let sb = super::sidebar::for_window(&r.window).ok_or("no sidebar")?;
+                Ok(sb.selected_path().is_some_and(|p| p.display().to_string() == want))
+            });
+        }
+        "tree-click" => {
+            let sb = super::sidebar::for_window(&w).ok_or("no sidebar")?;
+            if !sb.click(Path::new(arg)) {
+                return Err("folder not in tree".into());
+            }
+            wait(r, |r| Ok(idle(r)));
         }
         "screenshot" => {
             let file = arg.to_string();
