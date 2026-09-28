@@ -5,3 +5,4 @@ pub mod archive;
 pub mod fs;
 pub mod config;
 pub mod location;
+pub mod ops;
