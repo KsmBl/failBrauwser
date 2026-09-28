@@ -2,6 +2,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod archive;
 pub mod backend;
 pub mod clipboard;
 pub mod dirsize;
