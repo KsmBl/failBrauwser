@@ -209,6 +209,7 @@ impl Window {
                 PaneEvent::Selection | PaneEvent::Contents => {
                     if Rc::ptr_eq(&p, &w.current_pane()) {
                         w.update_status();
+                        super::extensions::selection_changed(&w);
                     }
                 }
                 PaneEvent::ContextMenu(ev) => w.show_context_menu(&p, ev.as_ref()),
@@ -223,6 +224,7 @@ impl Window {
             }
         });
 
+        super::extensions::pane_created(self, &pane);
         let page = self.notebook.append_page(&pane.root, Some(&label_box));
         self.notebook.set_tab_reorderable(&pane.root, true);
         self.panes.borrow_mut().push(pane.clone());
@@ -273,6 +275,7 @@ impl Window {
         set("up", loc.parent().is_some());
         let _ = (&self.back_btn, &self.fwd_btn, &self.up_btn);
         self.update_status();
+        super::extensions::selection_changed(self);
         for l in self.location_listeners.borrow().iter() {
             l(self);
         }

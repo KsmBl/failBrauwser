@@ -19,6 +19,7 @@ pub const APP_ID: &str = "org.failbrauwser.FailBrauwser";
 pub struct AppCtx {
     pub app: gtk::Application,
     pub settings: Rc<RefCell<Settings>>,
+    pub jobs: Rc<super::jobs::Jobs>,
     windows: RefCell<Vec<Rc<Window>>>,
     hold: RefCell<Option<gio::ApplicationHoldGuard>>,
     save_pending: Cell<bool>,
@@ -141,6 +142,7 @@ pub fn run() -> glib::ExitCode {
         let actx = Rc::new(AppCtx {
             app: app.clone(),
             settings,
+            jobs: super::jobs::Jobs::new(),
             windows: RefCell::new(Vec::new()),
             hold: RefCell::new(None),
             save_pending: Cell::new(false),
@@ -148,6 +150,16 @@ pub fn run() -> glib::ExitCode {
         });
         *actx.weak.borrow_mut() = Rc::downgrade(&actx);
         super::actions::install_app_actions(&actx);
+        let weak = Rc::downgrade(&actx);
+        super::clipboard::connect_changed(move || {
+            if let Some(a) = weak.upgrade() {
+                a.for_each_window(|w| {
+                    for p in w.panes() {
+                        p.mark_cut();
+                    }
+                });
+            }
+        });
         actx.apply_daemon();
         *c.borrow_mut() = Some(actx);
     });
@@ -169,7 +181,10 @@ pub fn run() -> glib::ExitCode {
             }
             return glib::ExitCode::SUCCESS;
         }
-        actx.open_window(locations);
+        let w = actx.open_window(locations);
+        if super::selftest::script_path().is_some() && !super::selftest::active() {
+            super::selftest::start(&actx, &w);
+        }
         glib::ExitCode::SUCCESS
     });
 

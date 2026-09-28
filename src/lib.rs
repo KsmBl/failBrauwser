@@ -2,6 +2,7 @@
 //! so it can be unit tested headless.
 
 pub mod archive;
+pub mod clipformat;
 pub mod fs;
 pub mod config;
 pub mod location;

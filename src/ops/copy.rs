@@ -47,7 +47,6 @@ struct FileTask {
 
 #[derive(Debug)]
 struct DirTask {
-    src: PathBuf,
     dst: PathBuf,
     mode: u32,
     atime: (i64, i64),
@@ -98,7 +97,7 @@ fn set_times_path(p: &Path, atime: (i64, i64), mtime: (i64, i64), follow: bool) 
 }
 
 /// rename(2) that refuses to replace an existing target.
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     let (f, t) = (cpath(from)?, cpath(to)?);
     let r = unsafe { libc::renameat2(libc::AT_FDCWD, f.as_ptr(), libc::AT_FDCWD, t.as_ptr(), libc::RENAME_NOREPLACE) };
     if r == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
@@ -337,7 +336,7 @@ fn plan_tree(ctx: &JobCtx, src: &Path, meta: &fs::Metadata, dst: &Path, mode: Mo
         plan.links.push((src.to_path_buf(), target, dst.to_path_buf()));
     } else if ft.is_dir() {
         let exists = dst.is_dir();
-        plan.dirs.push(DirTask { src: src.to_path_buf(), dst: dst.to_path_buf(), mode: meta.mode(), atime, mtime, created: !exists });
+        plan.dirs.push(DirTask { dst: dst.to_path_buf(), mode: meta.mode(), atime, mtime, created: !exists });
         let Some(entries) = with_retry(ctx, src, || fs::read_dir(src)?.collect::<io::Result<Vec<_>>>())? else { return Ok(()) };
         for e in entries {
             let child = e.path();
