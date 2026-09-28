@@ -6,7 +6,8 @@
 //! `answer <replace|skip|keepboth|cancel|delete>`, `text <reply for the next text prompt>`,
 //! `wait-idle`, `wait-exists <path>`, `wait-missing <path>`, `expect-rows <n>`,
 //! `expect-selected <name>`, `expect-location <text>`, `screenshot <file>`, `sleep <ms>`,
-//! `size <w> <h>`, `expect-tree-root <path>`, `wait-tree-selected <path>`, `tree-click <path>`, `quit`. Blank lines and `#` comments are ignored.
+//! `size <w> <h>`, `expect-tree-root <path>`, `wait-tree-selected <path>`, `tree-click <path>`,
+//! `wait-cell <column> <row> = <text>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
 use super::window::Window;
@@ -180,6 +181,21 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             if loc != arg {
                 return Err(format!("location is {loc}"));
             }
+        }
+        "wait-cell" => {
+            // wait-cell <column> <row name> = <text>
+            let (col, rest) = arg.split_once(' ').ok_or("usage: wait-cell <column> <name> = <text>")?;
+            let (name, want) = rest.split_once(" =").ok_or("usage: wait-cell <column> <name> = <text>")?;
+            let want = want.trim();
+            let column = match col {
+                "size" => super::model::COL_SIZE_TEXT,
+                "dirsize" => super::model::COL_DIRSIZE_TEXT,
+                "type" => super::model::COL_TYPE,
+                "modified" => super::model::COL_MTIME_TEXT,
+                _ => return Err("unknown column".into()),
+            };
+            let (name, want) = (name.to_string(), want.to_string());
+            wait(r, move |r| Ok(r.window.current_pane().cell_text(&name, column).as_deref() == Some(want.as_str())));
         }
         "expect-tree-root" => {
             let sb = super::sidebar::for_window(&w).ok_or("no sidebar")?;

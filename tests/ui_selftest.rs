@@ -43,3 +43,19 @@ fn sidebar_tree() {
         std::fs::create_dir_all(t.join("a/other")).unwrap();
     });
 }
+
+#[test]
+fn total_size_column() {
+    run("dirsize.fbt", |t| {
+        let root = t.join("root");
+        std::fs::create_dir_all(root.join("photos/2024/summer")).unwrap();
+        std::fs::write(root.join("photos/a.jpg"), vec![0u8; 1500]).unwrap();
+        std::fs::write(root.join("photos/2024/summer/b.jpg"), vec![0u8; 2000]).unwrap();
+        std::fs::create_dir_all(root.join("with-link")).unwrap();
+        std::fs::write(root.join("with-link/small"), vec![0u8; 10]).unwrap();
+        std::fs::write(t.join("big"), vec![0u8; 100_000]).unwrap();
+        // A link pointing at a big file outside: its target must not be counted.
+        std::os::unix::fs::symlink(t.join("big"), root.join("with-link/big-link")).unwrap();
+        std::fs::write(root.join("note.txt"), "hello").unwrap();
+    });
+}
