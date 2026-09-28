@@ -187,9 +187,11 @@ impl Location {
         rest.reverse();
         let mut loc = ArchiveLoc::root(file);
         let mut inner: Vec<String> = Vec::new();
-        for (i, part) in rest.iter().enumerate() {
+        // A component that looks like an archive is entered as one, the last one too:
+        // that is how `display` writes a nested archive's root.
+        for part in &rest {
             inner.push(part.clone());
-            if i + 1 < rest.len() && is_archive(part) {
+            if is_archive(part) {
                 loc = loc.enter_nested(&inner.join("/"));
                 inner.clear();
             }
@@ -265,6 +267,8 @@ mod tests {
         let inside = format!("{}/docs/b.7z/deep/er", zip.display());
         let expected = ArchiveLoc::root(zip.clone()).enter_nested("docs/b.7z").with_inner("deep/er");
         assert_eq!(p(&inside), Some(Location::Archive(expected)));
+        let nested_root = format!("{}/docs/b.7z", zip.display());
+        assert_eq!(p(&nested_root), Some(Location::Archive(ArchiveLoc::root(zip.clone()).enter_nested("docs/b.7z"))));
         let uri = gtk::glib::filename_to_uri(d.join("sub"), None).unwrap();
         assert_eq!(p(&uri), Some(Location::Dir(d.join("sub"))));
     }

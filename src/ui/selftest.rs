@@ -7,7 +7,9 @@
 //! `wait-idle`, `wait-exists <path>`, `wait-missing <path>`, `expect-rows <n>`,
 //! `expect-selected <name>`, `expect-location <text>`, `screenshot <file>`, `sleep <ms>`,
 //! `size <w> <h>`, `expect-tree-root <path>`, `wait-tree-selected <path>`, `tree-click <path>`,
-//! `wait-cell <column> <row> = <text>`, `wait-drive <title>`, `quit`. Blank lines and `#` comments are ignored.
+//! `wait-cell <column> <row> = <text>`, `wait-drive <title>`,
+//! `wait-row <name>`, `wait-no-row <name>`, `activate` (open the selection),
+//! `wait-opened`, `edit-opened <new content>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
 use super::window::Window;
@@ -26,6 +28,12 @@ thread_local! {
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
     static ANSWER: Cell<Option<Answer>> = const { Cell::new(None) };
     static TEXT: RefCell<VecDeque<String>> = const { RefCell::new(VecDeque::new()) };
+    static OPENED: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Instead of launching an application: the file it would have opened.
+pub fn record_opened(path: &Path) {
+    OPENED.with(|o| *o.borrow_mut() = Some(path.to_path_buf()));
 }
 
 pub fn active() -> bool {
@@ -162,6 +170,21 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
         "wait-missing" => {
             let p = arg.to_string();
             wait(r, move |r| Ok(!Path::new(&p).exists() && idle(r)));
+        }
+        "wait-row" | "wait-no-row" => {
+            let (name, present) = (arg.to_string(), cmd == "wait-row");
+            wait(r, move |r| Ok(r.window.current_pane().has_name(&name) == present && idle(r)));
+        }
+        "activate" => {
+            let p = w.current_pane();
+            p.activate(p.selected_items());
+            wait(r, |r| Ok(idle(r)));
+        }
+        "wait-opened" => wait(r, |_| Ok(OPENED.with(|o| o.borrow().is_some()))),
+        "edit-opened" => {
+            // Plays an editor: rewrites the file that was opened.
+            let path = OPENED.with(|o| o.borrow().clone()).ok_or("nothing opened")?;
+            std::fs::write(&path, arg).map_err(|e| e.to_string())?;
         }
         "expect-rows" => {
             let n: usize = arg.parse().map_err(|_| "bad number")?;
