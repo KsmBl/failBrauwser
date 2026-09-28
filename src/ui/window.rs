@@ -31,7 +31,9 @@ pub struct Window {
     location_listeners: RefCell<Vec<Box<dyn Fn(&Window)>>>,
 }
 
-/// A themed icon with fallbacks, for icon themes that lack the first name.
+/// A themed icon with fallbacks, for icon themes that lack the first name. Symbolic
+/// icons come first where the theme's full-color ones may vanish on a dark toolbar:
+/// GTK paints symbolic icons in the theme's text color.
 fn themed(names: &[&str]) -> gtk::Image {
     gtk::Image::from_gicon(&gio::ThemedIcon::from_names(names), gtk::IconSize::LargeToolbar)
 }
@@ -78,12 +80,12 @@ impl Window {
         let reload_btn = tool_button("view-refresh", "Reload", "win.reload");
         toolbar.insert(&reload_btn, -1);
         let list_btn = gtk::ToggleToolButton::new();
-        list_btn.set_icon_widget(Some(&themed(&["view-list-details", "view-list", "view-list-symbolic"])));
+        list_btn.set_icon_widget(Some(&themed(&["view-list-symbolic", "view-list", "view-list-details"])));
         gtk::prelude::WidgetExt::set_tooltip_text(&list_btn, Some("View as detailed list"));
         list_btn.set_action_name(Some("win.view-mode"));
         list_btn.set_action_target_value(Some(&"list".to_variant()));
         let icons_btn = gtk::ToggleToolButton::new();
-        icons_btn.set_icon_widget(Some(&themed(&["view-list-icons", "view-grid", "view-grid-symbolic", "view-app-grid-symbolic"])));
+        icons_btn.set_icon_widget(Some(&themed(&["view-grid-symbolic", "view-app-grid-symbolic", "view-grid", "view-list-icons"])));
         gtk::prelude::WidgetExt::set_tooltip_text(&icons_btn, Some("View as icons"));
         icons_btn.set_action_name(Some("win.view-mode"));
         icons_btn.set_action_target_value(Some(&"icons".to_variant()));
