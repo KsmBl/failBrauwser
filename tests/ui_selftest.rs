@@ -67,3 +67,33 @@ fn drives_page() {
         std::fs::write(t.join("d/file"), "x").unwrap();
     });
 }
+
+#[test]
+fn archives_as_folders() {
+    if !failbrauwser::archive::client::locate_helper().is_file() {
+        eprintln!("fb-archive helper not built, skipping");
+        return;
+    }
+    run("archives.fbt", |t| {
+        let w = t.join("w");
+        std::fs::create_dir_all(w.join("out")).unwrap();
+        std::fs::write(w.join("new.txt"), "new file").unwrap();
+        let script = format!(
+            r#"
+import io, tarfile, zipfile
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w:gz") as t:
+    data = b"deep content"
+    info = tarfile.TarInfo("deep/file.txt"); info.size = len(data)
+    t.addfile(info, io.BytesIO(data))
+with zipfile.ZipFile("{w}/test.zip", "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("a.txt", "alpha")
+    z.writestr("sub/b.txt", "beta")
+    z.writestr("inner.tar.gz", buf.getvalue())
+"#,
+            w = w.display()
+        );
+        let ok = std::process::Command::new("python3").arg("-c").arg(script).status().unwrap();
+        assert!(ok.success());
+    });
+}

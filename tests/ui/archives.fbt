@@ -1,0 +1,63 @@
+# Archives behave like folders: enter, edit, copy in and out, nested, extract, compress.
+open $T/w
+select test.zip
+activate
+expect-location $T/w/test.zip
+expect-rows 3
+# Copy a local file into the archive.
+open $T/w
+select new.txt
+action win.copy
+open $T/w/test.zip
+action win.paste
+wait-row new.txt
+expect-selected new.txt
+# Rename, create a folder, delete — inside the archive.
+text renamed.txt
+action win.rename
+wait-row renamed.txt
+wait-no-row new.txt
+text Made Here
+action win.new-folder
+wait-row Made Here
+select a.txt
+action win.delete
+wait-no-row a.txt
+# Copy out of the archive.
+select renamed.txt
+action win.copy
+open $T/w/out
+action win.paste
+wait-exists $T/w/out/renamed.txt
+# Nested archive inside the zip.
+open $T/w/test.zip/inner.tar.gz
+expect-rows 1
+select deep
+activate
+expect-location $T/w/test.zip/inner.tar.gz/deep
+expect-rows 1
+# Paste into the nested archive, then check from the outside.
+open $T/w
+select new.txt
+action win.copy
+open $T/w/test.zip/inner.tar.gz/deep
+action win.paste
+wait-row new.txt
+# Extract here and compress.
+open $T/w
+select test.zip
+action win.extract-here
+wait-exists $T/w/test/renamed.txt
+select out
+text pack.7z
+action win.compress
+wait-exists $T/w/pack.7z
+open $T/w/pack.7z/out
+wait-row renamed.txt
+# Open a file inside an archive, "edit" it, and the archive gets the change.
+open $T/w/test.zip/sub
+select b.txt
+activate
+wait-opened
+edit-opened changed by an editor
+wait-cell size b.txt = 20 bytes
