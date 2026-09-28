@@ -9,11 +9,14 @@ BIN=$1; SCRIPT=$2; T=$3
 exec 9>"${TMPDIR:-/tmp}/failbrauwser-ui-test.lock"
 flock 9
 mkdir -p "$T/config" "$T/data" "$T/cache"
-[ -d "$HOME/.config/gtk-3.0" ] && cp -r "$HOME/.config/gtk-3.0" "$T/config/" 2>/dev/null
+# The look comes from the user's desktop (even when HOME is pointed at demo data).
+TH=${FB_THEME_HOME:-$HOME}
+[ -d "$TH/.config/gtk-3.0" ] && cp -r "$TH/.config/gtk-3.0" "$T/config/" 2>/dev/null
 # On Wayland GTK takes theme, icons and fonts from GSettings (the dconf database).
-[ -d "$HOME/.config/dconf" ] && cp -r "$HOME/.config/dconf" "$T/config/" 2>/dev/null
+[ -d "$TH/.config/dconf" ] && cp -r "$TH/.config/dconf" "$T/config/" 2>/dev/null
 # Icon themes installed per user live in the data dir; keep them visible.
-[ -d "$HOME/.local/share/icons" ] && ln -sfn "$HOME/.local/share/icons" "$T/data/icons"
+[ -d "$TH/.local/share/icons" ] && ln -sfn "$TH/.local/share/icons" "$T/data/icons"
+
 sed "s|\$T|$T|g" "$SCRIPT" > "$T/script.fbt"
 CONF=$(mktemp)
 cat > "$CONF" <<SWAY
