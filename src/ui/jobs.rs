@@ -216,7 +216,6 @@ impl Jobs {
         win.set_type_hint(gtk::gdk::WindowTypeHint::Dialog);
         win.set_default_size(460, -1);
         win.set_resizable(false);
-        win.set_icon_name(Some("system-file-manager"));
         let list = gtk::Box::new(gtk::Orientation::Vertical, 12);
         list.set_border_width(12);
         win.add(&list);

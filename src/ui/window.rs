@@ -52,7 +52,6 @@ impl Window {
         };
         let win = gtk::ApplicationWindow::new(&app.app);
         win.set_default_size(w, h);
-        win.set_icon_name(Some("system-file-manager"));
         win.set_show_menubar(false);
 
         let menubar = gtk::MenuBar::from_model(&actions::menubar_model());
