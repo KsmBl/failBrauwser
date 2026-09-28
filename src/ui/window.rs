@@ -219,6 +219,7 @@ impl Window {
                     w.add_tab(loc.clone(), false);
                 }
                 PaneEvent::OpenFiles(items) => w.open_items(items),
+                PaneEvent::PasswordNeeded(loc) => super::extensions::ask_archive_password(&w, &p, loc),
             }
             if matches!(ev, PaneEvent::Contents) {
                 super::extensions::pane_contents_changed(&w, &p);
@@ -280,6 +281,13 @@ impl Window {
         for l in self.location_listeners.borrow().iter() {
             l(self);
         }
+    }
+
+    /// Shows a transient message in the status bar (until the next update).
+    pub fn set_status(&self, text: &str) {
+        let ctx = self.statusbar.context_id("main");
+        self.statusbar.remove_all(ctx);
+        self.statusbar.push(ctx, text);
     }
 
     pub fn update_status(&self) {
@@ -606,6 +614,11 @@ fn status_text(pane: &Pane) -> String {
         0 => {
             let n = pane.item_count();
             let mut s = format!("{n} item{}", if n == 1 { "" } else { "s" });
+            if let Location::Archive(a) = pane.location() {
+                if let Some(x) = failbrauwser::archive::vfs::Vfs::global().cached(&a) {
+                    s.push_str(&format!(" — {} archive{}", x.format, if x.writable { "" } else { " (read-only)" }));
+                }
+            }
             if let Some(dir) = pane.location().local_path() {
                 if let Some(free) = free_space(dir) {
                     s.push_str(&format!(", free space: {}", human_size(free)));

@@ -25,6 +25,8 @@ pub enum PaneEvent {
     OpenInNewTab(Location),
     /// Files were activated that the pane does not open itself.
     OpenFiles(Vec<Item>),
+    /// The archive shown is encrypted; ask for the password, then reload.
+    PasswordNeeded(Location),
 }
 
 struct State {
@@ -216,9 +218,6 @@ impl Pane {
     pub fn item_count(&self) -> usize {
         self.st.borrow().rows.len()
     }
-    pub fn items(&self) -> Vec<Item> {
-        self.st.borrow().rows.values().map(|(i, _)| i.clone()).collect()
-    }
     pub fn has_name(&self, name: &str) -> bool {
         self.st.borrow().all.iter().any(|i| i.display_name() == name)
     }
@@ -389,10 +388,13 @@ impl Pane {
                     me.rebuild_rows(&select, fresh);
                     me.watch(&loc);
                 }
-                Ok(Err(msg)) => {
+                Ok(Err(err)) => {
                     me.st.borrow_mut().all.clear();
                     me.clear_rows();
-                    me.st.borrow_mut().error = Some(msg);
+                    me.st.borrow_mut().error = Some(err.message);
+                    if err.needs_password {
+                        me.emit(PaneEvent::PasswordNeeded(loc.clone()));
+                    }
                 }
                 Err(_) => {
                     me.st.borrow_mut().error = Some("Reading the folder failed unexpectedly.".into());
@@ -528,12 +530,16 @@ impl Pane {
             }
             match res {
                 Ok(items) => me.apply_update(items),
-                Err(msg) => {
+                Err(err) => {
                     // The folder itself went away: climb to the nearest existing parent.
-                    me.st.borrow_mut().error = Some(msg);
+                    me.st.borrow_mut().error = Some(err.message);
                     me.show_error();
-                    if let Location::Dir(p) = &loc {
-                        let mut up = p.clone();
+                    let gone = match &loc {
+                        Location::Dir(p) => Some(p.clone()),
+                        Location::Archive(a) if !a.file.is_file() => a.file.parent().map(|p| p.to_path_buf()),
+                        _ => None,
+                    };
+                    if let Some(mut up) = gone {
                         while !up.is_dir() && up.pop() {}
                         me.navigate(Location::Dir(up));
                     }
@@ -959,6 +965,11 @@ impl Pane {
         let st = self.st.borrow();
         let (_, iter) = st.by_name.get(&OsString::from(name)).and_then(|k| st.rows.get(k))?;
         self.store.value(iter, column as i32).get::<String>().ok()
+    }
+
+    /// Names of the folders shown.
+    pub fn dir_names(&self) -> Vec<OsString> {
+        self.st.borrow().rows.values().filter(|(i, _)| i.is_dir_like()).map(|(i, _)| i.os_name()).collect()
     }
 
     /// Sets the total size of rows by name (archive folders, where sizes are known).

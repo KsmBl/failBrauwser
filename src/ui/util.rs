@@ -129,6 +129,11 @@ pub fn group_name(gid: u32) -> String {
 
 /// Opens a file with its default application, without blocking the UI.
 pub fn open_with_default(parent: &gtk::Window, path: &Path) {
+    if super::selftest::active() {
+        // No real applications in tests: remember what would have been opened.
+        super::selftest::record_opened(path);
+        return;
+    }
     let file = gio::File::for_path(path);
     let ctx = parent.display().app_launch_context();
     let parent = parent.clone();
@@ -233,6 +238,43 @@ pub fn ask_text(
             if !text.trim().is_empty() {
                 on_ok(text);
             }
+        }
+        d.close();
+    });
+}
+
+/// Asks for a password (hidden input).
+pub fn ask_secret(parent: &impl IsA<gtk::Window>, title: &str, label: &str, on_ok: impl Fn(String) + 'static) {
+    if super::selftest::active() {
+        if let Some(t) = super::selftest::scripted_text() {
+            glib::idle_add_local_once(move || on_ok(t));
+            return;
+        }
+    }
+    let d = gtk::Dialog::with_buttons(
+        Some(title),
+        Some(parent),
+        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+        &[("_Cancel", gtk::ResponseType::Cancel), ("_Unlock", gtk::ResponseType::Ok)],
+    );
+    d.set_default_response(gtk::ResponseType::Ok);
+    d.set_resizable(false);
+    let area = d.content_area();
+    area.set_spacing(6);
+    area.set_border_width(12);
+    let l = gtk::Label::new(Some(label));
+    l.set_xalign(0.0);
+    let entry = gtk::Entry::new();
+    entry.set_visibility(false);
+    entry.set_input_purpose(gtk::InputPurpose::Password);
+    entry.set_activates_default(true);
+    entry.set_width_chars(32);
+    area.add(&l);
+    area.add(&entry);
+    d.show_all();
+    d.connect_response(move |d, resp| {
+        if resp == gtk::ResponseType::Ok {
+            on_ok(entry.text().to_string());
         }
         d.close();
     });
