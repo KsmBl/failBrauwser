@@ -100,7 +100,7 @@ pub fn install_app_actions(ctx: &Rc<AppCtx>) {
         d.set_program_name("failBrauwser");
         d.set_version(Some(env!("CARGO_PKG_VERSION")));
         d.set_comments(Some("A fast file manager that opens archives like folders."));
-        d.set_logo_icon_name(Some("system-file-manager"));
+        d.set_logo_icon_name(Some(&super::app::icon_name()));
         d.set_license_type(gtk::License::Gpl30);
         if let Some(w) = c.app.active_window() {
             d.set_transient_for(Some(&w));

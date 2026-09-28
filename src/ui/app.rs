@@ -16,6 +16,12 @@ use std::rc::{Rc, Weak};
 
 pub const APP_ID: &str = "org.failbrauwser.FailBrauwser";
 
+/// Our own icon once installed, the theme's file manager icon otherwise.
+pub fn icon_name() -> String {
+    let has_own = gtk::IconTheme::default().is_some_and(|t| t.has_icon(APP_ID));
+    if has_own { APP_ID.to_string() } else { "system-file-manager".to_string() }
+}
+
 pub struct AppCtx {
     pub app: gtk::Application,
     pub settings: Rc<RefCell<Settings>>,
@@ -138,6 +144,7 @@ pub fn run() -> glib::ExitCode {
 
     let c = ctx.clone();
     app.connect_startup(move |app| {
+        gtk::Window::set_default_icon_name(&icon_name());
         let settings = Rc::new(RefCell::new(Settings::load()));
         let actx = Rc::new(AppCtx {
             app: app.clone(),

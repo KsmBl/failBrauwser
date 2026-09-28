@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=failBrauwser (background)
+Comment=Keeps failBrauwser ready so windows open instantly
+Exec=failbrauwser --daemon
+Icon=org.failbrauwser.FailBrauwser
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
