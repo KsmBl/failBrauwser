@@ -10,6 +10,8 @@ exec 9>"${TMPDIR:-/tmp}/failbrauwser-ui-test.lock"
 flock 9
 mkdir -p "$T/config" "$T/data" "$T/cache"
 [ -d "$HOME/.config/gtk-3.0" ] && cp -r "$HOME/.config/gtk-3.0" "$T/config/" 2>/dev/null
+# On Wayland GTK takes theme, icons and fonts from GSettings (the dconf database).
+[ -d "$HOME/.config/dconf" ] && cp -r "$HOME/.config/dconf" "$T/config/" 2>/dev/null
 # Icon themes installed per user live in the data dir; keep them visible.
 [ -d "$HOME/.local/share/icons" ] && ln -sfn "$HOME/.local/share/icons" "$T/data/icons"
 sed "s|\$T|$T|g" "$SCRIPT" > "$T/script.fbt"
