@@ -91,7 +91,31 @@ pub fn start(app: &Rc<AppCtx>, window: &Rc<Window>) {
                     r.waiting = Some((since, check));
                     return glib::ControlFlow::Continue;
                 }
-                Ok(false) => fail(r.current.0, &format!("{}: timed out", r.current.1)),
+                Ok(false) => {
+                    let p = r.window.current_pane();
+                    let archive_root: Vec<String> = match p.location() {
+                        Location::Archive(a) => failbrauwser::archive::vfs::Vfs::global()
+                            .cached(&a)
+                            .map(|x| x.tree.children("").unwrap_or_default().iter().map(|n| n.path.clone()).collect())
+                            .unwrap_or_default(),
+                        _ => Vec::new(),
+                    };
+                    let selected: Vec<String> = p.selected_items().iter().map(|i| i.display_name()).collect();
+                    fail(
+                        r.current.0,
+                        &format!(
+                            "{}: timed out (location {}, {} rows, selected {:?}, archive root {:?}, error {:?}, loading {}, jobs busy {})",
+                            r.current.1,
+                            p.location().display(),
+                            p.item_count(),
+                            selected,
+                            archive_root,
+                            p.error(),
+                            p.is_loading(),
+                            r.app.jobs.is_busy()
+                        ),
+                    )
+                }
                 Err(e) => fail(r.current.0, &format!("{}: {e}", r.current.1)),
             }
         }
@@ -194,10 +218,9 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             }
         }
         "expect-selected" => {
-            let sel: Vec<String> = w.current_pane().selected_items().iter().map(|i| i.display_name()).collect();
-            if sel != [arg.to_string()] {
-                return Err(format!("selection is {sel:?}"));
-            }
+            // Waits: new rows arrive through the file monitor a moment after the file exists.
+            let want = vec![arg.to_string()];
+            wait(r, move |r| Ok(r.window.current_pane().selected_items().iter().map(|i| i.display_name()).collect::<Vec<_>>() == want));
         }
         "expect-location" => {
             let loc = w.current_location().display();

@@ -43,8 +43,9 @@ struct State {
     refresh_scheduled: bool,
     /// A name to select once the load with this generation finishes.
     pending_select: Option<(u64, OsString)>,
-    /// Names to select as soon as they show up (after create, paste, rename).
+    /// Names to select as soon as they show up (after create, paste, rename), and until when.
     select_when_present: Vec<OsString>,
+    select_deadline: Option<std::time::Instant>,
     loading: bool,
     error: Option<String>,
 }
@@ -145,6 +146,7 @@ impl Pane {
                 refresh_scheduled: false,
                 pending_select: None,
                 select_when_present: Vec::new(),
+                select_deadline: None,
                 loading: false,
                 error: None,
             }),
@@ -271,6 +273,8 @@ impl Pane {
 
     /// Selects the rows with these names and scrolls the first into view.
     pub fn select_names(&self, names: &[OsString]) {
+        // An explicit selection wins over one still waiting for its rows.
+        self.cancel_pending_selection();
         let st = self.st.borrow();
         let mut first = None;
         self.unselect_all();
@@ -618,21 +622,36 @@ impl Pane {
         changed_any
     }
 
-    /// Selects `names` now if they are shown, otherwise once they appear.
+    /// Selects `names` now if they are shown, otherwise once they appear (for a few
+    /// seconds, and only until the user selects something else).
     pub fn select_when_present(&self, names: Vec<OsString>) {
-        self.st.borrow_mut().select_when_present = names;
+        {
+            let mut st = self.st.borrow_mut();
+            st.select_when_present = names;
+            st.select_deadline = Some(std::time::Instant::now() + Duration::from_secs(5));
+        }
         self.resolve_pending_selection();
+    }
+
+    pub fn cancel_pending_selection(&self) {
+        let mut st = self.st.borrow_mut();
+        st.select_when_present.clear();
+        st.select_deadline = None;
     }
 
     fn resolve_pending_selection(&self) {
         let names = {
             let st = self.st.borrow();
+            if st.select_deadline.is_some_and(|d| std::time::Instant::now() > d) {
+                drop(st);
+                self.cancel_pending_selection();
+                return;
+            }
             if st.select_when_present.is_empty() || !st.select_when_present.iter().any(|n| st.by_name.contains_key(n)) {
                 return;
             }
             st.select_when_present.clone()
         };
-        self.st.borrow_mut().select_when_present.clear();
         self.select_names(&names);
         self.focus_view();
     }
@@ -846,6 +865,7 @@ impl Pane {
             let weak = self.weak.borrow().clone();
             w.connect_key_press_event(move |_, ev| {
                 let Some(p) = weak.upgrade() else { return glib::Propagation::Proceed };
+                p.cancel_pending_selection();
                 let key = ev.keyval();
                 let mods = ev.state() & gtk::accelerator_get_default_mod_mask();
                 if key == gdk::keys::constants::BackSpace && mods.is_empty() {
@@ -871,6 +891,7 @@ impl Pane {
         if ev.event_type() != gdk::EventType::ButtonPress {
             return glib::Propagation::Proceed;
         }
+        self.cancel_pending_selection();
         match ev.button() {
             3 => {
                 match &hit {
