@@ -39,3 +39,10 @@ action win.delete
 wait-missing $T/dest/a (2).txt
 wait-idle
 expect-rows 2
+# Properties for a folder and for the background.
+select Fresh Folder
+action win.properties
+sleep 300
+action win.select-all
+action win.properties
+sleep 300

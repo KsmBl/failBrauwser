@@ -13,6 +13,7 @@ pub mod fileops;
 pub mod jobs;
 pub mod model;
 pub mod pane;
+pub mod properties;
 pub mod selftest;
 pub mod sidebar;
 pub mod util;

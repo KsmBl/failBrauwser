@@ -18,6 +18,7 @@ pub fn window_created(w: &Rc<Window>) {
     w.add_action("extract-to", archive::extract_to);
     w.add_action("compress", archive::compress);
     w.add_action("open-as-archive", archive::open_as_archive);
+    w.add_action("properties", super::properties::show);
     super::sidebar::attach(w);
 }
 
@@ -116,6 +117,7 @@ pub fn context_menu_model(_w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::
         section(&menu, &[("Create _Folder…", "win.new-folder"), ("Create _Document…", "win.new-file")]);
         section(&menu, &[("_Paste", "win.paste")]);
         section(&menu, &[("Select _All", "win.select-all"), ("Show _Hidden Files", "win.show-hidden"), ("_Reload", "win.reload")]);
+        section(&menu, &[("_Properties…", "win.properties")]);
         return menu;
     }
     let open = gio::Menu::new();
@@ -151,6 +153,7 @@ pub fn context_menu_model(_w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::
         arch.push(("C_ompress…", "win.compress"));
     }
     section(&menu, &arch);
+    section(&menu, &[("_Properties…", "win.properties")]);
     menu
 }
 
