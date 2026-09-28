@@ -7,7 +7,7 @@
 //! `wait-idle`, `wait-exists <path>`, `wait-missing <path>`, `expect-rows <n>`,
 //! `expect-selected <name>`, `expect-location <text>`, `screenshot <file>`, `sleep <ms>`,
 //! `size <w> <h>`, `expect-tree-root <path>`, `wait-tree-selected <path>`, `tree-click <path>`,
-//! `wait-cell <column> <row> = <text>`, `quit`. Blank lines and `#` comments are ignored.
+//! `wait-cell <column> <row> = <text>`, `wait-drive <title>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
 use super::window::Window;
@@ -196,6 +196,11 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             };
             let (name, want) = (name.to_string(), want.to_string());
             wait(r, move |r| Ok(r.window.current_pane().cell_text(&name, column).as_deref() == Some(want.as_str())));
+        }
+        "wait-drive" => {
+            // A volume with this title is listed (e.g. "File System" for /).
+            let want = arg.to_string();
+            wait(r, move |r| Ok(super::drives::shown_volumes(&r.window.current_pane()).iter().any(|v| v.title() == want)));
         }
         "expect-tree-root" => {
             let sb = super::sidebar::for_window(&w).ok_or("no sidebar")?;

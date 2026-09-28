@@ -5,5 +5,6 @@ pub mod archive;
 pub mod clipformat;
 pub mod fs;
 pub mod config;
+pub mod drives;
 pub mod location;
 pub mod ops;

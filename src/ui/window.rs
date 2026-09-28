@@ -201,6 +201,7 @@ impl Window {
             let (Some(w), Some(p)) = (weak.upgrade(), pw.upgrade()) else { return };
             match ev {
                 PaneEvent::Location => {
+                    super::extensions::pane_location_changed(&w, &p);
                     lbl.set_text(&p.location().title());
                     if Rc::ptr_eq(&p, &w.current_pane()) {
                         w.sync_to_pane();
@@ -285,7 +286,10 @@ impl Window {
         let pane = self.current_pane();
         let ctx = self.statusbar.context_id("main");
         self.statusbar.remove_all(ctx);
-        let text = if pane.is_loading() && pane.item_count() == 0 {
+        let text = if pane.location() == Location::Drives {
+            let n = super::drives::shown_volumes(&pane).len();
+            format!("{n} drive{}", if n == 1 { "" } else { "s" })
+        } else if pane.is_loading() && pane.item_count() == 0 {
             "Loading…".to_string()
         } else if let Some(err) = pane.error() {
             err
@@ -368,6 +372,7 @@ impl Window {
         self.add_action("forward", |w| w.current_pane().go_forward());
         self.add_action("up", |w| w.current_pane().go_up());
         self.add_action("home", |w| w.navigate(Location::home()));
+        self.add_action("drives", |w| w.navigate(Location::Drives));
         self.add_action("reload", |w| w.current_pane().reload());
         self.add_action("location", |w| {
             w.location_entry.grab_focus();

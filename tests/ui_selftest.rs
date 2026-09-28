@@ -59,3 +59,11 @@ fn total_size_column() {
         std::fs::write(root.join("note.txt"), "hello").unwrap();
     });
 }
+
+#[test]
+fn drives_page() {
+    run("drives.fbt", |t| {
+        std::fs::create_dir(t.join("d")).unwrap();
+        std::fs::write(t.join("d/file"), "x").unwrap();
+    });
+}

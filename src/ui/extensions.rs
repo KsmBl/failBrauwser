@@ -24,6 +24,11 @@ pub fn open_uri(w: &Window, uri: &str) {
 
 pub fn pane_created(w: &Window, p: &Rc<Pane>) {
     dnd::setup(w, p);
+    super::drives::attach(w, p);
+}
+
+pub fn pane_location_changed(_w: &Window, p: &Rc<Pane>) {
+    super::drives::location_changed(p);
 }
 
 pub fn pane_contents_changed(w: &Window, p: &Rc<Pane>) {

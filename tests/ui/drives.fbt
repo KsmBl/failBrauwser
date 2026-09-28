@@ -1,0 +1,8 @@
+# The drives page lists the root filesystem and returns to the file view.
+open $T/d
+action win.drives
+expect-location drives:///
+wait-drive File System
+action win.back
+expect-location $T/d
+expect-rows 1
