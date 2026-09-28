@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Archive helper for failBrauwser. It links the archive logic of CompressionWorkbench
+       (Compression.Lib) and speaks a line-based JSON protocol on stdin/stdout, so the
+       file manager itself stays a small native process. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>fb-archive</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <TieredPGO>true</TieredPGO>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <!-- The library is large and not annotated for trimming; the helper keeps working
+         because every format is registered by source generator, without reflection. -->
+    <NoWarn>$(NoWarn);IL2026;IL2104;IL3053;IL2072;IL2075;IL3050</NoWarn>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <CwbRoot Condition="'$(CwbRoot)' == ''">$(MSBuildThisFileDirectory)../../../compressionworkbench</CwbRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(CwbRoot)/Compression.Lib/Compression.Lib.csproj" />
+  </ItemGroup>
+
+</Project>
