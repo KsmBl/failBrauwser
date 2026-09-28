@@ -1,0 +1,148 @@
+//! Deleting: to the trash (freedesktop.org spec, through GIO) or permanently.
+
+use super::fastcopy::{self, is_cancelled_error};
+use super::job::{Answer, JobCtx, Phase, Question};
+use gtk::gio;
+use gtk::prelude::*;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+
+fn count(p: &Path) -> u64 {
+    match fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => 1 + fs::read_dir(p).map(|d| d.filter_map(Result::ok).map(|e| count(&e.path())).sum()).unwrap_or(0),
+        Ok(_) => 1,
+        Err(_) => 0,
+    }
+}
+
+fn ask_error(ctx: &JobCtx, path: &Path, e: &io::Error) -> io::Result<bool> {
+    match ctx.ask(Question::Error { path: path.to_path_buf(), message: e.to_string() }) {
+        Answer::Retry => Ok(true),
+        Answer::Cancel => Err(fastcopy::cancelled()),
+        _ => {
+            ctx.record_error(format!("{}: {}", path.display(), e));
+            Ok(false)
+        }
+    }
+}
+
+fn remove_tree(ctx: &JobCtx, p: &Path) -> io::Result<()> {
+    if ctx.is_cancelled() {
+        return Err(fastcopy::cancelled());
+    }
+    let meta = match fs::symlink_metadata(p) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            ask_error(ctx, p, &e)?;
+            return Ok(());
+        }
+    };
+    ctx.set_current(p.file_name().unwrap_or_default().to_string_lossy());
+    if meta.is_dir() {
+        let entries = loop {
+            match fs::read_dir(p).and_then(|d| d.collect::<io::Result<Vec<_>>>()) {
+                Ok(v) => break v,
+                Err(e) => {
+                    if !ask_error(ctx, p, &e)? {
+                        return Ok(());
+                    }
+                }
+            }
+        };
+        for e in entries {
+            remove_tree(ctx, &e.path())?;
+        }
+        loop {
+            match fs::remove_dir(p) {
+                Ok(()) => break,
+                // Something inside was skipped; the folder stays.
+                Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) => break,
+                Err(e) => {
+                    if !ask_error(ctx, p, &e)? {
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        loop {
+            match fs::remove_file(p) {
+                Ok(()) => break,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+                Err(e) => {
+                    if !ask_error(ctx, p, &e)? {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    ctx.files_done.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Deletes files and folder trees for good.
+pub fn delete_permanently(ctx: &JobCtx, paths: &[PathBuf]) -> io::Result<()> {
+    ctx.set_phase(Phase::Preparing);
+    let total: u64 = paths.iter().map(|p| count(p)).sum();
+    ctx.files_total.fetch_add(total, Ordering::Relaxed);
+    ctx.set_phase(Phase::Working);
+    for p in paths {
+        match remove_tree(ctx, p) {
+            Err(e) if is_cancelled_error(&e) => return Err(e),
+            r => r?,
+        }
+    }
+    ctx.set_phase(Phase::Done);
+    Ok(())
+}
+
+/// Moves to the trash. Where there is no trash (some network shares), the user can
+/// choose to delete permanently instead.
+pub fn trash(ctx: &JobCtx, paths: &[PathBuf]) -> io::Result<()> {
+    ctx.set_phase(Phase::Working);
+    ctx.files_total.fetch_add(paths.len() as u64, Ordering::Relaxed);
+    for p in paths {
+        if ctx.is_cancelled() {
+            return Err(fastcopy::cancelled());
+        }
+        ctx.set_current(p.file_name().unwrap_or_default().to_string_lossy());
+        let file = gio::File::for_path(p);
+        match file.trash(gio::Cancellable::NONE) {
+            Ok(()) => {}
+            Err(e) if e.matches(gio::IOErrorEnum::NotFound) => {}
+            Err(e) => match ctx.ask(Question::TrashUnsupported { path: p.clone(), message: e.to_string() }) {
+                Answer::DeleteInstead => remove_tree(ctx, p)?,
+                Answer::Cancel => return Err(fastcopy::cancelled()),
+                _ => ctx.record_error(format!("{}: {}", p.display(), e)),
+            },
+        }
+        ctx.files_done.fetch_add(1, Ordering::Relaxed);
+    }
+    ctx.set_phase(Phase::Done);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deletes_trees_without_following_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        fs::create_dir_all(d.join("t/a/b")).unwrap();
+        fs::write(d.join("t/a/b/f"), "x").unwrap();
+        fs::create_dir(d.join("outside")).unwrap();
+        fs::write(d.join("outside/keep"), "x").unwrap();
+        std::os::unix::fs::symlink(d.join("outside"), d.join("t/link")).unwrap();
+        let ctx = JobCtx::new();
+        delete_permanently(&ctx, &[d.join("t")]).unwrap();
+        assert!(!d.join("t").exists());
+        assert!(d.join("outside/keep").exists());
+        assert_eq!(ctx.snapshot().files_done, ctx.snapshot().files_total);
+    }
+}
