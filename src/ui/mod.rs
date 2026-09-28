@@ -6,6 +6,7 @@ pub mod backend;
 pub mod clipboard;
 pub mod dirsize;
 pub mod dnd;
+pub mod drives;
 pub mod extensions;
 pub mod fileops;
 pub mod jobs;
