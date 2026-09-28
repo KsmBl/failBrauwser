@@ -194,6 +194,12 @@ pub fn ask_text(
     select_stem: bool,
     on_ok: impl Fn(String) + 'static,
 ) {
+    if super::selftest::active() {
+        if let Some(t) = super::selftest::scripted_text() {
+            glib::idle_add_local_once(move || on_ok(t));
+            return;
+        }
+    }
     let d = gtk::Dialog::with_buttons(
         Some(title),
         Some(parent),
@@ -239,6 +245,10 @@ pub fn valid_file_name(name: &str) -> bool {
 
 /// Yes/No confirmation.
 pub fn confirm(parent: &impl IsA<gtk::Window>, title: &str, detail: &str, ok_label: &str, on_ok: impl Fn() + 'static) {
+    if super::selftest::active() {
+        glib::idle_add_local_once(on_ok);
+        return;
+    }
     let d = gtk::MessageDialog::new(
         Some(parent),
         gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
