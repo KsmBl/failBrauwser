@@ -1,0 +1,41 @@
+# Copy, cut, paste, rename, new folder, trash and delete through the real actions.
+open $T/files
+expect-rows 3
+select a.txt
+action win.copy
+open $T/dest
+action win.paste
+wait-exists $T/dest/a.txt
+expect-selected a.txt
+# Paste again into the same folder: conflict, keep both.
+answer keepboth
+action win.paste
+wait-exists $T/dest/a (2).txt
+# Cut from the source and paste: a move.
+open $T/files
+select b.txt
+action win.cut
+open $T/dest
+action win.paste
+wait-exists $T/dest/b.txt
+wait-missing $T/files/b.txt
+# Rename.
+select b.txt
+text renamed.txt
+action win.rename
+wait-exists $T/dest/renamed.txt
+expect-selected renamed.txt
+# New folder.
+text Fresh Folder
+action win.new-folder
+wait-exists $T/dest/Fresh Folder
+expect-selected Fresh Folder
+# Trash and permanent delete.
+select renamed.txt
+action win.trash
+wait-missing $T/dest/renamed.txt
+select a (2).txt
+action win.delete
+wait-missing $T/dest/a (2).txt
+wait-idle
+expect-rows 2
