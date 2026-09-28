@@ -14,6 +14,12 @@ use std::rc::Rc;
 
 pub fn window_created(w: &Rc<Window>) {
     fileops::install_actions(w);
+    super::sidebar::attach(w);
+}
+
+/// Places that are not local folders (network shares mounted through GVfs without a path).
+pub fn open_uri(w: &Window, uri: &str) {
+    util::show_error(&w.win, "Cannot open location", &format!("“{uri}” is not a local folder."));
 }
 
 pub fn pane_created(w: &Window, p: &Rc<Pane>) {
@@ -26,7 +32,11 @@ pub fn selection_changed(w: &Window) {
     fileops::update_sensitivity(w);
 }
 
-pub fn settings_changed(_w: &Window) {}
+pub fn settings_changed(w: &Window) {
+    if let Some(sb) = super::sidebar::for_window(w) {
+        sb.apply_settings();
+    }
+}
 
 /// Can files be created, changed or removed here?
 pub fn location_writable(loc: &Location) -> bool {

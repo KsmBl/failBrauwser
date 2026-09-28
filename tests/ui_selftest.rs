@@ -35,3 +35,11 @@ fn file_operations() {
         std::fs::write(t.join("files/b.txt"), "b").unwrap();
     });
 }
+
+#[test]
+fn sidebar_tree() {
+    run("sidebar.fbt", |t| {
+        std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();
+        std::fs::create_dir_all(t.join("a/other")).unwrap();
+    });
+}

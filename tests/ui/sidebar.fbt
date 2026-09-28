@@ -1,0 +1,16 @@
+# The folder tree follows the current folder and can start at the current folder.
+action win.tree-root current
+open $T/a
+expect-tree-root $T/a
+wait-tree-selected $T/a
+tree-click $T/a/b
+expect-location $T/a/b
+expect-tree-root $T/a/b
+action win.tree-root root
+open $T/a/b/c
+expect-tree-root /
+wait-tree-selected $T/a/b/c
+action win.up
+expect-location $T/a/b
+expect-selected c
+wait-tree-selected $T/a/b
