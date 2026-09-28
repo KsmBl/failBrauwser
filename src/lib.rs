@@ -2,3 +2,4 @@
 //! so it can be unit tested headless.
 
 pub mod archive;
+pub mod fs;
