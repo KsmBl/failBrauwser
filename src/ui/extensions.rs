@@ -5,7 +5,7 @@ use super::clipboard::ClipSource;
 use super::model::Item;
 use super::pane::Pane;
 use super::window::Window;
-use super::{dnd, fileops, util};
+use super::{archive, dnd, fileops, util};
 use failbrauwser::location::Location;
 use failbrauwser::ops::copy::Mode;
 use gtk::gio;
@@ -14,7 +14,15 @@ use std::rc::Rc;
 
 pub fn window_created(w: &Rc<Window>) {
     fileops::install_actions(w);
+    w.add_action("extract-here", |w| archive::extract_selected(w, None));
+    w.add_action("extract-to", archive::extract_to);
+    w.add_action("compress", archive::compress);
+    w.add_action("open-as-archive", archive::open_as_archive);
     super::sidebar::attach(w);
+}
+
+pub fn ask_archive_password(w: &Window, p: &Rc<Pane>, loc: &Location) {
+    archive::ask_password(w, p, loc);
 }
 
 /// Places that are not local folders (network shares mounted through GVfs without a path).
@@ -36,7 +44,9 @@ pub fn pane_contents_changed(w: &Window, p: &Rc<Pane>) {
 }
 
 /// Total sizes for locations that are not plain folders.
-pub fn fill_sizes_non_local(_p: &Rc<Pane>) {}
+pub fn fill_sizes_non_local(p: &Rc<Pane>) {
+    archive::fill_sizes(p);
+}
 
 pub fn selection_changed(w: &Window) {
     fileops::update_sensitivity(w);
@@ -59,22 +69,36 @@ pub fn location_writable(loc: &Location) -> bool {
             let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return false };
             unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
         }
-        _ => false,
+        // Known once the archive was listed (always the case while it is shown).
+        Location::Archive(a) => failbrauwser::archive::vfs::Vfs::global().cached(a).is_some_and(|x| x.writable),
+        Location::Drives => false,
     }
 }
 
 /// Items that are not plain local files (entries inside archives).
-pub fn open_non_local(_w: &Window, _item: &Item) {}
-
-pub fn transfer_non_local(w: &Window, _sources: Vec<ClipSource>, _dest: Location, _mode: Mode, _after: Box<dyn FnOnce()>) {
-    util::show_error(&w.win, "Not supported", "This kind of transfer is not supported.");
+pub fn open_non_local(w: &Window, item: &Item) {
+    archive::open_entry(w, item);
 }
 
-pub fn delete_non_local(_w: &Window, _pane: &Rc<Pane>) {}
+pub fn transfer_non_local(w: &Window, sources: Vec<ClipSource>, dest: Location, mode: Mode, after: Box<dyn FnOnce()>) {
+    if matches!(dest, Location::Drives) {
+        util::show_error(&w.win, "Cannot paste here", "Open a folder to paste into.");
+        return;
+    }
+    archive::transfer(w, sources, dest, mode, after);
+}
 
-pub fn rename_non_local(_w: &Window, _pane: &Rc<Pane>, _item: &Item, _new: &str) {}
+pub fn delete_non_local(w: &Window, pane: &Rc<Pane>) {
+    archive::delete_selection(w, pane);
+}
 
-pub fn create_non_local(_w: &Window, _loc: &Location, _name: &str, _folder: bool) {}
+pub fn rename_non_local(w: &Window, pane: &Rc<Pane>, item: &Item, new: &str) {
+    archive::rename(w, pane, item, new);
+}
+
+pub fn create_non_local(w: &Window, loc: &Location, name: &str, folder: bool) {
+    archive::create(w, loc, name, folder);
+}
 
 fn section(menu: &gio::Menu, items: &[(&str, &str)]) {
     let s = gio::Menu::new();
@@ -115,6 +139,18 @@ pub fn context_menu_model(_w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::
     del.push(("_Delete", "win.delete"));
     del.push(("_Rename…", "win.rename"));
     section(&menu, &del);
+    let mut arch = Vec::new();
+    if local && !archive::selected_archives(pane).is_empty() {
+        arch.push(("E_xtract Here", "win.extract-here"));
+        arch.push(("Extract _To…", "win.extract-to"));
+    }
+    if items.len() == 1 && !items[0].is_dir_like() && !failbrauwser::archive::is_browsable_name(&items[0].display_name()) {
+        arch.push(("Open as _Archive", "win.open-as-archive"));
+    }
+    if local {
+        arch.push(("C_ompress…", "win.compress"));
+    }
+    section(&menu, &arch);
     menu
 }
 
