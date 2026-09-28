@@ -1,5 +1,6 @@
 //! The local filesystem: entries, listings, formatting.
 
+pub mod dirsize;
 pub mod entry;
 pub mod format;
 pub mod listing;

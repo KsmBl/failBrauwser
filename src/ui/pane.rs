@@ -2,7 +2,6 @@
 
 use super::backend;
 use super::model::{self, Item};
-use super::util;
 use failbrauwser::config::{Settings, ViewMode};
 use failbrauwser::location::Location;
 use gtk::prelude::*;
@@ -942,16 +941,35 @@ impl Pane {
         self.store.set(iter, &[(model::COL_DIRSIZE, &value), (model::COL_DIRSIZE_TEXT, &text)]);
     }
 
-    /// Folders currently shown (for the total-size column).
-    pub fn visible_dirs(&self) -> Vec<Item> {
-        self.st.borrow().rows.values().filter(|(i, _)| i.is_dir_like()).map(|(i, _)| i.clone()).collect()
+    /// Folders whose total size is not known yet: (name, path on disk).
+    pub fn dirs_needing_size(&self) -> Vec<(OsString, std::path::PathBuf)> {
+        let st = self.st.borrow();
+        st.rows
+            .values()
+            .filter(|(i, iter)| {
+                i.is_dir_like() && self.store.value(iter, model::COL_DIRSIZE as i32).get::<i64>().unwrap_or(-1) < 0
+                    && self.store.value(iter, model::COL_DIRSIZE_TEXT as i32).get::<String>().unwrap_or_default().is_empty()
+            })
+            .filter_map(|(i, _)| i.path().map(|p| (i.os_name(), p.clone())))
+            .collect()
+    }
+
+    /// The text a column shows for the row `name` (tests).
+    pub fn cell_text(&self, name: &str, column: u32) -> Option<String> {
+        let st = self.st.borrow();
+        let (_, iter) = st.by_name.get(&OsString::from(name)).and_then(|k| st.rows.get(k))?;
+        self.store.value(iter, column as i32).get::<String>().ok()
+    }
+
+    /// Sets the total size of rows by name (archive folders, where sizes are known).
+    pub fn set_sizes(&self, sizes: &[(OsString, u64)]) {
+        for (name, bytes) in sizes {
+            self.set_dir_size(name, Some(*bytes), false);
+        }
     }
 
     pub fn generation(&self) -> u64 {
         self.st.borrow().generation
     }
 
-    pub fn icon(&self) -> gio::Icon {
-        util::folder_icon()
-    }
 }

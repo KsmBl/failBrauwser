@@ -5,6 +5,9 @@
 # user's settings and trash are never touched; the GTK theme settings are copied over.
 set -u
 BIN=$1; SCRIPT=$2; T=$3
+# Parallel runs would pick up each other's compositor socket: one at a time.
+exec 9>"${TMPDIR:-/tmp}/failbrauwser-ui-test.lock"
+flock 9
 mkdir -p "$T/config" "$T/data" "$T/cache"
 [ -d "$HOME/.config/gtk-3.0" ] && cp -r "$HOME/.config/gtk-3.0" "$T/config/" 2>/dev/null
 # Icon themes installed per user live in the data dir; keep them visible.
