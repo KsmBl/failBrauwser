@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod tree;
+pub mod vfs;
 
 pub use client::{ArchiveError, Helper, Result};
 pub use tree::{ArchiveNode, ArchiveTree};
