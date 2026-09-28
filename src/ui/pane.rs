@@ -88,7 +88,7 @@ impl Pane {
 
         let icons = gtk::IconView::with_model(&store);
         icons.set_selection_mode(gtk::SelectionMode::Multiple);
-        icons.set_item_width(96);
+        icons.set_item_width(112);
         icons.set_column_spacing(4);
         icons.set_row_spacing(4);
         let pix = gtk::CellRendererPixbuf::new();
@@ -98,7 +98,7 @@ impl Pane {
         let txt = gtk::CellRendererText::new();
         gtk::prelude::CellRendererExt::set_alignment(&txt, 0.5, 0.0);
         txt.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-        txt.set_wrap_width(92);
+        txt.set_wrap_width(108);
         txt.set_xalign(0.5);
         txt.set_property("alignment", gtk::pango::Alignment::Center);
         icons.pack_start(&txt, false);
