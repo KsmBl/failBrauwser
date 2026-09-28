@@ -42,6 +42,8 @@ struct State {
     refresh_scheduled: bool,
     /// A name to select once the load with this generation finishes.
     pending_select: Option<(u64, OsString)>,
+    /// Names to select as soon as they show up (after create, paste, rename).
+    select_when_present: Vec<OsString>,
     loading: bool,
     error: Option<String>,
 }
@@ -61,6 +63,9 @@ pub struct Pane {
     weak: RefCell<Weak<Pane>>,
     /// Suppresses the sort-changed handler while the pane sets the sort itself.
     applying_sort: Cell<bool>,
+    /// While > 0 the model is being changed in bulk: events are held back.
+    quiet: Cell<u32>,
+    selection_dirty: Cell<bool>,
 }
 
 impl Pane {
@@ -138,12 +143,15 @@ impl Pane {
                 monitor: None,
                 refresh_scheduled: false,
                 pending_select: None,
+                select_when_present: Vec::new(),
                 loading: false,
                 error: None,
             }),
             listeners: RefCell::new(Vec::new()),
             weak: RefCell::new(Weak::new()),
             applying_sort: Cell::new(false),
+            quiet: Cell::new(0),
+            selection_dirty: Cell::new(false),
         });
         *pane.weak.borrow_mut() = Rc::downgrade(&pane);
         pane.build_columns();
@@ -163,9 +171,27 @@ impl Pane {
     }
 
     fn emit(&self, ev: PaneEvent) {
+        if self.quiet.get() > 0 {
+            // Row changes emit selection signals mid-update; report them once afterwards.
+            if matches!(ev, PaneEvent::Selection) {
+                self.selection_dirty.set(true);
+            }
+            return;
+        }
         for l in self.listeners.borrow().iter() {
             l(&ev);
         }
+    }
+
+    /// Runs a bulk model change with events held back.
+    fn quietly<T>(&self, f: impl FnOnce() -> T) -> T {
+        self.quiet.set(self.quiet.get() + 1);
+        let r = f();
+        self.quiet.set(self.quiet.get() - 1);
+        if self.quiet.get() == 0 && self.selection_dirty.replace(false) {
+            self.emit(PaneEvent::Selection);
+        }
+        r
     }
 
     // ── Accessors ────────────────────────────────────────────────────
@@ -178,6 +204,9 @@ impl Pane {
     }
     pub fn can_go_forward(&self) -> bool {
         !self.st.borrow().forward.is_empty()
+    }
+    pub fn refresh_pending(&self) -> bool {
+        self.st.borrow().refresh_scheduled
     }
     pub fn is_loading(&self) -> bool {
         self.st.borrow().loading
@@ -208,6 +237,10 @@ impl Pane {
     }
 
     pub fn selected_keys(&self) -> Vec<u64> {
+        // While rows are rebuilt the views are detached from the model.
+        if self.tree.model().is_none() || self.icons.model().is_none() {
+            return Vec::new();
+        }
         let paths: Vec<gtk::TreePath> = if self.view_is_icons() {
             self.icons.selected_items()
         } else {
@@ -385,6 +418,10 @@ impl Pane {
     }
 
     fn clear_rows(&self) {
+        self.quietly(|| self.clear_rows_inner());
+    }
+
+    fn clear_rows_inner(&self) {
         let mut st = self.st.borrow_mut();
         st.rows.clear();
         st.by_name.clear();
@@ -394,6 +431,10 @@ impl Pane {
 
     /// Replaces all rows with the visible part of `all`.
     fn rebuild_rows(&self, select: &[OsString], fresh: bool) {
+        self.quietly(|| self.rebuild_rows_inner(select, fresh));
+    }
+
+    fn rebuild_rows_inner(&self, select: &[OsString], fresh: bool) {
         let show_hidden = self.settings.borrow().show_hidden;
         let scroll = if fresh { None } else { self.tree.vadjustment().map(|a| a.value()) };
         // Detached views do not react to every single insert.
@@ -418,6 +459,8 @@ impl Pane {
         self.tree.set_model(Some(&self.store));
         self.icons.set_model(Some(&self.store));
         self.select_names(select);
+        self.mark_cut();
+        self.resolve_pending_selection();
         if let (Some(v), Some(adj)) = (scroll, self.tree.vadjustment()) {
             adj.set_value(v);
         } else if select.is_empty() {
@@ -502,6 +545,17 @@ impl Pane {
 
     /// Applies a new reading row by row, so selection and scrolling stay where they are.
     fn apply_update(&self, items: Vec<Item>) {
+        let changed = self.quietly(|| self.apply_update_inner(items));
+        self.show_error();
+        if changed {
+            self.mark_cut();
+            self.resolve_pending_selection();
+            self.emit(PaneEvent::Contents);
+        }
+    }
+
+    /// Returns whether anything visible changed.
+    fn apply_update_inner(&self, items: Vec<Item>) -> bool {
         let show_hidden = self.settings.borrow().show_hidden;
         let now = glib::real_time() / 1_000_000;
         let mut changed_any = false;
@@ -556,9 +610,38 @@ impl Pane {
                 changed_any = true;
             }
         }
-        self.show_error();
-        if changed_any {
-            self.emit(PaneEvent::Contents);
+        changed_any
+    }
+
+    /// Selects `names` now if they are shown, otherwise once they appear.
+    pub fn select_when_present(&self, names: Vec<OsString>) {
+        self.st.borrow_mut().select_when_present = names;
+        self.resolve_pending_selection();
+    }
+
+    fn resolve_pending_selection(&self) {
+        let names = {
+            let st = self.st.borrow();
+            if st.select_when_present.is_empty() || !st.select_when_present.iter().any(|n| st.by_name.contains_key(n)) {
+                return;
+            }
+            st.select_when_present.clone()
+        };
+        self.st.borrow_mut().select_when_present.clear();
+        self.select_names(&names);
+        self.focus_view();
+    }
+
+    /// Dims the rows of files that are cut to the clipboard.
+    pub fn mark_cut(&self) {
+        let cut: HashSet<std::path::PathBuf> = super::clipboard::cut_paths().into_iter().collect();
+        let st = self.st.borrow();
+        for (item, iter) in st.rows.values() {
+            let dim = item.is_hidden() || item.path().is_some_and(|p| cut.contains(p));
+            let current: bool = self.store.value(iter, model::COL_SENSITIVE as i32).get().unwrap_or(true);
+            if current == dim {
+                self.store.set_value(iter, model::COL_SENSITIVE, &(!dim).to_value());
+            }
         }
     }
 
