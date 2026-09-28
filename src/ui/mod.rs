@@ -4,6 +4,7 @@ pub mod actions;
 pub mod app;
 pub mod backend;
 pub mod clipboard;
+pub mod dirsize;
 pub mod dnd;
 pub mod extensions;
 pub mod fileops;

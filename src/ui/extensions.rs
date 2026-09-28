@@ -26,7 +26,12 @@ pub fn pane_created(w: &Window, p: &Rc<Pane>) {
     dnd::setup(w, p);
 }
 
-pub fn pane_contents_changed(_w: &Window, _p: &Rc<Pane>) {}
+pub fn pane_contents_changed(w: &Window, p: &Rc<Pane>) {
+    super::dirsize::update(w, p);
+}
+
+/// Total sizes for locations that are not plain folders.
+pub fn fill_sizes_non_local(_p: &Rc<Pane>) {}
 
 pub fn selection_changed(w: &Window) {
     fileops::update_sensitivity(w);
@@ -35,6 +40,9 @@ pub fn selection_changed(w: &Window) {
 pub fn settings_changed(w: &Window) {
     if let Some(sb) = super::sidebar::for_window(w) {
         sb.apply_settings();
+    }
+    for p in w.panes() {
+        super::dirsize::update(w, &p);
     }
 }
 
