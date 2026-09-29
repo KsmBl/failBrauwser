@@ -80,6 +80,11 @@ pub struct Pane {
     /// Rows holding a thumbnail, oldest first (at most [`MAX_THUMBS`]).
     thumbs: RefCell<std::collections::VecDeque<OsString>>,
     scroll_pending: Cell<bool>,
+    /// Filter-as-you-type for the current folder (empty: everything).
+    filter: RefCell<failbrauwser::search::Query>,
+    /// A search is running for this tab; cancelled when it goes elsewhere.
+    search_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    searching: Cell<bool>,
 }
 
 /// Thumbnails kept in memory per tab; older ones are dropped (and come back from the disk
@@ -178,6 +183,9 @@ impl Pane {
             grid_text: txt,
             thumbs: RefCell::new(std::collections::VecDeque::new()),
             scroll_pending: Cell::new(false),
+            filter: RefCell::new(failbrauwser::search::Query::new("")),
+            search_cancel: RefCell::new(None),
+            searching: Cell::new(false),
         });
         *pane.weak.borrow_mut() = Rc::downgrade(&pane);
         pane.apply_zoom_sizes();
@@ -387,6 +395,20 @@ impl Pane {
     }
 
     fn load(&self, loc: Location, select: Vec<OsString>, fresh: bool) {
+        if let Some(c) = self.search_cancel.borrow_mut().take() {
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.searching.set(false);
+        // The Folder column exists only in search results.
+        let is_search = matches!(loc, Location::Search(_));
+        let has_folder_col = self.tree.columns().iter().any(|c| c.title().as_deref() == Some("Folder"));
+        if is_search != has_folder_col {
+            self.build_columns_for(is_search);
+        }
+        if let Location::Search(s) = &loc {
+            self.start_search(s.clone());
+            return;
+        }
         let generation = {
             let mut st = self.st.borrow_mut();
             st.generation += 1;
@@ -481,7 +503,8 @@ impl Pane {
         let now = glib::real_time() / 1_000_000;
         {
             let mut st = self.st.borrow_mut();
-            let visible: Vec<Item> = st.all.iter().filter(|i| show_hidden || !i.is_hidden()).cloned().collect();
+            let filter = self.filter.borrow();
+            let visible: Vec<Item> = st.all.iter().filter(|i| (show_hidden || !i.is_hidden()) && filter.matches(&i.display_name())).cloned().collect();
             let names: Vec<String> = visible.iter().map(Item::display_name).collect();
             let ranks = model::ranks(names.iter().map(String::as_str));
             for (item, rank) in visible.into_iter().zip(ranks) {
@@ -496,7 +519,10 @@ impl Pane {
         self.thumbs.borrow_mut().clear();
         self.tree.set_model(Some(&self.store));
         self.icons.set_model(Some(&self.store));
-        self.select_names(select);
+        // An empty list must not cancel a selection waiting for these rows.
+        if !select.is_empty() {
+            self.select_names(select);
+        }
         self.mark_cut();
         self.resolve_pending_selection();
         if let (Some(v), Some(adj)) = (scroll, self.tree.vadjustment()) {
@@ -614,7 +640,8 @@ impl Pane {
                 }
             }
             let mut added = false;
-            for item in items.iter().filter(|i| show_hidden || !i.is_hidden()) {
+            let filter = self.filter.borrow().clone();
+            for item in items.iter().filter(|i| (show_hidden || !i.is_hidden()) && filter.matches(&i.display_name())) {
                 let name = item.os_name();
                 match st.by_name.get(&name).copied() {
                     Some(key) => {
@@ -653,6 +680,143 @@ impl Pane {
             }
         }
         changed_any
+    }
+
+    /// Row keys for displayed names (search results are keyed by path) (tests).
+    pub fn keys_for_names(&self, names: &[OsString]) -> Vec<OsString> {
+        let st = self.st.borrow();
+        names
+            .iter()
+            .map(|n| {
+                if st.by_name.contains_key(n) {
+                    return n.clone();
+                }
+                st.rows.values().map(|(i, _)| i).find(|i| i.os_name() != *n && OsString::from(i.display_name()) == *n).map(|i| i.os_name()).unwrap_or_else(|| n.clone())
+            })
+            .collect()
+    }
+
+    pub fn is_searching(&self) -> bool {
+        self.searching.get()
+    }
+
+    /// Shows only the rows whose names match (empty text: all rows).
+    pub fn set_filter(&self, text: &str) {
+        let q = failbrauwser::search::Query::new(text);
+        let same = self.filter.borrow().is_empty() && q.is_empty();
+        *self.filter.borrow_mut() = q;
+        if !same {
+            self.refilter();
+        }
+    }
+
+    /// Goes somewhere without a new history entry (search text being typed).
+    pub fn replace_location(&self, loc: Location) {
+        self.st.borrow_mut().location = loc.clone();
+        self.load(loc, Vec::new(), true);
+    }
+
+    /// Runs a search on a worker thread; results are added as they are found.
+    fn start_search(&self, s: failbrauwser::location::SearchLoc) {
+        let generation = {
+            let mut st = self.st.borrow_mut();
+            st.generation += 1;
+            st.loading = false;
+            st.error = None;
+            st.monitor = None;
+            st.all.clear();
+            st.generation
+        };
+        self.clear_rows();
+        self.searching.set(true);
+        self.emit(PaneEvent::Location);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *self.search_cancel.borrow_mut() = Some(cancel.clone());
+        let show_hidden = self.settings.borrow().show_hidden;
+        let (tx, rx) = async_channel::unbounded::<Option<Vec<Item>>>();
+        let root = s.root.clone();
+        std::thread::Builder::new()
+            .name("fb-search".into())
+            .spawn(move || {
+                use failbrauwser::search::{Hit, Options, Query, search};
+                let q = Query::new(&s.query);
+                let helper = s.archives.then(failbrauwser::archive::Helper::global);
+                let rel = |p: &std::path::Path| -> String {
+                    let parent = p.parent().unwrap_or(p);
+                    match parent.strip_prefix(&root) {
+                        Ok(r) if r.as_os_str().is_empty() => ".".into(),
+                        Ok(r) => r.display().to_string(),
+                        Err(_) => parent.display().to_string(),
+                    }
+                };
+                let mut batch = Vec::new();
+                let mut last = std::time::Instant::now();
+                let opts = Options { hidden: show_hidden, archives: s.archives };
+                search(&root, &q, opts, helper, &cancel, |hit| {
+                    let item = match hit {
+                        Hit::File(p) => failbrauwser::fs::FileEntry::stat(&p).ok().map(|e| Item::Found(e, rel(&p))),
+                        Hit::InArchive { archive, entry, is_dir, size, mtime } => {
+                            let inner = entry.rfind('/').map(|i| entry[..i].to_string()).unwrap_or_default();
+                            let loc = failbrauwser::location::ArchiveLoc::root(archive.clone()).with_inner(&inner);
+                            let name = entry.rsplit('/').next().unwrap_or(&entry).to_string();
+                            let node = failbrauwser::archive::ArchiveNode { path: entry.clone(), name, is_dir, size, compressed: size, mtime, encrypted: false, implied: false };
+                            let folder = format!("{}/{}", rel(&archive.join("x")), archive.file_name().unwrap_or_default().to_string_lossy());
+                            let folder = if inner.is_empty() { folder } else { format!("{folder}/{inner}") };
+                            Some(Item::FoundInArchive(loc, node, folder.trim_start_matches("./").to_string()))
+                        }
+                    };
+                    batch.extend(item);
+                    if batch.len() >= 200 || last.elapsed() >= std::time::Duration::from_millis(150) {
+                        let _ = tx.send_blocking(Some(std::mem::take(&mut batch)));
+                        last = std::time::Instant::now();
+                    }
+                });
+                if !batch.is_empty() {
+                    let _ = tx.send_blocking(Some(batch));
+                }
+                let _ = tx.send_blocking(None);
+            })
+            .expect("spawn search thread");
+        let me = self.me();
+        glib::spawn_future_local(async move {
+            while let Ok(msg) = rx.recv().await {
+                if me.generation() != generation {
+                    return;
+                }
+                match msg {
+                    Some(items) => me.append_items(items),
+                    None => {
+                        me.searching.set(false);
+                        me.emit(PaneEvent::Location);
+                        me.emit(PaneEvent::Contents);
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Adds rows (search results as they arrive).
+    fn append_items(&self, items: Vec<Item>) {
+        let now = glib::real_time() / 1_000_000;
+        self.quietly(|| {
+            let mut st = self.st.borrow_mut();
+            for item in items {
+                let key = st.next_key;
+                st.next_key += 1;
+                let iter = self.store.append();
+                model::fill_row(&self.store, &iter, key, &item, 0, now);
+                st.by_name.insert(item.os_name(), key);
+                st.all.push(item.clone());
+                st.rows.insert(key, (item, iter));
+            }
+            let rows: Vec<(String, gtk::TreeIter)> = st.rows.values().map(|(i, it)| (i.display_name(), it.clone())).collect();
+            let ranks = model::ranks(rows.iter().map(|(n, _)| n.as_str()));
+            for ((_, iter), rank) in rows.iter().zip(ranks) {
+                self.store.set_value(iter, model::COL_RANK, &rank.to_value());
+            }
+        });
+        self.emit(PaneEvent::Contents);
     }
 
     /// Selects `names` now if they are shown, otherwise once they appear (for a few
@@ -789,7 +953,7 @@ impl Pane {
             let key: u64 = self.store.value(&iter, model::COL_KEY as i32).get().unwrap_or_default();
             let has: bool = self.store.value(&iter, model::COL_THUMB as i32).get::<Option<gtk::gdk_pixbuf::Pixbuf>>().ok().flatten().is_some();
             if let Some((item, _)) = st.rows.get(&key) {
-                if let (false, Item::Fs(e) | Item::Trash(_, e)) = (has, item) {
+                if let (false, Item::Fs(e) | Item::Trash(_, e) | Item::Found(e, _)) = (has, item) {
                     if !e.is_dir_like() {
                         out.push((item.os_name(), e.path.clone(), e.mtime, e.content_type.clone()));
                     }
@@ -834,6 +998,11 @@ impl Pane {
 
     /// (Re)creates the list columns from the settings.
     pub fn build_columns(&self) {
+        let is_search = matches!(self.location(), Location::Search(_));
+        self.build_columns_for(is_search);
+    }
+
+    fn build_columns_for(&self, search: bool) {
         for c in self.tree.columns() {
             self.tree.remove_column(&c);
         }
@@ -913,6 +1082,19 @@ impl Pane {
                     glib::Propagation::Proceed
                 });
             }
+        }
+        if search {
+            // Where each result is, right after its name.
+            let col = gtk::TreeViewColumn::new();
+            col.set_title("Folder");
+            col.set_resizable(true);
+            col.set_min_width(160);
+            let text = gtk::CellRendererText::new();
+            text.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+            text.set_padding(4, 1);
+            TreeViewColumnExt::pack_start(&col, &text, true);
+            TreeViewColumnExt::add_attribute(&col, &text, "text", model::COL_FOLDER as i32);
+            self.tree.insert_column(&col, 1);
         }
     }
 
@@ -1106,6 +1288,25 @@ impl Pane {
 
     /// Opens the selection: one folder is entered, everything else goes to the window.
     pub fn activate(&self, items: Vec<Item>) {
+        // Search results: folders and archive entries are opened where they are.
+        if let [one] = items.as_slice() {
+            match one {
+                Item::Found(e, _) if e.is_dir_like() => {
+                    self.navigate(Location::Dir(e.path.clone()));
+                    return;
+                }
+                Item::FoundInArchive(a, n, _) => {
+                    let target = if n.is_dir { a.with_inner(&n.path) } else { a.clone() };
+                    let select = if n.is_dir { Vec::new() } else { vec![OsString::from(&n.name)] };
+                    self.navigate(Location::Archive(target));
+                    if !select.is_empty() {
+                        self.select_when_present(select);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         if items.len() == 1 && items[0].is_dir_like() {
             if let Some(loc) = self.location().child(&items[0].display_name()) {
                 self.navigate(loc);
