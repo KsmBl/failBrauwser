@@ -20,3 +20,6 @@ drive-properties File System
 sleep 300
 action win.properties
 sleep 300
+# The Drives entry is only marked while the drives page is shown.
+open $T/d
+expect-sidebar-drives unselected
