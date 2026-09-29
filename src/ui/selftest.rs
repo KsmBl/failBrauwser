@@ -6,7 +6,7 @@
 //! `answer <replace|skip|keepboth|cancel|delete>`, `text <reply for the next text prompt>`,
 //! `wait-idle`, `wait-exists <path>`, `wait-missing <path>`, `expect-rows <n>`,
 //! `expect-selected <name>`, `expect-location <text>`, `screenshot <file>`, `sleep <ms>`,
-//! `size <w> <h>`, `expect-tree-root <path>`, `wait-tree-selected <path>`, `tree-click <path>`,
+//! `size <w> <h>`, `expect-tree-root <path>`, `wait-tree-selected <path>`, `tree-click <path>`, `tree-expand <path>`, `wait-tree-expanded <path>`,
 //! `wait-cell <column> <row> = <text>`, `wait-drive <title>`,
 //! `wait-row <name>`, `wait-no-row <name>`, `activate` (open the selection),
 //! `wait-opened`, `edit-opened <new content>`, `quit`. Blank lines and `#` comments are ignored.
@@ -260,6 +260,20 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             wait(r, move |r| {
                 let sb = super::sidebar::for_window(&r.window).ok_or("no sidebar")?;
                 Ok(sb.selected_path().is_some_and(|p| p.display().to_string() == want))
+            });
+        }
+        "tree-expand" => {
+            let sb = super::sidebar::for_window(&w).ok_or("no sidebar")?;
+            if !sb.expand(Path::new(arg)) {
+                return Err("folder not in tree".into());
+            }
+        }
+        "wait-tree-expanded" => {
+            // Must stay expanded once its subfolders are loaded.
+            let dir = std::path::PathBuf::from(arg);
+            wait(r, move |r| {
+                let sb = super::sidebar::for_window(&r.window).ok_or("no sidebar")?;
+                Ok(sb.expanded_with_children(&dir))
             });
         }
         "tree-click" => {

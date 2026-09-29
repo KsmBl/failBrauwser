@@ -40,7 +40,7 @@ fn file_operations() {
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();
-        std::fs::create_dir_all(t.join("a/other")).unwrap();
+        std::fs::create_dir_all(t.join("a/other/inside")).unwrap();
     });
 }
 

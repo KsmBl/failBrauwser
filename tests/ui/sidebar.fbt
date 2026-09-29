@@ -14,3 +14,9 @@ action win.up
 expect-location $T/a/b
 expect-selected c
 wait-tree-selected $T/a/b
+# One click on a triangle opens the folder (it used to collapse again while loading).
+action win.tree-root current
+open $T/a
+wait-tree-selected $T/a
+tree-expand $T/a/other
+wait-tree-expanded $T/a/other
