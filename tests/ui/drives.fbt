@@ -6,3 +6,10 @@ wait-drive File System
 action win.back
 expect-location $T/d
 expect-rows 1
+# Drives from the side panel.
+sidebar-drives
+expect-location drives:///
+expect-sidebar-drives selected
+expect-crumbs Drives
+action win.back
+expect-sidebar-drives unselected

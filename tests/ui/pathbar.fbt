@@ -1,0 +1,23 @@
+# The path bar: a button per step, deeper steps stay while going up, text mode on demand.
+open $T/a/b/c
+expect-path-mode buttons
+crumb-click b
+expect-location $T/a/b
+crumb-click c
+expect-location $T/a/b/c
+crumb-click a
+expect-location $T/a
+# Somewhere else: the old deeper steps go away.
+open $T/x
+crumb-click x
+expect-location $T/x
+# Text mode: type a location, back to buttons afterwards.
+path-edit
+expect-path-mode text
+type-location $T/a/b
+expect-location $T/a/b
+expect-path-mode buttons
+# Escape-like: leaving the field without Enter also returns to buttons.
+path-edit
+expect-path-mode text
+action win.reload

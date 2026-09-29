@@ -122,3 +122,11 @@ fn iso_images() {
         std::fs::remove_dir_all(w.join("src")).unwrap();
     });
 }
+
+#[test]
+fn path_bar() {
+    run("pathbar.fbt", |t| {
+        std::fs::create_dir_all(t.join("a/b/c")).unwrap();
+        std::fs::create_dir_all(t.join("x")).unwrap();
+    });
+}

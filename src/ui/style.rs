@@ -20,6 +20,11 @@ placessidebar row image.sidebar-icon:dir(ltr) { padding-right: 6px; }
 placessidebar row image.sidebar-icon:dir(rtl) { padding-left: 6px; }
 placessidebar separator { margin: 2px 0; }
 
+/* Our own shortcut rows (Drives) look like the places below them. */
+list.fb-shortcuts row { min-height: 26px; padding: 0 8px; }
+list.fb-shortcuts row image.sidebar-icon:dir(ltr) { padding-right: 6px; }
+list.fb-shortcuts row image.sidebar-icon:dir(rtl) { padding-left: 6px; }
+
 /* Status bar: one line of text, not a band. */
 statusbar { padding: 1px 8px; }
 "#;
