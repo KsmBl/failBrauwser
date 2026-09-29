@@ -14,6 +14,90 @@ use gtk::prelude::*;
 use std::os::unix::fs::MetadataExt;
 use std::rc::Rc;
 
+/// The bar at the top of the trash view: how much is in it, Restore and Empty Trash.
+struct TrashBar {
+    pane: std::rc::Weak<super::pane::Pane>,
+    bar: gtk::ActionBar,
+    count: gtk::Label,
+    restore: gtk::Button,
+    empty: gtk::Button,
+}
+
+thread_local! {
+    static BARS: std::cell::RefCell<Vec<TrashBar>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Adds the (hidden) trash bar to a tab; it shows while the tab shows the trash.
+pub fn attach(pane: &Rc<super::pane::Pane>) {
+    let bar = gtk::ActionBar::new();
+    let count = gtk::Label::new(None);
+    count.style_context().add_class("dim-label");
+    bar.pack_start(&count);
+    let empty = gtk::Button::with_mnemonic("_Empty Trash");
+    empty.set_action_name(Some("win.empty-trash"));
+    empty.style_context().add_class("destructive-action");
+    empty.set_tooltip_text(Some("Delete everything in the trash permanently"));
+    bar.pack_end(&empty);
+    let restore = gtk::Button::with_mnemonic("_Restore");
+    restore.set_action_name(Some("win.restore"));
+    restore.set_tooltip_text(Some("Put the selected items back where they were deleted from"));
+    bar.pack_end(&restore);
+    // The contents are always shown; the bar itself only in the trash (and "show all" on
+    // the window must not reveal it elsewhere).
+    for w in [count.upcast_ref::<gtk::Widget>(), restore.upcast_ref(), empty.upcast_ref()] {
+        w.show();
+    }
+    bar.set_no_show_all(true);
+    pane.root.pack_start(&bar, false, false, 0);
+    // Directly above the file list, below the error bar.
+    pane.root.reorder_child(&bar, 1);
+    BARS.with(|b| {
+        let mut b = b.borrow_mut();
+        b.retain(|x| x.pane.strong_count() > 0);
+        b.push(TrashBar { pane: Rc::downgrade(pane), bar, count, restore, empty });
+    });
+}
+
+/// Shows the bar in the trash, hides it elsewhere, and keeps its count current.
+pub fn update_bar(pane: &Rc<super::pane::Pane>) {
+    BARS.with(|b| {
+        for tb in b.borrow().iter() {
+            if !tb.pane.upgrade().is_some_and(|p| Rc::ptr_eq(&p, pane)) {
+                continue;
+            }
+            if pane.location() != Location::Trash {
+                tb.bar.hide();
+                continue;
+            }
+            let n = pane.item_count();
+            tb.count.set_text(&match n {
+                0 => "The trash is empty".to_string(),
+                1 => "1 item in the trash".to_string(),
+                n => format!("{n} items in the trash"),
+            });
+            tb.bar.show();
+        }
+    });
+}
+
+/// Clicks a button of the trash bar ("Restore" or "Empty Trash"); false if it is not
+/// shown or not clickable (tests).
+pub fn click_bar(pane: &Rc<super::pane::Pane>, label: &str) -> bool {
+    BARS.with(|b| {
+        for tb in b.borrow().iter() {
+            if !tb.pane.upgrade().is_some_and(|p| Rc::ptr_eq(&p, pane)) || !tb.bar.is_visible() {
+                continue;
+            }
+            let button = if label == "Restore" { &tb.restore } else { &tb.empty };
+            if button.is_sensitive() && button.is_visible() && tb.bar.allocated_height() > 1 {
+                button.clicked();
+                return true;
+            }
+        }
+        false
+    })
+}
+
 fn selected(w: &Window) -> Vec<TrashItem> {
     w.current_pane()
         .selected_items()
