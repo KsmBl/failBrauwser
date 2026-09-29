@@ -678,7 +678,12 @@ fn status_text(pane: &Pane) -> String {
             let mut s = format!("{n} item{}", if n == 1 { "" } else { "s" });
             if let Location::Archive(a) = pane.location() {
                 if let Some(x) = failbrauwser::archive::vfs::Vfs::global().cached(&a) {
-                    s.push_str(&format!(" — {} archive{}", x.format, if x.writable { "" } else { " (read-only)" }));
+                    let ro = match (&x.readonly_reason, x.writable) {
+                        (Some(why), _) => format!(" (read-only: {why})"),
+                        (None, false) => " (read-only)".to_string(),
+                        _ => String::new(),
+                    };
+                    s.push_str(&format!(" — {} archive{ro}", x.format));
                 }
             }
             if let Some(dir) = pane.location().local_path() {
