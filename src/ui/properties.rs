@@ -52,6 +52,7 @@ pub fn show(w: &Window) {
         [one] => (one.display_name(), match one {
             Item::Fs(e) => util::icon_for_entry(e),
             Item::Archive(_) => util::icon_for_type(&one.content_type()),
+            Item::Trash(_, e) => util::icon_for_entry(e),
         }),
         many => (format!("{} items", many.len()), gio::ThemedIcon::new("edit-select-all").upcast()),
     };
@@ -103,6 +104,16 @@ pub fn show(w: &Window) {
             if let Some(free) = super::window::free_space(e.path.parent().unwrap_or(&e.path)) {
                 add("Free space:", &human_size(free));
             }
+        }
+        [Item::Trash(t, e)] => {
+            add("Type:", &util::type_description(&e.content_type));
+            add("Deleted from:", &t.original.parent().map(|p| p.display().to_string()).unwrap_or_default());
+            add("Deleted:", &human_time(t.deleted_unix(), now));
+            let size = add("Size:", &if e.is_dir_like() { "Calculating…".into() } else { format!("{} ({} bytes)", human_size(e.size), e.size) });
+            if e.is_dir_like() {
+                measure.push((e.path.clone(), size));
+            }
+            add("In the trash as:", &e.path.display().to_string());
         }
         [Item::Archive(n)] => {
             add("Type:", &util::type_description(&items[0].content_type()));

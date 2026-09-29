@@ -46,3 +46,8 @@ sleep 300
 action win.select-all
 action win.properties
 sleep 300
+# Several items can be selected at once (and stay selected).
+open $T/files
+action win.select-all
+select a.txt | sub
+expect-rows 2

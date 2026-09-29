@@ -11,7 +11,7 @@
 //! `wait-row <name>`, `wait-no-row <name>`, `activate` (open the selection),
 //! `wait-opened`, `edit-opened <new content>`, `expect-disabled <win.action>`,
 //! `crumb-click <label>`, `expect-crumbs <a > b > c>`, `path-edit`, `expect-path-mode <buttons|text>`,
-//! `type-location <text>`, `sidebar-drives`, `expect-sidebar-drives <selected|unselected>`, `quit`. Blank lines and `#` comments are ignored.
+//! `type-location <text>`, `write-file <path> = <content>`, `sidebar-drives`, `expect-sidebar-drives <selected|unselected>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
 use super::window::Window;
@@ -261,6 +261,11 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             p.activate(p.selected_items());
             wait(r, |r| Ok(idle(r)));
         }
+        "write-file" => {
+            // write-file <path> = <content>
+            let (path, content) = arg.split_once(" = ").ok_or("usage: write-file <path> = <content>")?;
+            std::fs::write(path, content).map_err(|e| e.to_string())?;
+        }
         "wait-opened" => wait(r, |_| Ok(OPENED.with(|o| o.borrow().is_some()))),
         "edit-opened" => {
             // Plays an editor: rewrites the file that was opened.
@@ -336,6 +341,16 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             wait(r, move |r| {
                 let sb = super::sidebar::for_window(&r.window).ok_or("no sidebar")?;
                 Ok(sb.expanded_with_children(&dir))
+            });
+        }
+        "wait-tree-children" => {
+            // wait-tree-children <dir> = <a, b, c>
+            let (dir, want) = arg.split_once(" =").ok_or("usage: wait-tree-children <dir> = <names>")?;
+            let dir = std::path::PathBuf::from(dir);
+            let want: Vec<String> = want.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+            wait(r, move |r| {
+                let sb = super::sidebar::for_window(&r.window).ok_or("no sidebar")?;
+                Ok(sb.children_of(&dir) == want)
             });
         }
         "tree-click" => {

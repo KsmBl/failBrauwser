@@ -18,5 +18,6 @@ pub mod properties;
 pub mod selftest;
 pub mod sidebar;
 pub mod style;
+pub mod trash;
 pub mod util;
 pub mod window;

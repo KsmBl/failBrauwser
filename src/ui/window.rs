@@ -643,6 +643,10 @@ fn status_text(pane: &Pane) -> String {
             }
             s
         }
+        1 if matches!(sel[0], Item::Trash(..)) => {
+            let Item::Trash(t, e) = &sel[0] else { unreachable!() };
+            super::trash::status_text(t, e.size, e.is_dir_like())
+        }
         1 => {
             let i = &sel[0];
             let t = util::type_description(&i.content_type());

@@ -32,6 +32,9 @@ pub struct Crumb {
 
 /// The steps from `/` down to `loc`.
 pub fn crumbs_for(loc: &Location) -> Vec<Crumb> {
+    if *loc == Location::Trash {
+        return vec![Crumb { label: "Trash".into(), icon: Some("user-trash-symbolic"), location: Location::Trash }];
+    }
     if *loc == Location::Drives {
         return vec![Crumb { label: "Drives".into(), icon: Some("drive-harddisk-symbolic"), location: Location::Drives }];
     }
@@ -220,10 +223,11 @@ impl PathBar {
                 }
                 // Full names up to 24 characters: a long path scrolls instead of squeezing
                 // every step into "th…er".
-                let chars = crumb.label.chars().count().min(24) as i32;
-                label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-                label.set_width_chars(chars);
-                label.set_max_width_chars(24);
+                if crumb.label.chars().count() > 24 {
+                    label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+                    label.set_width_chars(24);
+                    label.set_max_width_chars(24);
+                }
                 content.pack_start(&label, false, false, 0);
             }
             b.add(&content);
