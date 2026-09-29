@@ -55,6 +55,8 @@ pub fn new_store() -> gtk::ListStore {
 pub enum Item {
     Fs(FileEntry),
     Archive(ArchiveNode),
+    /// A trashed file: where it came from, and the file as it sits in the trash.
+    Trash(failbrauwser::trash::TrashItem, FileEntry),
 }
 
 impl Item {
@@ -62,44 +64,48 @@ impl Item {
         match self {
             Item::Fs(e) => e.display_name(),
             Item::Archive(n) => n.name.clone(),
+            Item::Trash(t, _) => t.original_name(),
         }
     }
     pub fn os_name(&self) -> OsString {
         match self {
             Item::Fs(e) => e.name.clone(),
             Item::Archive(n) => OsString::from(&n.name),
+            // Unique within the trash, unlike original names.
+            Item::Trash(t, _) => OsString::from(&t.name),
         }
     }
     pub fn is_dir_like(&self) -> bool {
         match self {
             Item::Fs(e) => e.is_dir_like(),
             Item::Archive(n) => n.is_dir,
+            Item::Trash(_, e) => e.is_dir_like(),
         }
     }
     pub fn is_hidden(&self) -> bool {
         match self {
             Item::Fs(e) => e.is_hidden(),
             Item::Archive(n) => n.name.starts_with('.'),
+            // Everything in the trash is shown.
+            Item::Trash(..) => false,
         }
     }
-    pub fn fs(&self) -> Option<&FileEntry> {
-        match self {
-            Item::Fs(e) => Some(e),
-            _ => None,
-        }
-    }
+    /// The file on disk (for trashed items: the file inside the trash).
     pub fn path(&self) -> Option<&PathBuf> {
-        self.fs().map(|e| &e.path)
+        match self {
+            Item::Fs(e) | Item::Trash(_, e) => Some(&e.path),
+            Item::Archive(_) => None,
+        }
     }
     pub fn size(&self) -> u64 {
         match self {
-            Item::Fs(e) => e.size,
+            Item::Fs(e) | Item::Trash(_, e) => e.size,
             Item::Archive(n) => n.size,
         }
     }
     pub fn content_type(&self) -> String {
         match self {
-            Item::Fs(e) => e.content_type.clone(),
+            Item::Fs(e) | Item::Trash(_, e) => e.content_type.clone(),
             Item::Archive(n) => {
                 if n.is_dir {
                     "inode/directory".into()
@@ -114,6 +120,7 @@ impl Item {
         match (self, other) {
             (Item::Fs(a), Item::Fs(b)) => a == b,
             (Item::Archive(a), Item::Archive(b)) => a == b,
+            (Item::Trash(a, x), Item::Trash(b, y)) => a == b && x == y,
             _ => false,
         }
     }
@@ -124,6 +131,16 @@ pub fn fill_row(store: &gtk::ListStore, iter: &gtk::TreeIter, key: u64, item: &I
     let name = item.display_name();
     let dir = item.is_dir_like();
     let (icon, size, mtime, ct, perms, owner, group) = match item {
+        // The date shown for trashed items is when they were deleted.
+        Item::Trash(t, e) => (
+            util::icon_for_entry(e),
+            e.size,
+            t.deleted_unix(),
+            if e.broken { "inode/symlink".to_string() } else { e.content_type.clone() },
+            permissions(e.mode),
+            util::user_name(e.uid),
+            util::group_name(e.gid),
+        ),
         Item::Fs(e) => (
             util::icon_for_entry(e),
             e.size,

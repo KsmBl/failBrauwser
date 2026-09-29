@@ -37,6 +37,10 @@ pub fn read_location(loc: &Location) -> Result<Vec<Item>, LoadError> {
             }
         }
         Location::Drives => Ok(Vec::new()),
+        Location::Trash => Ok(failbrauwser::trash::list(&failbrauwser::trash::trash_dirs())
+            .into_iter()
+            .filter_map(|t| failbrauwser::fs::FileEntry::stat(&t.path).ok().map(|e| Item::Trash(t, e)))
+            .collect()),
     }
 }
 
@@ -46,6 +50,12 @@ pub fn watch_path(loc: &Location) -> Option<PathBuf> {
         Location::Dir(p) => Some(p.clone()),
         // Any change to the archive file (ours or another program's) re-reads it.
         Location::Archive(a) => Some(a.file.clone()),
+        // New arrivals and removals show up in the home trash's files folder.
+        Location::Trash => {
+            let files = gtk::glib::user_data_dir().join("Trash/files");
+            let _ = std::fs::create_dir_all(&files);
+            Some(files)
+        }
         Location::Drives => None,
     }
 }
