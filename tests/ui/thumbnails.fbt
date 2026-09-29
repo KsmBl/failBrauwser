@@ -1,0 +1,8 @@
+# Thumbnails for the images in view, stored in the shared cache.
+action win.view-mode icons
+open $T/pics
+wait-thumbnails 12
+action win.show-thumbnails
+expect-thumbnails 0
+action win.show-thumbnails
+wait-thumbnails 12
