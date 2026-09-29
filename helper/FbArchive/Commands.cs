@@ -55,16 +55,15 @@ public static class Commands {
     var archive = format != F.Unknown && (FormatDetector.IsArchive(format) || FormatRegistry.GetArchiveOps(format.ToString()) != null);
     w.WriteBoolean("archive", archive);
     w.WriteString("format", format.ToString());
-    w.WriteBoolean("writable", archive && IsWritable(format));
+    w.WriteBoolean("writable", archive && IsWritable(format, path));
   }
 
   /// <summary>An archive is writable when its format can be modified in place or rebuilt.</summary>
-  public static bool IsWritable(F format) {
+  public static bool IsWritable(F format, string? path = null) {
     if (format is F.Unknown or F.Sfx) return false;
-    // ISO images: the in-place modifier only updates the plain ISO 9660 tree (8.3 names,
-    // flattened into the root), which Rock Ridge / Joliet readers never see, and a rebuild
-    // would drop Rock Ridge metadata and El Torito boot records. Browse and extract only.
-    if (format is F.Iso) return false;
+    // ISO images are edited by rebuilding them (IsoEdit): Rock Ridge and Joliet names and
+    // El Torito boot entries survive, hybrid (USB-bootable) images do not and stay read-only.
+    if (format is F.Iso) return path == null || IsoEdit.ReadOnlyReason(path) == null;
     if (FormatDetector.IsStreamFormat(format)) return false;
     var ops = FormatRegistry.GetArchiveOps(format.ToString());
     return ops is IArchiveModifiable || ops is IArchiveCreatable;
@@ -74,7 +73,8 @@ public static class Commands {
     var format = FormatDetector.Detect(archive);
     var entries = ArchiveOperations.List(archive, password);
     w.WriteString("format", format.ToString());
-    w.WriteBoolean("writable", IsWritable(format));
+    w.WriteBoolean("writable", IsWritable(format, archive));
+    if (format == F.Iso && IsoEdit.ReadOnlyReason(archive) is { } why) w.WriteString("readonly_reason", why);
     w.WriteStartArray("entries");
     foreach (var e in entries) {
       w.WriteStartObject();
@@ -146,6 +146,10 @@ public static class Commands {
       return;
     }
     RequireWritable(archive);
+    if (IsIso(archive)) {
+      IsoEdit.Edit(archive, tmp => Place(tmp, inputs));
+      return;
+    }
     if (password != null) {
       // In-place edits of some formats (ZIP) ignore the password and would add new entries
       // unencrypted: with a password the archive is rebuilt, everything encrypted.
@@ -210,6 +214,16 @@ public static class Commands {
   public static void Remove(string archive, string[] names, string? password) {
     RequireWritable(archive);
     var wanted = names.Select(Normalize).Where(n => n.Length > 0).ToArray();
+    if (IsIso(archive)) {
+      IsoEdit.Edit(archive, tmp => {
+        foreach (var n in wanted) {
+          var p = Path.Combine(tmp, n);
+          if (File.Exists(p)) File.Delete(p);
+          else if (Directory.Exists(p)) Directory.Delete(p, true);
+        }
+      });
+      return;
+    }
     var listing = ArchiveOperations.List(archive, password);
     var raw = listing
       .Where(e => wanted.Any(n => IsAtOrBelow(Normalize(e.Name), n)))
@@ -257,6 +271,15 @@ public static class Commands {
     if (names.Any(n => IsAtOrBelow(n, dst))) throw new IOException($"'{dst}' already exists in the archive.");
     var affected = entries.Where(e => IsAtOrBelow(Normalize(e.Name), src)).ToList();
     if (affected.Count == 0) throw new FileNotFoundException($"No such entry in archive: {from}");
+    if (IsIso(archive)) {
+      IsoEdit.Edit(archive, tmp => {
+        var a = Path.Combine(tmp, src);
+        var b = Path.Combine(tmp, dst);
+        Directory.CreateDirectory(Path.GetDirectoryName(b)!);
+        if (Directory.Exists(a)) Directory.Move(a, b); else File.Move(a, b);
+      });
+      return;
+    }
 
     var temp = Directory.CreateTempSubdirectory("fb-archive-rename-");
     try {
@@ -300,6 +323,24 @@ public static class Commands {
 
   private static void RequireWritable(string archive) {
     var format = FormatDetector.Detect(archive);
-    if (!IsWritable(format)) throw new NotSupportedException($"{format} archives are read-only.");
+    if (format == F.Iso && IsoEdit.ReadOnlyReason(archive) is { } why) throw new NotSupportedException(why);
+    if (!IsWritable(format, archive)) throw new NotSupportedException($"{format} archives are read-only.");
+  }
+
+  private static bool IsIso(string archive) => File.Exists(archive) && FormatDetector.Detect(archive) == F.Iso;
+
+  /// <summary>Puts inputs into an extracted tree (for rebuilds).</summary>
+  private static void Place(string tmp, IEnumerable<ArchiveInput> inputs) {
+    foreach (var i in inputs) {
+      var dest = Path.Combine(tmp, Normalize(i.EntryName));
+      if (i.IsDirectory) {
+        Directory.CreateDirectory(dest);
+        if (!string.IsNullOrEmpty(i.FullPath) && Directory.Exists(i.FullPath)) Directory.SetLastWriteTimeUtc(dest, Directory.GetLastWriteTimeUtc(i.FullPath));
+        continue;
+      }
+      Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+      File.Copy(i.FullPath, dest, overwrite: true);
+      File.SetLastWriteTimeUtc(dest, File.GetLastWriteTimeUtc(i.FullPath));
+    }
   }
 }
