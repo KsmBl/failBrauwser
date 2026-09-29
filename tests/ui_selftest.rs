@@ -218,3 +218,12 @@ fn search() {
         assert!(ok.success());
     });
 }
+
+#[test]
+fn click_into_empty_space() {
+    run("click_empty.fbt", |t| {
+        std::fs::create_dir_all(t.join("d")).unwrap();
+        std::fs::write(t.join("d/a.txt"), "a").unwrap();
+        std::fs::write(t.join("d/b.txt"), "b").unwrap();
+    });
+}

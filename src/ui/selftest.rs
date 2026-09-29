@@ -236,6 +236,13 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             super::searchbar::close(&w);
             wait(r, |r| Ok(idle(r)));
         }
+        "click-empty" => w.current_pane().clicked_empty(),
+        "expect-nothing-selected" => {
+            let n = w.current_pane().selected_items().len();
+            if n != 0 {
+                return Err(format!("{n} items selected"));
+            }
+        }
         "crumb-click" => {
             if !w.pathbar.click(arg) {
                 return Err(format!("no button {arg:?}, have {:?}", w.pathbar.labels()));
