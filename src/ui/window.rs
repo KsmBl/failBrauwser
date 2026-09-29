@@ -18,6 +18,7 @@ pub struct Window {
     pub app: Rc<AppCtx>,
     pub notebook: gtk::Notebook,
     pub location_entry: gtk::Entry,
+    pub pathbar: Rc<super::pathbar::PathBar>,
     pub paned: gtk::Paned,
     /// The side panel's container; filled by the sidebar.
     pub side: gtk::Box,
@@ -72,19 +73,17 @@ impl Window {
         let back_btn = tool_button("go-previous", "Back", "Back", "win.back");
         let fwd_btn = tool_button("go-next", "Forward", "Forward", "win.forward");
         let up_btn = tool_button("go-up", "Up", "Open the parent folder", "win.up");
-        let home_btn = tool_button("go-home", "Home", "Home folder", "win.home");
-        let drives_btn = tool_button("drive-harddisk", "Drives", "All drives", "win.drives");
-        for b in [&back_btn, &fwd_btn, &up_btn, &home_btn, &drives_btn] {
+        // Home and Drives live in the side panel (and on Alt+Home / Alt+D).
+        for b in [&back_btn, &fwd_btn, &up_btn] {
             toolbar.insert(b, -1);
         }
-        let location_entry = gtk::Entry::new();
-        location_entry.set_hexpand(true);
-        location_entry.set_input_purpose(gtk::InputPurpose::Url);
+        let pathbar = super::pathbar::PathBar::new();
+        let location_entry = pathbar.entry.clone();
         let entry_item = gtk::ToolItem::new();
         gtk::prelude::ToolItemExt::set_expand(&entry_item, true);
         entry_item.set_margin_start(4);
         entry_item.set_margin_end(4);
-        entry_item.add(&location_entry);
+        entry_item.add(&pathbar.root);
         toolbar.insert(&entry_item, -1);
         let reload_btn = tool_button("view-refresh", "Reload", "Reload", "win.reload");
         toolbar.insert(&reload_btn, -1);
@@ -132,6 +131,7 @@ impl Window {
             app: app.clone(),
             notebook,
             location_entry,
+            pathbar,
             paned,
             side,
             statusbar,
@@ -272,9 +272,7 @@ impl Window {
         let pane = self.current_pane();
         let loc = pane.location();
         self.win.set_title(&format!("{} - failBrauwser", loc.title()));
-        if !self.location_entry.has_focus() {
-            self.location_entry.set_text(&loc.display());
-        }
+        self.pathbar.set_location(&loc);
         let icon = match &loc {
             Location::Archive(_) => util::icon_for_type("application/x-archive"),
             Location::Drives => gio::ThemedIcon::new("drive-harddisk").upcast(),
@@ -397,8 +395,7 @@ impl Window {
         self.add_action("drives", |w| w.navigate(Location::Drives));
         self.add_action("reload", |w| w.current_pane().reload());
         self.add_action("location", |w| {
-            w.location_entry.grab_focus();
-            w.location_entry.select_region(0, -1);
+            w.pathbar.edit();
         });
         self.add_action("select-all", |w| w.current_pane().select_all());
         self.add_action("next-tab", |w| w.notebook.next_page());
@@ -541,6 +538,12 @@ impl Window {
     // ── Signals ──────────────────────────────────────────────────────
 
     fn connect_signals(&self) {
+        let weak = self.weak.borrow().clone();
+        self.pathbar.connect_navigate(move |loc| {
+            if let Some(w) = weak.upgrade() {
+                w.navigate(loc);
+            }
+        });
         let weak = self.weak.borrow().clone();
         self.notebook.connect_switch_page(move |_, _, _| {
             if let Some(w) = weak.upgrade() {
