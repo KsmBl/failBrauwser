@@ -59,6 +59,9 @@ public sealed class IsoReader : IDisposable {
       throw new InvalidDataException("ISO9660: no Primary Volume Descriptor found.");
 
     var descOff = pvdOffset;
+    // Rock Ridge carries full POSIX names (and modes); like Linux, prefer it over Joliet,
+    // whose names stop at 64 characters.
+    if (jolietOffset >= 0 && HasRockRidge(pvdOffset)) jolietOffset = -1;
     if (jolietOffset >= 0) {
       _joliet = true;
       descOff = jolietOffset;
@@ -70,6 +73,91 @@ public sealed class IsoReader : IDisposable {
     var rootExtendedAttributeBlocks = _data.ReadByte(rootRec + 1);
     var rootOffset = DataOffset(rootExtent, rootExtendedAttributeBlocks);
     ReadDirectory(rootOffset, rootLength, "");
+  }
+
+  /// <summary>
+  /// Rock Ridge is present when the first record of the primary root directory carries a
+  /// SUSP "SP" entry (IEEE P1281) at the start of its system use area.
+  /// </summary>
+  private bool HasRockRidge(long pvdOffset) {
+    try {
+      var rootRec = pvdOffset + 156;
+      var root = DataOffset(_data.ReadUInt32(rootRec + 2), _data.ReadByte(rootRec + 1));
+      var recLen = _data.ReadByte(root);
+      var nameLen = _data.ReadByte(root + 32);
+      var su = root + 33 + nameLen + ((nameLen & 1) == 0 ? 1 : 0);
+      return recLen >= 40 && _data.ReadByte(su) == 'S' && _data.ReadByte(su + 1) == 'P'
+        && _data.ReadByte(su + 4) == 0xBE && _data.ReadByte(su + 5) == 0xEF;
+    } catch (Exception e) when (e is IOException or InvalidDataException or ArgumentOutOfRangeException) {
+      return false;
+    }
+  }
+
+  /// <summary>Rock Ridge fields of one directory record.</summary>
+  private readonly record struct RockRidge(string? Name, int? Mode, DateTime? Modified);
+
+  private RockRidge ReadRockRidge(long pos, int recLen, int nameLen) {
+    if (_joliet) return default;
+    var start = pos + 33 + nameLen + ((nameLen & 1) == 0 ? 1 : 0);
+    var name = new List<byte>();
+    var haveName = false;
+    int? mode = null;
+    DateTime? modified = null;
+    // The system use area, then at most a few continuation areas (CE).
+    var areas = new Queue<(long Start, long End)>();
+    areas.Enqueue((start, pos + recLen));
+    var hops = 0;
+    while (areas.Count > 0 && hops++ < 8) {
+      var (p, end) = areas.Dequeue();
+      while (p + 4 <= end) {
+        var s0 = _data.ReadByte(p);
+        var s1 = _data.ReadByte(p + 1);
+        var len = _data.ReadByte(p + 2);
+        if (len < 4 || p + len > end) break;
+        if (s0 == 'N' && s1 == 'M' && len >= 5) {
+          var flags = _data.ReadByte(p + 4);
+          if ((flags & 0x06) == 0) {
+            name.AddRange(_data.Read(p + 5, len - 5));
+            haveName = true;
+          }
+        } else if (s0 == 'P' && s1 == 'X' && len >= 12) {
+          mode = (int)_data.ReadUInt32(p + 4);
+        } else if (s0 == 'T' && s1 == 'F' && len >= 5) {
+          modified = ReadRockRidgeModified(p, len);
+        } else if (s0 == 'C' && s1 == 'E' && len >= 28) {
+          var block = _data.ReadUInt32(p + 4);
+          var offset = _data.ReadUInt32(p + 12);
+          var length = _data.ReadUInt32(p + 20);
+          var ceStart = (long)block * SectorSize + offset;
+          if (ceStart + length <= _data.Length) areas.Enqueue((ceStart, ceStart + length));
+        } else if (s0 == 'S' && s1 == 'T') {
+          break;
+        }
+        p += len;
+      }
+    }
+    return new RockRidge(haveName ? Encoding.UTF8.GetString(name.ToArray()) : null, mode, modified);
+  }
+
+  /// <summary>The modification time of a TF entry (7-byte or 17-byte form).</summary>
+  private DateTime? ReadRockRidgeModified(long p, int len) {
+    var flags = _data.ReadByte(p + 4);
+    var longForm = (flags & 0x80) != 0;
+    var size = longForm ? 17 : 7;
+    var at = p + 5;
+    if ((flags & 0x01) != 0) at += size; // creation comes first
+    if ((flags & 0x02) == 0 || at + size > p + len) return null;
+    try {
+      if (longForm) {
+        var s = Encoding.ASCII.GetString(_data.Read(at, 14));
+        return DateTime.ParseExact(s, "yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal);
+      }
+      var t = new DateTime(_data.ReadByte(at) + 1900, _data.ReadByte(at + 1), _data.ReadByte(at + 2), _data.ReadByte(at + 3), _data.ReadByte(at + 4), _data.ReadByte(at + 5), DateTimeKind.Utc);
+      var gmt = (sbyte)_data.ReadByte(at + 6);
+      return t.AddMinutes(-15 * gmt);
+    } catch (Exception e) when (e is ArgumentOutOfRangeException or FormatException) {
+      return null;
+    }
   }
 
   private bool IsCD001(long vdOffset) =>
@@ -110,8 +198,9 @@ public sealed class IsoReader : IDisposable {
         throw new InvalidDataException($"ISO9660: directory record in '{basePath}' has a truncated file identifier.");
 
       var isSpecial = nameLen == 1 && (_data.ReadByte(pos + 33) is 0 or 1);
-      var name = DecodeName(pos, recLen, nameLen);
-      if (!isSpecial) {
+      var rr = isSpecial ? default : ReadRockRidge(pos, recLen, nameLen);
+      var name = rr.Name ?? DecodeName(pos, recLen, nameLen);
+      if (!isSpecial && rr.Name is null) {
         var semi = name.IndexOf(';');
         if (semi >= 0) name = name[..semi];
         name = name.TrimEnd('.');
@@ -132,7 +221,7 @@ public sealed class IsoReader : IDisposable {
 
       var fullPath = string.IsNullOrEmpty(basePath) ? name : $"{basePath}/{name}";
       var physicalOffset = DataOffset(extentLba, extendedAttributeBlocks);
-      var lastModified = DecodeTimestamp(pos, end);
+      var lastModified = rr.Modified ?? DecodeTimestamp(pos, end);
 
       if (isDir) {
         if (pending is not null)
@@ -146,6 +235,7 @@ public sealed class IsoReader : IDisposable {
           Name = fullPath,
           IsDirectory = true,
           LastModified = lastModified,
+          UnixMode = rr.Mode,
           DataOffset = physicalOffset,
         });
         ReadDirectory(physicalOffset, dataLength, fullPath);
@@ -160,9 +250,9 @@ public sealed class IsoReader : IDisposable {
       if (pending is null) {
         var segments = new List<IsoDataSegment> { new(0, physicalOffset, dataLength) };
         if (hasMoreExtents) {
-          pending = new PendingFile(fullPath, lastModified, segments, dataLength, limitation);
+          pending = new PendingFile(fullPath, lastModified, segments, dataLength, limitation) { Mode = rr.Mode };
         } else {
-          AddFile(fullPath, lastModified, segments, dataLength, limitation);
+          AddFile(fullPath, lastModified, segments, dataLength, limitation, rr.Mode);
         }
       } else {
         if (!string.Equals(pending.Name, fullPath, StringComparison.Ordinal))
@@ -173,7 +263,7 @@ public sealed class IsoReader : IDisposable {
         pending.Length = checked(pending.Length + dataLength);
         pending.Limitation ??= limitation;
         if (!hasMoreExtents) {
-          AddFile(pending.Name, pending.LastModified, pending.Segments, pending.Length, pending.Limitation);
+          AddFile(pending.Name, pending.LastModified, pending.Segments, pending.Length, pending.Limitation, pending.Mode);
           pending = null;
         }
       }
@@ -190,12 +280,14 @@ public sealed class IsoReader : IDisposable {
       DateTime? lastModified,
       IReadOnlyList<IsoDataSegment> segments,
       long length,
-      string? limitation) {
+      string? limitation,
+      int? mode = null) {
     _entries.Add(new IsoEntry {
       Name = name,
       Size = length,
       IsDirectory = false,
       LastModified = lastModified,
+      UnixMode = mode,
       DataOffset = segments.Count == 1 ? segments[0].PhysicalOffset : 0,
       DataSegments = segments,
       MountLimitation = limitation,
@@ -301,5 +393,6 @@ public sealed class IsoReader : IDisposable {
     public List<IsoDataSegment> Segments { get; } = segments;
     public long Length { get; set; } = length;
     public string? Limitation { get; set; } = limitation;
+    public int? Mode { get; init; }
   }
 }
