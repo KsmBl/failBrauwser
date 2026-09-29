@@ -22,7 +22,7 @@ use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -237,6 +237,30 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             wait(r, |r| Ok(idle(r)));
         }
         "click-empty" => w.current_pane().clicked_empty(),
+        "drives-click-empty" => {
+            if !super::drives::click_empty(&w.current_pane()) {
+                return Err("clicked a drive, or no drives page".into());
+            }
+        }
+        "drives-select" => {
+            if !super::drives::select(&w.current_pane(), arg) {
+                return Err(format!("no drive {arg}"));
+            }
+        }
+        "expect-drive-selected" => {
+            // expect-drive-selected <title> | none
+            let got = super::drives::selected(&w.current_pane()).unwrap_or_else(|| "none".into());
+            if got != arg {
+                return Err(format!("selected drive: {got}"));
+            }
+        }
+        "expect-page" => {
+            // expect-page drives | list | icons  (what the pane shows)
+            let got = w.current_pane().stack.visible_child_name().map(|n| n.to_string()).unwrap_or_default();
+            if got != arg {
+                return Err(format!("showing {got}"));
+            }
+        }
         "expect-nothing-selected" => {
             let n = w.current_pane().selected_items().len();
             if n != 0 {
@@ -436,7 +460,9 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             if !sb.click(Path::new(arg)) {
                 return Err("folder not in tree".into());
             }
-            wait(r, |r| Ok(idle(r)));
+            // The folder opens from an idle callback after the click.
+            let want = Location::Dir(PathBuf::from(arg));
+            wait(r, move |r| Ok(r.window.current_location() == want && idle(r)));
         }
         "screenshot" => {
             let file = arg.to_string();

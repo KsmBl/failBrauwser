@@ -23,3 +23,25 @@ sleep 300
 # The Drives entry is only marked while the drives page is shown.
 open $T/d
 expect-sidebar-drives unselected
+# On the drives page a click below the drives deselects and ends path editing.
+action win.drives
+wait-drive File System
+drives-select File System
+expect-drive-selected File System
+drives-click-empty
+expect-drive-selected none
+path-edit
+expect-path-mode text
+drives-click-empty
+expect-path-mode buttons
+# Switching between list and icons keeps the drives shown; folders then use the new view.
+action win.view-mode icons
+expect-page drives
+wait-drive File System
+action win.back
+expect-page icons
+action win.view-mode list
+expect-page list
+action win.drives
+action win.view-mode list
+expect-page drives
