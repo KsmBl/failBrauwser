@@ -11,7 +11,7 @@
 //! `wait-row <name>`, `wait-no-row <name>`, `activate` (open the selection),
 //! `wait-opened`, `edit-opened <new content>`, `expect-disabled <win.action>`,
 //! `crumb-click <label>`, `expect-crumbs <a > b > c>`, `path-edit`, `expect-path-mode <buttons|text>`,
-//! `type-location <text>`, `quit`. Blank lines and `#` comments are ignored.
+//! `type-location <text>`, `sidebar-drives`, `expect-sidebar-drives <selected|unselected>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
 use super::window::Window;
@@ -178,6 +178,16 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err("action is disabled".into());
             }
             group.activate_action(short, variant.as_ref());
+        }
+        "sidebar-drives" => {
+            super::sidebar::for_window(&w).ok_or("no sidebar")?.click_drives();
+            wait(r, |r| Ok(idle(r)));
+        }
+        "expect-sidebar-drives" => {
+            let sel = super::sidebar::for_window(&w).ok_or("no sidebar")?.drives_selected();
+            if sel != (arg == "selected") {
+                return Err(format!("drives entry selected: {sel}"));
+            }
         }
         "crumb-click" => {
             if !w.pathbar.click(arg) {
