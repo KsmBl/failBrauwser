@@ -11,7 +11,7 @@ fn answer(a: Answer) -> std::sync::Arc<JobCtx> {
 }
 
 fn opts() -> Options {
-    Options { smooth_writes: true, workers: None }
+    Options { smooth_writes: true, workers: None, verify: false }
 }
 
 fn make_tree(root: &Path) {
@@ -152,7 +152,7 @@ fn many_small_files_in_parallel() {
     let dest = dir.path().join("out");
     fs::create_dir(&dest).unwrap();
     let ctx = JobCtx::new();
-    transfer(&ctx, &[src], &dest, Mode::Copy, &Options { smooth_writes: false, workers: Some(8) }).unwrap();
+    transfer(&ctx, &[src], &dest, Mode::Copy, &Options { smooth_writes: false, workers: Some(8), verify: false }).unwrap();
     assert_eq!(ctx.snapshot().files_done, 1000);
     assert_eq!(fs::read_to_string(dest.join("many/d7/f42")).unwrap(), "7-42");
 }
@@ -215,4 +215,54 @@ fn replace_swaps_in_new_content() {
     transfer(&answer(Answer::Replace), &[src.join("x")], &dst, Mode::Copy, &opts()).unwrap();
     assert_eq!(fs::read_to_string(dst.join("x")).unwrap(), "new");
     assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
+}
+
+#[test]
+fn verified_copy_counts_both_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    make_tree(&src);
+    let dest = dir.path().join("dest");
+    fs::create_dir(&dest).unwrap();
+    let ctx = JobCtx::new();
+    transfer(&ctx, &[src], &dest, Mode::Copy, &Options { smooth_writes: false, workers: None, verify: true }).unwrap();
+    let s = ctx.snapshot();
+    assert_eq!(s.bytes_done, s.bytes_total);
+    assert_eq!(s.bytes_total, 2 * ((3 << 20) + 5));
+    assert!(ctx.errors().is_empty());
+}
+
+#[test]
+fn verification_finds_differences() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b, c) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("c"));
+    fs::write(&a, vec![1u8; 2 << 20]).unwrap();
+    fs::write(&b, vec![1u8; 2 << 20]).unwrap();
+    let mut bad = vec![1u8; 2 << 20];
+    bad[1_500_000] = 2;
+    fs::write(&c, bad).unwrap();
+    let ctx = JobCtx::new();
+    let mut n = 0;
+    failbrauwser::ops::copy::verify_copy(&ctx, &a, &b, &mut n).unwrap();
+    assert!(failbrauwser::ops::copy::verify_copy(&ctx, &a, &c, &mut n).is_err());
+    fs::write(&c, vec![1u8; 10]).unwrap();
+    assert!(failbrauwser::ops::copy::verify_copy(&ctx, &a, &c, &mut n).is_err());
+}
+
+#[test]
+fn paused_copy_waits_and_then_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("big");
+    fs::write(&src, vec![5u8; 64 << 20]).unwrap();
+    let dest = dir.path().join("d");
+    fs::create_dir(&dest).unwrap();
+    let ctx = JobCtx::new();
+    ctx.pause();
+    let (c2, s2, d2) = (ctx.clone(), src.clone(), dest.clone());
+    let t = std::thread::spawn(move || transfer(&c2, &[s2], &d2, Mode::Copy, &opts()));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(ctx.snapshot().bytes_done < 64 << 20, "a paused copy must not finish");
+    ctx.resume();
+    t.join().unwrap().unwrap();
+    assert_eq!(fs::metadata(dest.join("big")).unwrap().len(), 64 << 20);
 }

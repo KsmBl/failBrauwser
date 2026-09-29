@@ -251,6 +251,18 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("actions are {got:?}"));
             }
         }
+        "jobs-start-paused" => super::jobs::set_start_paused(arg == "on"),
+        "jobs-pause" => r.app.jobs.pause_all(arg != "off"),
+        "expect-jobs" => {
+            // expect-jobs <running> <waiting>
+            let mut it = arg.split_whitespace().filter_map(|x| x.parse::<usize>().ok());
+            let want = (it.next().unwrap_or(0), it.next().unwrap_or(0));
+            let got = r.app.jobs.counts();
+            if got != want {
+                return Err(format!("jobs (running, waiting) are {got:?}"));
+            }
+        }
+        "wait-no-jobs" => wait(r, |r| Ok(!r.app.jobs.is_busy())),
         "crumb-click" => {
             if !w.pathbar.click(arg) {
                 return Err(format!("no button {arg:?}, have {:?}", w.pathbar.labels()));
