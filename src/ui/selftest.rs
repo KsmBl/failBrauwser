@@ -9,7 +9,9 @@
 //! `size <w> <h>`, `expect-tree-root <path>`, `wait-tree-selected <path>`, `tree-click <path>`, `tree-expand <path>`, `wait-tree-expanded <path>`,
 //! `wait-cell <column> <row> = <text>`, `wait-drive <title>`,
 //! `wait-row <name>`, `wait-no-row <name>`, `activate` (open the selection),
-//! `wait-opened`, `edit-opened <new content>`, `expect-disabled <win.action>`, `quit`. Blank lines and `#` comments are ignored.
+//! `wait-opened`, `edit-opened <new content>`, `expect-disabled <win.action>`,
+//! `crumb-click <label>`, `expect-crumbs <a > b > c>`, `path-edit`, `expect-path-mode <buttons|text>`,
+//! `type-location <text>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
 use super::window::Window;
@@ -176,6 +178,33 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err("action is disabled".into());
             }
             group.activate_action(short, variant.as_ref());
+        }
+        "crumb-click" => {
+            if !w.pathbar.click(arg) {
+                return Err(format!("no button {arg:?}, have {:?}", w.pathbar.labels()));
+            }
+            wait(r, |r| Ok(idle(r)));
+        }
+        "expect-crumbs" => {
+            // Labels separated by " > ".
+            let want: Vec<String> = arg.split(" > ").map(str::to_string).collect();
+            let got = w.pathbar.labels();
+            if got != want {
+                return Err(format!("buttons are {got:?}"));
+            }
+        }
+        "path-edit" => w.pathbar.edit(),
+        "expect-path-mode" => {
+            let editing = w.pathbar.is_editing();
+            if editing != (arg == "text") {
+                return Err(format!("path bar is in {} mode", if editing { "text" } else { "button" }));
+            }
+        }
+        "type-location" => {
+            // Types into the text field and presses Enter.
+            w.pathbar.entry.set_text(arg);
+            w.pathbar.entry.activate();
+            wait(r, |r| Ok(idle(r)));
         }
         "expect-disabled" => {
             let short = arg.strip_prefix("win.").ok_or("only win.* actions")?;
