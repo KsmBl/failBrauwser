@@ -1,0 +1,14 @@
+<Project>
+  <!--
+    The media containers this package projects as pseudo-archives — the A/V envelopes (MP4 / MOV,
+    Matroska, AVI, ASF, RealMedia, Bink, Smacker) and the CRI / PSF game-audio bundles — belong to
+    Hawkynt.FileFormats.Audio as well, and now compile into its assembly rather than into ten of
+    their own. One reference to that assembly therefore replaces the ten: _AddBundledAssembliesToPackage
+    copies it into lib/, and PrivateAssets="all" keeps it out of the nuspec, exactly as the ten were
+    carried before. Nothing here is compiled against — this package's own sources use none of those
+    types; the reference exists so the package ships the formats its support matrix documents.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\Hawkynt.FileFormats.Audio\Hawkynt.FileFormats.Audio.csproj" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

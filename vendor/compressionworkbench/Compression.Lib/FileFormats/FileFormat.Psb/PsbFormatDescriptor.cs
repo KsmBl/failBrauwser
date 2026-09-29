@@ -1,0 +1,232 @@
+#pragma warning disable CS1591
+using System.Buffers.Binary;
+using System.Globalization;
+using System.Text;
+using Compression.Registry;
+using static Compression.Registry.FormatHelpers;
+
+namespace FileFormat.Psb;
+
+/// <summary>
+/// Photoshop Large Document (.psb) surfaced as an archive. Identical to PSD in layout except
+/// that the layer/mask and image-data section lengths are 64-bit. Emits image resources, any
+/// embedded thumbnail JPEG, the raw layer+mask section, the raw image-data section, and
+/// summary metadata. Pixel data is intentionally not decoded.
+/// </summary>
+public sealed class PsbFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations {
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "Psb";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "Photoshop Large Document";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Image;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanList | FormatCapabilities.CanExtract | FormatCapabilities.CanTest |
+    FormatCapabilities.SupportsMultipleEntries;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".psb";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [".psb"];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [
+    // 8BPS + BE uint16 version 2 — distinguishes from regular PSD (version 1).
+    new(new byte[] { (byte)'8', (byte)'B', (byte)'P', (byte)'S', 0x00, 0x02 }, Confidence: 0.97),
+  ];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("stored", "Stored")];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Archive;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description =>
+    "Photoshop Large Document (PSB) — 64-bit variant of PSD. Surfaces thumbnail + resources + " +
+    "metadata + raw layer/image sections. Pixel data not decoded.";
+
+  /// <summary>
+  /// Lists the entries in the supplied container.
+  /// </summary>
+  public List<ArchiveEntryInfo> List(Stream stream, string? password) =>
+    BuildEntries(stream).Select((e, i) => new ArchiveEntryInfo(
+      Index: i, Name: e.Name,
+      OriginalSize: e.Data.Length, CompressedSize: e.Data.Length,
+      Method: "stored", IsDirectory: false, IsEncrypted: false, LastModified: null,
+      Kind: e.Kind)).ToList();
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
+    foreach (var e in BuildEntries(stream)) {
+      if (files != null && files.Length > 0 && !MatchesFilter(e.Name, files))
+        continue;
+      WriteFile(outputDir, e.Name, e.Data);
+    }
+  }
+
+  private sealed record EntryLayout(string Name, string Kind, int Offset, int Length, byte[]? Generated = null) {
+    public int Size => this.Generated?.Length ?? this.Length;
+  }
+
+  private static IReadOnlyList<(string Name, string Kind, byte[] Data)> BuildEntries(Stream stream) {
+    using var ms = new MemoryStream();
+    stream.CopyTo(ms);
+    var blob = ms.ToArray();
+    return BuildLayout(blob)
+      .Select(e => (e.Name, e.Kind, e.Generated ?? blob.AsSpan(e.Offset, e.Length).ToArray()))
+      .ToList();
+  }
+
+  List<ArchiveEntryInfo> IArchiveFormatOperations.ListSpan(ReadOnlySpan<byte> archive, string? password) =>
+    BuildLayout(archive).Select((e, i) => new ArchiveEntryInfo(
+      Index: i, Name: e.Name,
+      OriginalSize: e.Size, CompressedSize: e.Size,
+      Method: "stored", IsDirectory: false, IsEncrypted: false, LastModified: null,
+      Kind: e.Kind)).ToList();
+
+  void IArchiveFormatOperations.ExtractSpan(
+      ReadOnlySpan<byte> archive, string outputDir, string? password, string[]? files) {
+    foreach (var entry in BuildLayout(archive)) {
+      if (files is { Length: > 0 } && !MatchesFilter(entry.Name, files))
+        continue;
+      if (entry.Generated is { } generated)
+        WriteFile(outputDir, entry.Name, generated);
+      else {
+        using var output = CreateEntryFile(outputDir, entry.Name);
+        output.Write(archive.Slice(entry.Offset, entry.Length));
+      }
+    }
+  }
+
+  private static List<EntryLayout> BuildLayout(ReadOnlySpan<byte> blob) {
+    var entries = new List<EntryLayout> {
+      new("FULL.psb", "Container", 0, blob.Length),
+    };
+
+    if (blob.Length < 26) return entries;
+    if (blob[0] != '8' || blob[1] != 'B' || blob[2] != 'P' || blob[3] != 'S') return entries;
+
+    try {
+      var version = BinaryPrimitives.ReadUInt16BigEndian(blob[4..]);
+      if (version != 2) return entries;
+
+      var channels = BinaryPrimitives.ReadUInt16BigEndian(blob[12..]);
+      var height = BinaryPrimitives.ReadUInt32BigEndian(blob[14..]);
+      var width = BinaryPrimitives.ReadUInt32BigEndian(blob[18..]);
+      var depth = BinaryPrimitives.ReadUInt16BigEndian(blob[22..]);
+      var colorMode = BinaryPrimitives.ReadUInt16BigEndian(blob[24..]);
+
+      var pos = 26;
+      if (pos + 4 > blob.Length) { EmitMetadata(entries, width, height, channels, depth, colorMode); return entries; }
+      var colorModeLen = (int)BinaryPrimitives.ReadUInt32BigEndian(blob[pos..]);
+      if (colorModeLen < 0 || colorModeLen > blob.Length - pos - 4) {
+        EmitMetadata(entries, width, height, channels, depth, colorMode);
+        return entries;
+      }
+      pos += 4 + colorModeLen;
+
+      if (pos + 4 > blob.Length) { EmitMetadata(entries, width, height, channels, depth, colorMode); return entries; }
+      var resourcesLen = (int)BinaryPrimitives.ReadUInt32BigEndian(blob[pos..]);
+      pos += 4;
+      if (resourcesLen < 0) { EmitMetadata(entries, width, height, channels, depth, colorMode); return entries; }
+      var resourcesEnd = Math.Min((long)pos + resourcesLen, blob.Length);
+
+      while ((long)pos + 12 <= resourcesEnd) {
+        if (blob[pos] != '8' || blob[pos + 1] != 'B' || blob[pos + 2] != 'I' || blob[pos + 3] != 'M') break;
+        var resId = BinaryPrimitives.ReadUInt16BigEndian(blob[(pos + 4)..]);
+        var nameLen = blob[pos + 6];
+        var namePad = (nameLen + 1) % 2 == 0 ? 0 : 1;
+        var dataStart = pos + 6 + 1 + nameLen + namePad;
+        if ((long)dataStart + 4 > resourcesEnd) break;
+        var dataSize = (int)BinaryPrimitives.ReadUInt32BigEndian(blob[dataStart..]);
+        if (dataSize < 0 || (long)dataStart + 4 + dataSize > resourcesEnd) break;
+
+        var dataOffset = dataStart + 4;
+        if (resId == 0x040C && dataSize > 28)
+          entries.Add(new EntryLayout("thumbnail.jpg", "Tag", dataOffset + 28, dataSize - 28));
+        else
+          entries.Add(new EntryLayout(
+            $"image_resources/{resId:X4}_{SanitizeName(blob, pos + 7, nameLen)}.bin",
+            "Tag", dataOffset, dataSize));
+
+        pos = dataStart + 4 + dataSize + (dataSize % 2);
+      }
+      pos = checked((int)resourcesEnd);
+
+      if (pos + 8 <= blob.Length) {
+        var layerLen = BinaryPrimitives.ReadUInt64BigEndian(blob[pos..]);
+        pos += 8;
+        var available = blob.Length - pos;
+        var layerSize = (int)Math.Min(layerLen, (ulong)available);
+        if (layerSize > 0) {
+          entries.Add(new EntryLayout("layer_and_mask.bin", "Tag", pos, layerSize));
+          pos += layerSize;
+        }
+      }
+
+      if (pos < blob.Length)
+        entries.Add(new EntryLayout("image_data.bin", "Tag", pos, blob.Length - pos));
+
+      EmitMetadata(entries, width, height, channels, depth, colorMode);
+    } catch {
+      // Keep FULL.psb only.
+    }
+
+    return entries;
+  }
+
+  private static void EmitMetadata(
+    List<EntryLayout> entries,
+    uint width, uint height, ushort channels, ushort depth, ushort colorMode) {
+    var ini = new StringBuilder();
+    ini.AppendLine("; Photoshop Large Document (PSB) metadata");
+    ini.AppendLine("version=psb");
+    ini.Append("width=").AppendLine(width.ToString(CultureInfo.InvariantCulture));
+    ini.Append("height=").AppendLine(height.ToString(CultureInfo.InvariantCulture));
+    ini.Append("channels=").AppendLine(channels.ToString(CultureInfo.InvariantCulture));
+    ini.Append("depth=").AppendLine(depth.ToString(CultureInfo.InvariantCulture));
+    ini.Append("color_mode=").AppendLine(colorMode switch {
+      0 => "Bitmap", 1 => "Grayscale", 2 => "Indexed", 3 => "RGB",
+      4 => "CMYK", 7 => "Multichannel", 8 => "Duotone", 9 => "Lab",
+      _ => colorMode.ToString(CultureInfo.InvariantCulture),
+    });
+    entries.Insert(1, new EntryLayout("metadata.ini", "Tag", 0, 0, Encoding.UTF8.GetBytes(ini.ToString())));
+  }
+
+  private static string SanitizeName(ReadOnlySpan<byte> blob, int offset, byte len) {
+    if (len == 0) return "unnamed";
+    var sb = new StringBuilder(len);
+    for (var i = 0; i < len && offset + i < blob.Length; ++i) {
+      var c = (char)blob[offset + i];
+      sb.Append(char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_');
+    }
+    return sb.Length > 0 ? sb.ToString() : "unnamed";
+  }
+}

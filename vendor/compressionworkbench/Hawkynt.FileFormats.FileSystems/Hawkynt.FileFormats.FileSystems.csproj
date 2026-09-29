@@ -1,0 +1,80 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Every filesystem reader / writer and every disk-image container compiles
+         straight into this assembly; the formats another package also ships live in
+         Compression.Core, so their types keep a single identity and arrive with that
+         dependency. Folder + .csproj filename equal $(MSBuildProjectName) so the
+         .NET 10 SDK can default $(PackageId) without -p:PackageId overrides (see
+         Compression.Core/Hawkynt.Compression.Core.csproj for the rationale). -->
+    <RootNamespace>Hawkynt.FileFormats.FileSystems</RootNamespace>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <IsPackable>true</IsPackable>
+    <Title>Hawkynt FileFormats FileSystems</Title>
+    <Description>Pure-managed filesystem readers + writers — FAT / exFAT / NTFS / ReFS / ext2-4 / Btrfs / XFS / ReiserFS / JFS / F2FS / HFS / HFS+ / APFS / SquashFS / CramFS / EROFS / UDF / ISO9660 / ZFS / Reiser4 + disk-image containers (VHD / VHDX / VMDK / VDI / QCOW2 / DMG / BIN/CUE / NRG / MDF / CDI / CSO / IPSW / UEFI FV) + retro-disk formats (D64 / D71 / D81 / Apple DOS / ProDOS / Atari 8-bit / TR-DOS / CP/M / CPC DSK / MFA / MSA / Bbc / RT-11 / OpenVMS / OS-9 RBF). Self-contained bundle on top of Hawkynt.Compression.Core.</Description>
+    <PackageTags>$(PackageTags);filesystem;disk-image;fat;ntfs;ext4;btrfs;xfs;hfs;apfs;squashfs;iso9660;udf;vhd;vmdk;qcow2;managed</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);_AddBundledAssembliesToPackage</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Compression.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Compression.Core\Hawkynt.Compression.Core.csproj" />
+    <ProjectReference Include="..\Compression.Registry\Compression.Registry.csproj" />
+  </ItemGroup>
+
+  <!-- Reference template blocks captured byte-exact from `mkfs.reiser4 -fffy`. The
+       writer reproduces the same minimum-viable empty filesystem layout: 25
+       reserved blocks (0-15 jump area, 16 master, 17 format40 SB, 18 bitmap,
+       19-20 journal, 21 status, 22 backup, 23 twig root, 24 leaf with root dir).
+       Only the mkfs_id and UUID vary per-image; everything else is deterministic
+       for a fresh empty filesystem. LogicalName keeps the resource ids the writer
+       asks for unchanged now that it compiles into this assembly. -->
+  <ItemGroup>
+    <EmbeddedResource Include="FileSystems\FileSystem.Reiser4\Templates\block_16.bin" LogicalName="FileSystem.Reiser4.Templates.block_16.bin" />
+    <EmbeddedResource Include="FileSystems\FileSystem.Reiser4\Templates\block_17.bin" LogicalName="FileSystem.Reiser4.Templates.block_17.bin" />
+    <EmbeddedResource Include="FileSystems\FileSystem.Reiser4\Templates\block_18.bin" LogicalName="FileSystem.Reiser4.Templates.block_18.bin" />
+    <EmbeddedResource Include="FileSystems\FileSystem.Reiser4\Templates\block_21.bin" LogicalName="FileSystem.Reiser4.Templates.block_21.bin" />
+    <EmbeddedResource Include="FileSystems\FileSystem.Reiser4\Templates\block_22.bin" LogicalName="FileSystem.Reiser4.Templates.block_22.bin" />
+    <EmbeddedResource Include="FileSystems\FileSystem.Reiser4\Templates\block_23.bin" LogicalName="FileSystem.Reiser4.Templates.block_23.bin" />
+    <EmbeddedResource Include="FileSystems\FileSystem.Reiser4\Templates\block_24.bin" LogicalName="FileSystem.Reiser4.Templates.block_24.bin" />
+  </ItemGroup>
+
+  <!-- The stream codecs the absorbed readers decompress with (bzip2 / xz / zstd / zlib /
+       LZMA / LZFSE / ZIP) now compile into Compression.Core, which this package already
+       depends on, so they arrive with that dependency instead of as bundled DLLs. -->
+
+  <!-- SUPPORT-MATRIX-FORMATS:BEGIN — namespaces of container and filesystem formats that
+       compile into Compression.Core yet belong in this package's support matrix; read by
+       Compression.Tests/Documentation/FilesystemSupportMatrix.cs. Inert to MSBuild — the
+       formats reach consumers through the Compression.Core dependency; this only records
+       which of them this package documents. -->
+  <ItemGroup>
+    <SupportMatrixNamespace Include="FileFormat.Pfs0" />
+    <SupportMatrixNamespace Include="FileFormat.T64" />
+    <SupportMatrixNamespace Include="FileFormat.Lynx" />
+    <SupportMatrixNamespace Include="FileSystem.SquashFs" />
+  </ItemGroup>
+  <!-- SUPPORT-MATRIX-FORMATS:END -->
+
+  <Target Name="_AddBundledAssembliesToPackage" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <_BundledRefs Include="@(ReferencePath)"
+                    Condition="'%(ReferencePath.ReferenceSourceTarget)' == 'ProjectReference'
+                               and '%(ReferencePath.Extension)' == '.dll'
+                               and !$([System.String]::Copy('%(ReferencePath.MSBuildSourceProjectFile)').EndsWith('Hawkynt.Compression.Core.csproj'))
+                               and !$([System.String]::Copy('%(ReferencePath.MSBuildSourceProjectFile)').EndsWith('Compression.Registry.csproj'))" />
+      <TfmSpecificPackageFile Include="@(_BundledRefs)" PackagePath="lib/$(TargetFramework)" />
+    </ItemGroup>
+  </Target>
+
+</Project>

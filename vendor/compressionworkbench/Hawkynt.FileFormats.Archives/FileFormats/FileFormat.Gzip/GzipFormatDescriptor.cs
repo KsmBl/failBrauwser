@@ -1,0 +1,238 @@
+#pragma warning disable CS1591 // Missing XML comment
+
+using Compression.Registry;
+
+using Compression.Core.Deflate;
+
+namespace FileFormat.Gzip;
+
+/// <summary>
+/// Describes gzip format.
+/// </summary>
+public sealed class GzipFormatDescriptor : IFormatDescriptor, IStreamFormatOperations, IFormatValidator, IFormatOptionsSchema {
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "Gzip";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "GZIP";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Stream;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanExtract | FormatCapabilities.CanCreate | FormatCapabilities.CanTest |
+    FormatCapabilities.SupportsOptimize | FormatCapabilities.CanCompoundWithTar;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".gz";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [".gz", ".gzip"];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [new([0x1F, 0x8B], Confidence: 0.80)];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("deflate", "Deflate", SupportsOptimize: true)];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Dictionary;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description => "Deflate with CRC32, the ubiquitous HTTP/file compression standard";
+
+  // ── IFormatOptionsSchema ───────────────────────────────────────────────
+  // Level is the only honored axis. A Deflate *strategy* (filtered / huffman-only
+  // / RLE / fixed) is NOT exposed because our Deflate core has no strategy
+  // concept — the encoder only varies match-finding depth and static-vs-dynamic
+  // Huffman by level, so a strategy knob would be ignored by the writer.
+
+  /// <summary>The Deflate compression level applied to the GZIP payload. The
+  /// optimizer searches these tiers to find the smallest output for the input.</summary>
+  public IReadOnlyList<FormatOptionDescriptor> OptionsSchema { get; } = [
+    new FormatOptionDescriptor(
+      Key: "Level",
+      DisplayName: "Compression level",
+      Kind: FormatOptionKind.Enum,
+      Default: "Default",
+      AllowedValues: ["None", "Fast", "Default", "Best", "Maximum"],
+      Description: "Deflate effort: None (stored) → Fast → Default → Best → Maximum (Zopfli-style optimal parsing; smallest, slowest)."),
+  ];
+
+  /// <summary>Resolves the requested <see cref="DeflateCompressionLevel"/> from the
+  /// format-specific options: the named <c>Level</c> string wins; otherwise a numeric
+  /// <see cref="FormatCreateOptions.Level"/> is mapped onto the nearest tier; failing
+  /// both, <see cref="DeflateCompressionLevel.Default"/>.</summary>
+  internal static DeflateCompressionLevel ParseLevel(FormatCreateOptions options) => DeflateLevelOption.Parse(options);
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Decompress(Stream input, Stream output) {
+    using var ds = new GzipStream(input, Compression.Core.Streams.CompressionStreamMode.Decompress, leaveOpen: true);
+    ds.CopyTo(output);
+  }
+
+  /// <summary>
+  /// Encodes the supplied input.
+  /// </summary>
+  public void Compress(Stream input, Stream output) {
+    using var cs = new GzipStream(output, Compression.Core.Streams.CompressionStreamMode.Compress, leaveOpen: true);
+    input.CopyTo(cs);
+  }
+
+  /// <summary>
+  /// Encodes the supplied input.
+  /// </summary>
+  public void Compress(Stream input, Stream output, FormatCreateOptions options) {
+    using var cs = new GzipStream(output, Compression.Core.Streams.CompressionStreamMode.Compress,
+      ParseLevel(options), leaveOpen: true);
+    input.CopyTo(cs);
+  }
+
+  /// <summary>
+  /// Performs the compress optimal operation.
+  /// </summary>
+  public void CompressOptimal(Stream input, Stream output) {
+    using var cs = new GzipStream(output, Compression.Core.Streams.CompressionStreamMode.Compress,
+      DeflateCompressionLevel.Maximum, leaveOpen: true);
+    input.CopyTo(cs);
+  }
+
+  /// <summary>
+  /// Performs the wrap decompress operation.
+  /// </summary>
+  public Stream? WrapDecompress(Stream input) =>
+    new GzipStream(input, Compression.Core.Streams.CompressionStreamMode.Decompress, leaveOpen: true);
+
+  /// <summary>
+  /// Performs the wrap compress operation.
+  /// </summary>
+  public Stream? WrapCompress(Stream output) =>
+    new GzipStream(output, Compression.Core.Streams.CompressionStreamMode.Compress, leaveOpen: true);
+
+  // ── IFormatValidator ─────────────────────────────────────────────
+
+  /// <summary>
+  /// Validates the supplied data.
+  /// </summary>
+  public ValidationResult ValidateHeader(ReadOnlySpan<byte> header, long fileSize) {
+    var issues = new List<ValidationIssue>();
+    if (header.Length < 10) {
+      issues.Add(new(ValidationLevel.Header, IssueSeverity.Error, "GZIP_TOO_SHORT",
+        "File too short for GZIP header (need 10 bytes minimum)"));
+      return new() { IsValid = false, Confidence = 0.3, Health = FormatHealth.Damaged,
+        Level = ValidationLevel.Header, Issues = issues };
+    }
+    // Magic already checked by scanner
+    var cm = header[2];
+    if (cm != GzipConstants.MethodDeflate) {
+      issues.Add(new(ValidationLevel.Header, IssueSeverity.Error, "GZIP_BAD_METHOD",
+        $"Unknown compression method {cm} (expected 8=Deflate)", 2));
+      return new() { IsValid = false, Confidence = 0.4, Health = FormatHealth.Damaged,
+        Level = ValidationLevel.Header, Issues = issues };
+    }
+    var flags = header[3];
+    if ((flags & 0xE0) != 0) {
+      issues.Add(new(ValidationLevel.Header, IssueSeverity.Warning, "GZIP_RESERVED_FLAGS",
+        $"Reserved flag bits set: 0x{flags:X2}", 3));
+    }
+    var xfl = header[8];
+    if (xfl != 0 && xfl != 2 && xfl != 4) {
+      issues.Add(new(ValidationLevel.Header, IssueSeverity.Info, "GZIP_UNUSUAL_XFL",
+        $"Unusual extra flags value: {xfl}", 8));
+    }
+    if (fileSize < 18) {
+      issues.Add(new(ValidationLevel.Header, IssueSeverity.Warning, "GZIP_NO_TRAILER",
+        "File too short to contain GZIP trailer (CRC32 + ISIZE)"));
+    }
+    var confidence = issues.Any(i => i.Severity == IssueSeverity.Warning) ? 0.75 : 0.85;
+    var health = issues.Any(i => i.Severity >= IssueSeverity.Warning) ? FormatHealth.Degraded : FormatHealth.Good;
+    return new() { IsValid = true, Confidence = confidence, Health = health,
+      Level = ValidationLevel.Header, Issues = issues };
+  }
+
+  /// <summary>
+  /// Validates the supplied data.
+  /// </summary>
+  public ValidationResult ValidateStructure(Stream stream) {
+    var issues = new List<ValidationIssue>();
+    // GZIP is a stream format — structure check verifies trailer is present
+    if (stream.Length < 18) {
+      issues.Add(new(ValidationLevel.Structure, IssueSeverity.Error, "GZIP_TRUNCATED",
+        "Stream too short for header + trailer"));
+      return new() { IsValid = false, Confidence = 0.6, Health = FormatHealth.Damaged,
+        Level = ValidationLevel.Structure, Issues = issues };
+    }
+    // Read trailer (last 8 bytes: CRC32 LE + ISIZE LE)
+    stream.Seek(-8, SeekOrigin.End);
+    var trailer = new byte[8];
+    stream.ReadExactly(trailer);
+    var isize = BitConverter.ToUInt32(trailer, 4);
+    // ISIZE is original size mod 2^32 — plausibility check
+    if (isize == 0 && stream.Length > 20) {
+      issues.Add(new(ValidationLevel.Structure, IssueSeverity.Info, "GZIP_ISIZE_ZERO",
+        "ISIZE is 0 (empty original or size is exact multiple of 4GB)"));
+    }
+    return new() { IsValid = true, Confidence = 0.88, Health = issues.Count > 0 ? FormatHealth.Good : FormatHealth.Good,
+      Level = ValidationLevel.Structure, Issues = issues };
+  }
+
+  /// <summary>
+  /// Validates the supplied data.
+  /// </summary>
+  public ValidationResult ValidateIntegrity(Stream stream) {
+    var issues = new List<ValidationIssue>();
+    try {
+      stream.Seek(0, SeekOrigin.Begin);
+      using var decompressed = new MemoryStream();
+      using (var gz = new GzipStream(stream, Compression.Core.Streams.CompressionStreamMode.Decompress, leaveOpen: true))
+        gz.CopyTo(decompressed);
+      // Read stored CRC from trailer
+      stream.Seek(-8, SeekOrigin.End);
+      var trailer = new byte[8];
+      stream.ReadExactly(trailer);
+      var storedCrc = BitConverter.ToUInt32(trailer, 0);
+      var storedSize = BitConverter.ToUInt32(trailer, 4);
+      var actualCrc = Compression.Core.Checksums.Crc32.Compute(decompressed.ToArray());
+      var actualSize = (uint)(decompressed.Length & 0xFFFFFFFF);
+      if (storedCrc != actualCrc) {
+        issues.Add(new(ValidationLevel.Integrity, IssueSeverity.Error, "GZIP_CRC_MISMATCH",
+          $"CRC-32 mismatch: stored=0x{storedCrc:X8}, computed=0x{actualCrc:X8}"));
+        return new() { IsValid = false, Confidence = 0.95, Health = FormatHealth.Damaged,
+          Level = ValidationLevel.Integrity, Issues = issues };
+      }
+      if (storedSize != actualSize) {
+        issues.Add(new(ValidationLevel.Integrity, IssueSeverity.Warning, "GZIP_SIZE_MISMATCH",
+          $"ISIZE mismatch: stored={storedSize}, actual={actualSize}"));
+      }
+      return new() { IsValid = true, Confidence = 0.99, Health = issues.Count > 0 ? FormatHealth.Degraded : FormatHealth.Perfect,
+        Level = ValidationLevel.Integrity, Issues = issues };
+    } catch (Exception ex) {
+      issues.Add(new(ValidationLevel.Integrity, IssueSeverity.Error, "GZIP_DECOMPRESS_FAILED",
+        $"Decompression failed: {ex.Message}"));
+      return new() { IsValid = false, Confidence = 0.85, Health = FormatHealth.Damaged,
+        Level = ValidationLevel.Integrity, Issues = issues };
+    }
+  }
+}

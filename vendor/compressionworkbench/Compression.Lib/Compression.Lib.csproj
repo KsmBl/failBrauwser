@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Compression.Lib</RootNamespace>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- CS0436: Hawkynt.FileFormats.Images ships its own FileFormat.Dng.DngReader and
+         FileFormat.Heif.HeifReader, which carry the same fully-qualified names as the ones
+         under FileFormats/. C# binds the source-declared type, so these stay the readers the
+         descriptors have always used; the package's are unreachable here and unused. The
+         reference keeps PrivateAssets="compile", so the ambiguity never reaches consumers. -->
+    <NoWarn>CS1591;CS0436</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Compression.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      GIF/WebP/PNG byte parsing and encoding belongs to PNGCrushCS; the adapters under
+      FileFormats/ keep only the CompressionWorkbench-specific composed-frame, block-map and
+      bridge surface. Compile assets stay private because the package also carries support
+      assemblies whose namespaces overlap CompressionWorkbench internals; runtime assets still
+      flow to applications, and the public bridge APIs expose only CompressionWorkbench contracts.
+    -->
+    <PackageReference Include="Hawkynt.FileFormats.Images" Version="1.0.0.145" PrivateAssets="compile" />
+  </ItemGroup>
+
+  <!-- SFX stubs are embedded as resources when present (populated by CI or publish-sfx-stubs.sh).
+       Resource names follow: stubs/{rid}/sfx-cli[.exe] -->
+  <ItemGroup>
+    <EmbeddedResource Include="stubs\**\*" Condition="Exists('stubs') And '$(ExcludeStubs)' != 'true'" LogicalName="stubs/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Hawkynt.FileFormats.Audio\Hawkynt.FileFormats.Audio.csproj" />
+    <ProjectReference Include="..\Hawkynt.FileFormats.Archives\Hawkynt.FileFormats.Archives.csproj" />
+    <ProjectReference Include="..\Compression.Core\Hawkynt.Compression.Core.csproj" />
+    <ProjectReference Include="..\Compression.Registry\Compression.Registry.csproj" />
+    <ProjectReference Include="..\Compression.Registry.Generator\Compression.Registry.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!-- Driver-coverage invariant: every filesystem and disk-image descriptor must
+       be visible to Compression.Registry.Generator. They compile either into the
+       meta-package assembly or, where a second package ships them too, into
+       Compression.Core; both are referenced above. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Hawkynt.FileFormats.FileSystems\Hawkynt.FileFormats.FileSystems.csproj" />
+  </ItemGroup>
+
+</Project>

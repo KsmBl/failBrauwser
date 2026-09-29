@@ -1,0 +1,137 @@
+#pragma warning disable CS1591
+using System.Globalization;
+using System.Text;
+using Compression.Registry;
+using static Compression.Registry.FormatHelpers;
+
+namespace FileFormat.ExePackers;
+
+/// <summary>
+/// Pseudo-archive descriptor for Yoda's Crypter / Yoda's Protector packed
+/// Win32 executables. Yoda's Crypter (Ashkbiz Danehkar, early 2000s) is a
+/// classic anti-RE crypter whose unpacker stub renames at least one section
+/// to <c>".yC"</c> or <c>"yC"</c> and embeds the literal copyright string
+/// <c>"Yoda's Crypter"</c> (or simply <c>"Yoda's"</c>) somewhere in the file.
+///
+/// References:
+/// <list type="bullet">
+///   <item><description><c>https://sourceforge.net/projects/yodap/</c> — Yoda's Protector project (Ashkbiz Danehkar) on SourceForge</description></item>
+///   <item><description><c>https://github.com/horsicq/Detect-It-Easy</c> — Detect It Easy — maintained packer-detection signature database</description></item>
+/// </list>
+/// </summary>
+public sealed class YodaCrypterFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations {
+
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "YodaCrypter";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "Yoda's Crypter (Win32 PE)";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Archive;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanList | FormatCapabilities.CanExtract |
+    FormatCapabilities.CanTest | FormatCapabilities.SupportsMultipleEntries;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".exe";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("stored", "Stored")];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Archive;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description =>
+    "Yoda's Crypter / Yoda's Protector (Ashkbiz Danehkar) Win32 PE crypter — " +
+    "surfaces the .yC/yC section table and the embedded \"Yoda's\" copyright. " +
+    "Static decryption lives in the yodacrypter executable-unpacking handler; " +
+    "this descriptor only exposes the container.";
+
+  private static ReadOnlySpan<byte> YodasLiteral => "Yoda's"u8;
+
+  /// <summary>
+  /// Lists the entries in the supplied container.
+  /// </summary>
+  public List<ArchiveEntryInfo> List(Stream stream, string? password) =>
+    BuildEntries(stream)
+      .Select((e, i) => new ArchiveEntryInfo(i, e.Name, e.Data.LongLength, e.Data.LongLength,
+        "stored", false, false, null))
+      .ToList();
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
+    foreach (var e in BuildEntries(stream)) {
+      if (files != null && files.Length > 0 && !MatchesFilter(e.Name, files)) continue;
+      WriteFile(outputDir, e.Name, e.Data);
+    }
+  }
+
+  private static List<(string Name, byte[] Data)> BuildEntries(Stream stream) {
+    using var ms = new MemoryStream();
+    stream.CopyTo(ms);
+    var bytes = ms.ToArray();
+
+    if (!PackerScanner.IsPe(bytes))
+      throw new InvalidDataException("Yoda's Crypter: not a valid PE.");
+
+    var sections = PackerScanner.GetPeSections(bytes);
+    var ycSection = sections.FirstOrDefault(s =>
+      s.Name.Equals(".yC", StringComparison.Ordinal) ||
+      s.Name.Equals("yC", StringComparison.Ordinal));
+
+    var yodasLitOffset = PackerScanner.IndexOfBounded(bytes, YodasLiteral, 0x10000);
+
+    if (string.IsNullOrEmpty(ycSection.Name) && yodasLitOffset < 0)
+      throw new InvalidDataException("Yoda's Crypter: neither .yC/yC section nor 'Yoda's' literal found.");
+
+    return [
+      ("metadata.ini", BuildMetadata(sections, ycSection.Name, yodasLitOffset)),
+      ("mz_header.bin", bytes.AsSpan(0, Math.Min(0x40, bytes.Length)).ToArray()),
+      ("packed_payload.bin", bytes),
+    ];
+  }
+
+  private static byte[] BuildMetadata(IReadOnlyList<(string Name, uint Characteristics)> sections,
+      string ycSectionName, int yodasLitOffset) {
+    var sb = new StringBuilder();
+    sb.AppendLine("[yoda_crypter]");
+    sb.Append(CultureInfo.InvariantCulture, $"yc_section = {(string.IsNullOrEmpty(ycSectionName) ? "(none)" : ycSectionName)}\n");
+    sb.Append(CultureInfo.InvariantCulture, $"yodas_literal_offset = {(yodasLitOffset < 0 ? "(not found)" : $"0x{yodasLitOffset:X4}")}\n");
+    sb.Append(CultureInfo.InvariantCulture, $"section_count = {sections.Count}\n");
+    foreach (var (name, chars) in sections)
+      sb.Append(CultureInfo.InvariantCulture, $"section = {name} flags=0x{chars:X8}\n");
+    sb.Append("note = static decryption is performed by the yodacrypter executable-unpacking handler\n");
+    return Encoding.UTF8.GetBytes(sb.ToString());
+  }
+}

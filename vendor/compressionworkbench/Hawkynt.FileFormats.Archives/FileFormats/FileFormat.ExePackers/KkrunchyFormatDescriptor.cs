@@ -1,0 +1,136 @@
+#pragma warning disable CS1591
+using System.Globalization;
+using System.Text;
+using Compression.Registry;
+using static Compression.Registry.FormatHelpers;
+
+namespace FileFormat.ExePackers;
+
+/// <summary>
+/// Pseudo-archive descriptor for kkrunchy-packed Win32 executables. kkrunchy
+/// (ryg / Farbrausch, ~2003) is the 64K Windows executable compressor used by
+/// .kkrieger, fr-08, and most early-2000s Farbrausch 64K intros. Its
+/// unpacker stub embeds the literal string <c>"kkrunchy"</c> somewhere in the
+/// packed file.
+///
+/// References:
+/// <list type="bullet">
+///   <item><description><c>https://github.com/farbrausch/fr_public</c> — Farbrausch public source release — includes kkrunchy</description></item>
+///   <item><description>Fabian "ryg" Giesen's kkrunchy write-ups — compressor internals from the author</description></item>
+/// </list>
+/// </summary>
+public sealed class KkrunchyFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations {
+
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "Kkrunchy";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "kkrunchy (Win32 PE 64K)";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Archive;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanList | FormatCapabilities.CanExtract |
+    FormatCapabilities.CanTest | FormatCapabilities.SupportsMultipleEntries;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".exe";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("stored", "Stored")];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Archive;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description =>
+    "kkrunchy (ryg / Farbrausch) — 64K Win32 PE compressor used by .kkrieger " +
+    "and most Farbrausch 64K intros. Detection by embedded \"kkrunchy\" " +
+    "literal. Decompression delegated to the kkrunchy reference tool.";
+
+  private static ReadOnlySpan<byte> KkrunchyLiteralLower => "kkrunchy"u8;
+  private static ReadOnlySpan<byte> KkrunchyLiteralCap => "Kkrunchy"u8;
+  private static ReadOnlySpan<byte> KkrunchyLiteralUpper => "KKRUNCHY"u8;
+
+  /// <summary>
+  /// Lists the entries in the supplied container.
+  /// </summary>
+  public List<ArchiveEntryInfo> List(Stream stream, string? password) =>
+    BuildEntries(stream)
+      .Select((e, i) => new ArchiveEntryInfo(i, e.Name, e.Data.LongLength, e.Data.LongLength,
+        "stored", false, false, null))
+      .ToList();
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
+    foreach (var e in BuildEntries(stream)) {
+      if (files != null && files.Length > 0 && !MatchesFilter(e.Name, files)) continue;
+      WriteFile(outputDir, e.Name, e.Data);
+    }
+  }
+
+  private static List<(string Name, byte[] Data)> BuildEntries(Stream stream) {
+    using var ms = new MemoryStream();
+    stream.CopyTo(ms);
+    var bytes = ms.ToArray();
+
+    if (!PackerScanner.IsPe(bytes))
+      throw new InvalidDataException("kkrunchy: not a valid PE.");
+
+    var span = bytes.AsSpan();
+    var idx = span.IndexOf(KkrunchyLiteralLower);
+    if (idx < 0) idx = span.IndexOf(KkrunchyLiteralCap);
+    if (idx < 0) idx = span.IndexOf(KkrunchyLiteralUpper);
+    if (idx < 0)
+      throw new InvalidDataException("kkrunchy: \"kkrunchy\" literal not found anywhere in file.");
+
+    var sections = PackerScanner.GetPeSections(bytes);
+    return [
+      ("metadata.ini", BuildMetadata(sections, idx, bytes.Length)),
+      ("mz_header.bin", bytes.AsSpan(0, Math.Min(0x40, bytes.Length)).ToArray()),
+      ("packed_payload.bin", bytes),
+    ];
+  }
+
+  private static byte[] BuildMetadata(IReadOnlyList<(string Name, uint Characteristics)> sections,
+      int literalOffset, int totalSize) {
+    var sb = new StringBuilder();
+    sb.AppendLine("[kkrunchy]");
+    sb.Append(CultureInfo.InvariantCulture, $"kkrunchy_literal_offset = 0x{literalOffset:X6}\n");
+    sb.Append(CultureInfo.InvariantCulture, $"file_size = {totalSize}\n");
+    sb.Append(CultureInfo.InvariantCulture, $"section_count = {sections.Count}\n");
+    foreach (var (name, chars) in sections)
+      sb.Append(CultureInfo.InvariantCulture, $"section = {name} flags=0x{chars:X8}\n");
+    sb.Append("note = decompression delegated to the kkrunchy reference tool (Farbrausch)\n");
+    return Encoding.UTF8.GetBytes(sb.ToString());
+  }
+}

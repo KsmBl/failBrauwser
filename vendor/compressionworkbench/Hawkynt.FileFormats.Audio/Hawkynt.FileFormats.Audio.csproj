@@ -1,0 +1,82 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The audio package. Every codec and container it ships compiles straight
+         into Hawkynt.FileFormats.Audio.dll from the per-format folders under
+         Codecs/ and FileFormats/, so consumers get one assembly instead of two
+         hundred satellites. The media containers Hawkynt.FileFormats.Archives
+         projects as pseudo-archives compile in here too: that package bundles
+         this assembly rather than compiling their sources a second time, so
+         their types still have exactly one identity.
+
+         No RootNamespace: every file states its namespace explicitly
+         (Codec.Wma, FileFormat.Ogg, …), which is what makes the merge safe.
+
+         The folder + .csproj filename equal the desired PackageId so the
+         .NET 10 SDK can default $(PackageId) from $(MSBuildProjectName)
+         without the fragile -p:PackageId override path documented in
+         Compression.Core/Hawkynt.Compression.Core.csproj. -->
+
+    <IsPackable>true</IsPackable>
+    <Title>Hawkynt FileFormats Audio</Title>
+    <Description>Pure-managed audio codecs and container readers/writers — PCM (raw, A-law, mu-law, IMA / MS-ADPCM, GSM 6.10), MP3 / AAC / Vorbis / Opus / FLAC / ALAC / APE / WavPack lossy + lossless, MIDI / OGG containers, Wav / Aiff / Au headers, and tracker formats (MOD / S3M / XM / IT) plus PSF chiptune + game audio bundles (Awb / Akb / Wwise / FMOD). Self-contained bundle on top of Hawkynt.Compression.Core.</Description>
+    <PackageTags>$(PackageTags);audio;pcm;flac;mp3;aac;vorbis;opus;wav;aiff;midi;tracker;adpcm;managed</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- Bundle referenced project DLLs into lib/ so the package is one-stop.
+         Compression.Core is intentionally NOT bundled here — it ships as its own
+         NuGet package and is declared as a regular `<dependency>` in our nuspec
+         (see the non-private ProjectReference further down). The bundle target
+         filters Core / Registry out by MSBuildSourceProjectFile so we don't
+         double-bundle assemblies that consumers already get via the Core dep. -->
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);_AddBundledAssembliesToPackage</TargetsForTfmSpecificContentInPackage>
+
+  </PropertyGroup>
+
+  <!-- The audio tests reach into per-format internals (depayloaders, coefficient
+       tables, bit readers). One entry now covers every format that used to carry
+       its own. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Compression.Tests" />
+  </ItemGroup>
+
+  <!-- README.md now sits alongside compiled source, so it arrives as a default
+       None item and is updated rather than included a second time. -->
+  <ItemGroup>
+    <None Update="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <!-- Compression.Core: declared as a regular ProjectReference (no
+       PrivateAssets) so `dotnet pack` emits it as a single NuGet `<dependency>`
+       in our nuspec rather than bundling its DLL. The bundle target's filter
+       further down skips it on the lib/ side. Dropping PrivateAssets from a
+       member reference instead is what must never happen: pack would emit one
+       <dependency> per member, every one of them naming a package that does not
+       exist on NuGet, and every install would fail.
+
+       Compression.Registry carries the descriptor contracts the compiled-in
+       formats implement. It used to arrive transitively through the shared
+       format projects; with those absorbed the reference has to be named here.
+       PrivateAssets="all" keeps it out of the nuspec, and the bundle target's
+       filter keeps it out of lib/ — Core's package already ships that DLL. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Compression.Core\Hawkynt.Compression.Core.csproj" />
+    <ProjectReference Include="..\Compression.Registry\Compression.Registry.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Bundles every member ProjectReference's resolved DLL into lib/, EXCEPT
+       Hawkynt.Compression.Core (a published NuGet dep, declared above) and
+       Compression.Registry (already bundled inside Core's package). -->
+  <Target Name="_AddBundledAssembliesToPackage" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <_BundledRefs Include="@(ReferencePath)"
+                    Condition="'%(ReferencePath.ReferenceSourceTarget)' == 'ProjectReference'
+                               and '%(ReferencePath.Extension)' == '.dll'
+                               and !$([System.String]::Copy('%(ReferencePath.MSBuildSourceProjectFile)').EndsWith('Hawkynt.Compression.Core.csproj'))
+                               and !$([System.String]::Copy('%(ReferencePath.MSBuildSourceProjectFile)').EndsWith('Compression.Registry.csproj'))" />
+      <TfmSpecificPackageFile Include="@(_BundledRefs)" PackagePath="lib/$(TargetFramework)" />
+    </ItemGroup>
+  </Target>
+
+</Project>

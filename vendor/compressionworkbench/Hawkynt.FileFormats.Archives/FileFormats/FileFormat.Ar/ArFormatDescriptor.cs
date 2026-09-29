@@ -1,0 +1,222 @@
+#pragma warning disable CS1591
+using Compression.Registry;
+using Compression.Registry.Streaming;
+using static Compression.Registry.FormatHelpers;
+
+namespace FileFormat.Ar;
+
+/// <summary>
+/// Unix ar archive — the static-library (.a) and .deb outer container with 60-byte ASCII member headers.
+///
+/// References:
+/// <list type="bullet">
+///   <item><description><c>ar(5)</c> man page (4.4BSD / FreeBSD) — the de-facto format definition (ar was never standardized by POSIX)</description></item>
+///   <item><description><c>https://en.wikipedia.org/wiki/Ar_(Unix)</c> — format overview incl. the GNU and BSD long-name extensions</description></item>
+/// </list>
+/// </summary>
+public sealed class ArFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveModifiable, IArchiveDefragmentable, IArchiveLayoutMap {
+
+  /// <summary>Rebuild-based defrag: extracts then re-creates the AR archive in listing order.</summary>
+  public void Defragment(Stream archive)
+    => this.Defragment(archive, new DefragOptions { Mode = DefragMode.ConsolidateAtStart });
+
+  /// <summary>Rebuild-based defrag: extracts then re-creates the AR archive per the requested mode.</summary>
+  public void Defragment(Stream archive, DefragOptions options) {
+    DefragRebuilder.Rebuild(archive, options,
+      readEntries: stream => {
+        var r = new ArReader(stream);
+        return r.Entries.Select(e => (e.Name, e.Data));
+      },
+      buildImage: files => {
+        using var ms = new MemoryStream();
+        using (var w = new ArWriter(ms, leaveOpen: true)) {
+          var entries = files.Select(f => new ArEntry { Name = f.Name, Data = f.Data }).ToList();
+          w.Write(entries);
+        }
+        return ms.ToArray();
+      });
+  }
+
+  /// <inheritdoc />
+  public IEnumerable<DefragBlockInfo> EnumerateLayout(Stream archive) {
+    archive.Position = 0;
+    // 8-byte global header "!<arch>\n"
+    yield return new DefragBlockInfo(0, ArConstants.GlobalHeaderSize, DefragBlockKind.MetadataReserved, FileName: "AR Global Header");
+    var r = new ArReader(archive);
+    // AR reader reads everything eagerly; reconstruct offsets by walking
+    long pos = ArConstants.GlobalHeaderSize;
+    foreach (var e in r.Entries) {
+      // 60-byte entry header
+      yield return new DefragBlockInfo(pos, ArConstants.EntryHeaderSize, DefragBlockKind.MetadataReserved, FileName: $"Header: {e.Name}");
+      pos += ArConstants.EntryHeaderSize;
+      if (e.Data.Length > 0)
+        yield return new DefragBlockInfo(pos, e.Data.Length, DefragBlockKind.Used, FileName: e.Name);
+      pos += e.Data.Length;
+      if (e.Data.Length % 2 != 0)
+        pos++; // padding byte
+    }
+  }
+
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "Ar";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "AR";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Archive;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanList | FormatCapabilities.CanExtract | FormatCapabilities.CanCreate |
+    FormatCapabilities.CanModify | FormatCapabilities.CanTest | FormatCapabilities.SupportsMultipleEntries;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".a";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [".a", ".ar", ".deb"];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [new([(byte)'!', (byte)'<', (byte)'a', (byte)'r', (byte)'c', (byte)'h', (byte)'>', (byte)'\n'], Confidence: 0.95)];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("ar", "AR")];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Archive;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description => "Unix ar archive, used for static libraries (.a files)";
+
+  /// <summary>
+  /// Lists the entries in the supplied container.
+  /// </summary>
+  public List<ArchiveEntryInfo> List(Stream stream, string? password) {
+    var r = new ArReader(stream);
+    // DataSize, not Data.Length: an entry too large to materialise reports its true
+    // size while Data stays empty.
+    return r.Entries.Select((e, i) => new ArchiveEntryInfo(i, e.Name, e.DataSize, e.DataSize,
+      "ar", false, false, e.ModifiedTime.DateTime)).ToList();
+  }
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
+    var r = new ArReader(stream);
+    foreach (var e in r.Entries) {
+      if (files != null && !MatchesFilter(e.Name, files)) continue;
+      using var target = CreateEntryFile(outputDir, e.Name);
+      r.CopyEntryTo(e, target);
+    }
+  }
+
+  /// <summary>
+  /// Opens a single AR entry as a bounded read-only <see cref="Stream"/>.
+  /// AR stores each entry's bytes uncompressed and the reader pre-loads them
+  /// into <see cref="ArEntry.Data"/>; the bounded wrapper sizes the view to
+  /// the entry's data length.
+  /// </summary>
+  public Stream OpenEntry(Stream archive, string entryName, string? password) {
+    ArgumentNullException.ThrowIfNull(archive);
+    ArgumentNullException.ThrowIfNull(entryName);
+    if (archive.CanSeek) archive.Position = 0;
+    var r = new ArReader(archive, leaveOpen: true);
+    foreach (var e in r.Entries) {
+      if (!string.Equals(e.Name, entryName, StringComparison.OrdinalIgnoreCase)) continue;
+      return new BoundedEntryStream(new MemoryStream(e.Data, writable: false),
+        e.Data.Length, leaveOpen: false);
+    }
+    return new BoundedEntryStream(new MemoryStream(System.Array.Empty<byte>(), writable: false),
+      0, leaveOpen: false);
+  }
+
+  /// <summary>Native in-memory single-entry extraction.</summary>
+  public byte[] ExtractEntryToMemory(Stream archive, string entryName, string? password) {
+    using var s = this.OpenEntry(archive, entryName, password);
+    using var ms = new MemoryStream();
+    s.CopyTo(ms);
+    return ms.ToArray();
+  }
+
+  /// <summary>
+  /// Performs the create operation.
+  /// </summary>
+  public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
+    var entries = FormatHelpers.FilesOnly(inputs)
+      .Select(f => new ArEntry { Name = f.Name, Data = f.Data })
+      .ToList();
+    using var w = new ArWriter(output, leaveOpen: true);
+    w.Write(entries);
+  }
+
+  /// <summary>
+  /// Large-file-safe streaming variant of <see cref="Create"/>. The 60-byte ar
+  /// member header encodes the payload size before the payload, so the
+  /// pre-known <see cref="StreamingArchiveInput.Size"/> drives the header and
+  /// the payload is copied in 64 KB chunks via
+  /// <see cref="ArWriter.WriteStreaming"/> — peak memory is bounded by the copy
+  /// buffer regardless of member size. AR has no directory concept, so
+  /// directory inputs are skipped exactly as <see cref="Create"/> does via
+  /// <c>FilesOnly</c>. Output is byte-identical to <see cref="Create"/> for the
+  /// same file inputs (default <see cref="ArEntry"/> metadata: Unix-epoch
+  /// mtime, uid/gid 0, mode 0644).
+  /// </summary>
+  public void CreateFromStreams(Stream target, IEnumerable<StreamingArchiveInput> inputs, FormatCreateOptions options) {
+    ArgumentNullException.ThrowIfNull(target);
+    ArgumentNullException.ThrowIfNull(inputs);
+    var members = inputs
+      .Where(i => !i.IsDirectory)
+      .Select(i => new ArWriter.StreamingMember(
+        Name: i.Name,
+        Size: i.Size,
+        OpenData: i.OpenStream,
+        ModifiedTime: DateTimeOffset.UnixEpoch))
+      .ToList();
+    using var w = new ArWriter(target, leaveOpen: true);
+    w.WriteStreaming(members);
+  }
+
+  /// <summary>
+  /// Adds (or replaces by name) files inside an existing AR archive.
+  /// Uses <see cref="ArModifier"/> for true random-access I/O — Add is
+  /// O(touched bytes) (append at EOF after a quick header walk); Remove
+  /// is O(image-size-after-target) because AR has no central directory
+  /// and trailing entries must be shifted.
+  /// </summary>
+  public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
+    foreach (var (name, data) in FormatHelpers.FilesOnly(inputs)) {
+      ArModifier.RemoveFile(archive, name, wipeData: true);
+      ArModifier.AddFile(archive, name, data);
+    }
+  }
+
+  /// <summary>
+  /// Removes named entries from an existing AR archive. Uses
+  /// <see cref="ArModifier"/> for in-place compaction.
+  /// </summary>
+  public void Remove(Stream archive, string[] entryNames) {
+    foreach (var name in entryNames)
+      ArModifier.RemoveFile(archive, name, wipeData: true);
+  }
+}

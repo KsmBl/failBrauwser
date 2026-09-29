@@ -1,0 +1,41 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- XML doc-comment diagnostics (malformed comment, unresolved/invalid cref,
+         missing/duplicate param tags) stay warnings — a broken doc link is a
+         documentation nit, not something that should ever fail a build. -->
+    <WarningsNotAsErrors>CS1570;CS1571;CS1572;CS1573;CS1574;CS1580;CS1581;CS1584;CS1587;CS1591</WarningsNotAsErrors>
+    <Version>1.0.0</Version>
+    <Authors>Hawkynt</Authors>
+    <!-- Must match the file on disk exactly. Every packable project here overrides this anyway, so
+         the old "ReadMe.md" spelling never bit; a new packable project that did not override it
+         would have failed `dotnet pack` with NU5039 on a case-sensitive host. -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/Hawkynt/CompressionWorkbench</PackageProjectUrl>
+    <PackageTags>Hawkynt;CompressionWorkbench</PackageTags>
+    <RepositoryUrl>https://github.com/Hawkynt/CompressionWorkbench</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>LGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+  </PropertyGroup>
+
+  <!-- Host runtime identifier (linux-<arch>, or osx-<arch> on macOS). The executable projects
+       default their <RuntimeIdentifier> to it so a plain `dotnet build` produces a native apphost
+       for the machine it runs on. -->
+  <PropertyGroup>
+    <_HostRidOs Condition="$([MSBuild]::IsOSPlatform('OSX'))">osx</_HostRidOs>
+    <_HostRidOs Condition="'$(_HostRidOs)' == ''">linux</_HostRidOs>
+    <HostRuntimeIdentifier>$(_HostRidOs)-$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())</HostRuntimeIdentifier>
+  </PropertyGroup>
+
+  <!-- The AMR codecs and containers needed a hand-placed reference here so they took part in
+       static graph restore. They now compile into Hawkynt.FileFormats.Audio along with every
+       other audio format, so a plain reference to that package carries them. -->
+</Project>

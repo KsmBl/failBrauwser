@@ -1,0 +1,90 @@
+using Compression.Core.Entropy.Huffman;
+
+namespace Compression.Core.Dictionary.Rar;
+
+/// <summary>
+/// Huffman encoder for RAR3 compression. Builds canonical codes from frequency counts
+/// and encodes symbols using MSB-first bit output matching <see cref="Rar3Decoder"/>.
+/// </summary>
+internal sealed class Rar3HuffmanEncoder {
+  private const int MaxCodeLength = 15;
+
+  private int[] _codeLengths = [];
+  private uint[] _codes = [];
+
+  /// <summary>Gets the code lengths array.</summary>
+  public int[] CodeLengths => this._codeLengths;
+
+  /// <summary>
+  /// Builds Huffman codes from frequency counts.
+  /// </summary>
+  public void Build(int[] frequencies, int numSymbols) {
+    this._codeLengths = BuildCodeLengths(frequencies, numSymbols, MaxCodeLength);
+    this._codes = BuildCanonicalCodes(this._codeLengths, numSymbols);
+  }
+
+  /// <summary>
+  /// Writes a single symbol to the bit writer (MSB-first).
+  /// </summary>
+  public void EncodeSymbol(Rar3BitWriter writer, int symbol) {
+    writer.WriteBits(this._codes[symbol], this._codeLengths[symbol]);
+  }
+
+  private static int[] BuildCodeLengths(int[] freq, int numSymbols, int maxBits) {
+    // Tie-break between equally frequent symbols is defined by DeterministicHuffman, not
+    // by whatever order a container happens to hand back equal keys.
+    var lengths = DeterministicHuffman.BuildCodeLengths(freq.AsSpan(0, numSymbols));
+    ClampAndFix(lengths, numSymbols, maxBits);
+    return lengths;
+  }
+
+  private static void ClampAndFix(int[] lengths, int numSymbols, int maxBits) {
+    for (var i = 0; i < numSymbols; ++i)
+      if (lengths[i] > maxBits) lengths[i] = maxBits;
+
+    var kraftMax = 1L << maxBits;
+    long kraftSum = 0;
+    for (var i = 0; i < numSymbols; ++i)
+      if (lengths[i] > 0) kraftSum += kraftMax >> lengths[i];
+
+    while (kraftSum > kraftMax) {
+      for (var i = numSymbols - 1; i >= 0; --i) {
+        if (lengths[i] > 0 && lengths[i] < maxBits) {
+          kraftSum -= kraftMax >> lengths[i];
+          ++lengths[i];
+          kraftSum += kraftMax >> lengths[i];
+          if (kraftSum <= kraftMax) break;
+        }
+      }
+    }
+  }
+
+  /// <summary>
+  /// Builds canonical Huffman codes (MSB-first, no bit reversal).
+  /// </summary>
+  private static uint[] BuildCanonicalCodes(int[] lengths, int numSymbols) {
+    var maxLen = 0;
+    foreach (var l in lengths)
+      if (l > maxLen) maxLen = l;
+    if (maxLen == 0) return new uint[numSymbols];
+
+    var blCount = new int[maxLen + 1];
+    foreach (var l in lengths)
+      if (l > 0) ++blCount[l];
+
+    var nextCode = new uint[maxLen + 1];
+    uint code = 0;
+    for (var b = 1; b <= maxLen; ++b) {
+      code = (code + (uint)blCount[b - 1]) << 1;
+      nextCode[b] = code;
+    }
+
+    // MSB-first: no bit reversal needed
+    var codes = new uint[numSymbols];
+    for (var i = 0; i < numSymbols; ++i)
+      if (lengths[i] > 0)
+        codes[i] = nextCode[lengths[i]]++;
+
+    return codes;
+  }
+}
