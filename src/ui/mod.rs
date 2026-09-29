@@ -16,5 +16,6 @@ pub mod pane;
 pub mod properties;
 pub mod selftest;
 pub mod sidebar;
+pub mod style;
 pub mod util;
 pub mod window;
