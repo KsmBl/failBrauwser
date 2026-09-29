@@ -27,6 +27,33 @@ fn io(e: ArchiveError) -> std::io::Error {
     std::io::Error::other(e.message)
 }
 
+/// Runs archive work with the helper's progress shown in the job.
+fn tracked<T>(ctx: &JobCtx, f: impl FnOnce() -> T) -> T {
+    use std::sync::atomic::Ordering;
+    // The job context outlives this call; the sink is dropped before it returns.
+    let ctx_ptr = ctx as *const JobCtx as usize;
+    failbrauwser::archive::client::with_progress(
+        move |p| {
+            let ctx = unsafe { &*(ctx_ptr as *const JobCtx) };
+            if p.phase == "writing" {
+                // Everything read; the archive is being written: an activity bar.
+                ctx.bytes_total.store(0, Ordering::Relaxed);
+                ctx.set_current("Writing the archive…");
+            } else {
+                ctx.bytes_total.store(p.total, Ordering::Relaxed);
+                ctx.bytes_done.store(p.done, Ordering::Relaxed);
+                ctx.set_current(match p.phase.as_str() {
+                    "extracting" => "Extracting…",
+                    "adding" => "Reading files for the archive…",
+                    "removing" => "Rewriting the archive…",
+                    _ => "Working…",
+                });
+            }
+        },
+        f,
+    )
+}
+
 fn leaf(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -77,10 +104,10 @@ pub fn open_entry(w: &Window, item: &Item) {
     w.app.jobs.start(
         w.win.upcast_ref(),
         title,
-        move |_| {
+        move |ctx| {
             let v = Vfs::global();
             let dir = v.scratch_dir("open").map_err(io)?;
-            v.extract(&loc2, std::slice::from_ref(&entry), &dir).map_err(io)
+            tracked(ctx, || v.extract(&loc2, std::slice::from_ref(&entry), &dir)).map_err(io)
         },
         move |outcome| {
             let (Some(w), Outcome::Done(paths)) = (weak.upgrade(), outcome) else { return };
@@ -118,7 +145,7 @@ fn watch_opened(w: &Window, loc: ArchiveLoc, entry: String, path: PathBuf) {
             w.app.jobs.start(
                 w.win.upcast_ref(),
                 format!("Saving “{name}” into the archive"),
-                move |_| Vfs::global().add(&loc2, &[(path2, entry2)]).map(|_| Vec::new()).map_err(io),
+                move |ctx| tracked(ctx, || Vfs::global().add(&loc2, &[(path2, entry2)])).map(|_| Vec::new()).map_err(io),
                 move |outcome| {
                     if let Some(w) = w2.upgrade() {
                         if matches!(outcome, Outcome::Done(_)) {
@@ -246,7 +273,7 @@ fn transfer_work(ctx: &JobCtx, sources: Vec<ClipSource>, dest: &Location, mode: 
                 ClipSource::Local(p) => local.push(p.clone()),
                 ClipSource::Archive(a, e) => {
                     ctx.set_current(format!("Extracting {}", leaf(e)));
-                    let got = v.extract(a, std::slice::from_ref(e), &staging).map_err(io)?;
+                    let got = tracked(ctx, || v.extract(a, std::slice::from_ref(e), &staging)).map_err(io)?;
                     local.extend(got);
                     from_archives.push((a.clone(), e.clone()));
                 }
@@ -270,7 +297,7 @@ fn transfer_work(ctx: &JobCtx, sources: Vec<ClipSource>, dest: &Location, mode: 
                 let add: Vec<(PathBuf, String)> = items.iter().zip(&targets).filter_map(|((p, _), t)| t.clone().map(|t| (p.clone(), t))).collect();
                 if !add.is_empty() {
                     ctx.set_current(format!("Adding {} item{} to the archive", add.len(), if add.len() == 1 { "" } else { "s" }));
-                    v.add(d, &add).map_err(io)?;
+                    tracked(ctx, || v.add(d, &add)).map_err(io)?;
                 }
                 created.extend(add.iter().map(|(_, t)| PathBuf::from(leaf(t))));
                 if mode == Mode::Move {
@@ -283,7 +310,7 @@ fn transfer_work(ctx: &JobCtx, sources: Vec<ClipSource>, dest: &Location, mode: 
         if mode == Mode::Move {
             for (a, e) in &from_archives {
                 ctx.set_current(format!("Removing {} from the archive", leaf(e)));
-                v.remove(a, std::slice::from_ref(e)).map_err(io)?;
+                tracked(ctx, || v.remove(a, std::slice::from_ref(e))).map_err(io)?;
             }
         }
         Ok(created)
@@ -308,7 +335,7 @@ pub fn delete_selection(w: &Window, pane: &Rc<Pane>) {
     w.app.jobs.start(
         w.win.upcast_ref(),
         format!("Deleting {} item{} from the archive", entries.len(), if entries.len() == 1 { "" } else { "s" }),
-        move |_| Vfs::global().remove(&a2, &entries).map(|_| Vec::new()).map_err(io),
+        move |ctx| tracked(ctx, || Vfs::global().remove(&a2, &entries)).map(|_| Vec::new()).map_err(io),
         move |_| {
             if let Some(w) = weak.upgrade() {
                 refresh_archive_tabs(&w, &a);
@@ -331,7 +358,7 @@ pub fn rename(w: &Window, pane: &Rc<Pane>, item: &Item, new: &str) {
     w.app.jobs.start(
         w.win.upcast_ref(),
         format!("Renaming “{}”", n.name),
-        move |_| Vfs::global().rename(&a2, &from, &to).map(|_| Vec::new()).map_err(io),
+        move |ctx| tracked(ctx, || Vfs::global().rename(&a2, &from, &to)).map(|_| Vec::new()).map_err(io),
         move |outcome| {
             if let Some(w) = weak.upgrade() {
                 refresh_archive_tabs(&w, &a);
@@ -415,7 +442,7 @@ pub fn extract_selected(w: &Window, dest: Option<PathBuf>) {
             let mut made = Vec::new();
             for a in &archives {
                 ctx.set_current(a.file_name().unwrap_or_default().to_string_lossy());
-                made.push(Vfs::global().extract_all(&ArchiveLoc::root(a.clone()), &dest).map_err(io)?);
+                made.push(tracked(ctx, || Vfs::global().extract_all(&ArchiveLoc::root(a.clone()), &dest)).map_err(io)?);
             }
             Ok(made)
         },
@@ -504,7 +531,7 @@ pub fn compress(w: &Window) {
         w.app.jobs.start(
             w.win.upcast_ref(),
             format!("Creating “{file}”"),
-            move |_| Vfs::global().helper().add(&target, &items, None).map(|_| vec![target.clone()]).map_err(io),
+            move |ctx| tracked(ctx, || Vfs::global().helper().add(&target, &items, None)).map(|_| vec![target.clone()]).map_err(io),
             move |outcome| {
                 if let (Some(w), Outcome::Done(made)) = (w2.upgrade(), outcome) {
                     fileops::select_created(&w, &loc, made);
