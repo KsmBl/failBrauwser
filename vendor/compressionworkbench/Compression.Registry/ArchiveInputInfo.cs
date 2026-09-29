@@ -74,6 +74,16 @@ public sealed record ArchiveInputInfo(
     }
   }
 
-  public byte[] ReadContent()
-    => this.InMemoryContent ?? System.IO.File.ReadAllBytes(this.FullPath);
+  /// <summary>
+  /// Told the size of every file input as it is read, so a host can show progress while an
+  /// archive is created or rebuilt (added for failBrauwser). Null when nobody listens.
+  /// </summary>
+  public static Action<long>? ReadObserver { get; set; }
+
+  public byte[] ReadContent() {
+    if (this.InMemoryContent != null) return this.InMemoryContent;
+    var data = System.IO.File.ReadAllBytes(this.FullPath);
+    ReadObserver?.Invoke(data.LongLength);
+    return data;
+  }
 }

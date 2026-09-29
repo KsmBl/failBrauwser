@@ -19,13 +19,16 @@ public static class Program {
 
     var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
     var stdout = Console.OpenStandardOutput();
+    Progress.Stdout = stdout;
     string? line;
     while ((line = stdin.ReadLine()) != null) {
       if (line.Length == 0) continue;
       var response = Handle(line, out var quit);
-      stdout.Write(response);
-      stdout.WriteByte((byte)'\n');
-      stdout.Flush();
+      lock (Progress.Out) {
+        stdout.Write(response);
+        stdout.WriteByte((byte)'\n');
+        stdout.Flush();
+      }
       if (quit) break;
     }
     return 0;
@@ -42,6 +45,7 @@ public static class Program {
         var req = doc.RootElement;
         id = req.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.Number ? idEl.GetInt64() : 0;
         var cmd = req.GetProperty("cmd").GetString() ?? "";
+        using var progress = Progress.Begin(id);
         w.WriteStartObject();
         w.WriteNumber("id", id);
         w.WriteBoolean("ok", true);
