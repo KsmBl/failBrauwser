@@ -105,9 +105,15 @@ public static class Commands {
   public static void Extract(string archive, string dest, string[]? names, string? password) {
     Directory.CreateDirectory(dest);
     string[]? raw = null;
+    var all = ArchiveOperations.List(archive, password);
+    // Progress: what has arrived in the destination out of what is coming.
+    var before = Progress.BytesBelow(dest);
+    var wantedSize = names == null
+      ? all.Where(e => !e.IsDirectory).Sum(e => e.OriginalSize)
+      : all.Where(e => !e.IsDirectory && names.Select(Normalize).Any(n => IsAtOrBelow(Normalize(e.Name), n))).Sum(e => e.OriginalSize);
+    Progress.Current?.Phase("extracting", wantedSize, () => Progress.BytesBelow(dest) - before);
     if (names != null) {
       var wanted = names.Select(Normalize).ToArray();
-      var all = ArchiveOperations.List(archive, password);
       raw = all.Where(e => wanted.Any(n => IsAtOrBelow(Normalize(e.Name), n))).Select(e => e.Name).ToArray();
       if (raw.Length == 0) throw new FileNotFoundException($"No such entry in archive: {string.Join(", ", names)}");
       // Make sure empty directories that were asked for exist as well.
@@ -128,6 +134,12 @@ public static class Commands {
     foreach (var item in items) Expand(item, inputs);
     if (inputs.Count == 0) return;
     var opts = new CompressionOptions { Password = password };
+    // Progress: bytes of the inputs read by the writer; a rebuild reads the old contents too.
+    var inputBytes = inputs.Where(i => !i.IsDirectory && File.Exists(i.FullPath)).Sum(i => new FileInfo(i.FullPath).Length);
+    var existing0 = File.Exists(archive) && new FileInfo(archive).Length > 0 && !(FormatRegistry.GetArchiveOps(FormatDetector.Detect(archive).ToString()) is IArchiveModifiable)
+      ? ArchiveOperations.List(archive, password).Where(e => !e.IsDirectory).Sum(e => e.OriginalSize)
+      : 0;
+    Progress.Current?.Phase("adding", inputBytes + existing0);
 
     if (!File.Exists(archive) || new FileInfo(archive).Length == 0) {
       ArchiveOperations.Create(archive, WithParents(inputs), opts);
@@ -184,11 +196,14 @@ public static class Commands {
   public static void Remove(string archive, string[] names, string? password) {
     RequireWritable(archive);
     var wanted = names.Select(Normalize).Where(n => n.Length > 0).ToArray();
-    var raw = ArchiveOperations.List(archive, password)
+    var listing = ArchiveOperations.List(archive, password);
+    var raw = listing
       .Where(e => wanted.Any(n => IsAtOrBelow(Normalize(e.Name), n)))
       .Select(e => e.Name)
       .ToArray();
     if (raw.Length == 0) return;
+    // A rebuild re-reads what stays.
+    Progress.Current?.Phase("removing", listing.Where(e => !e.IsDirectory && !raw.Contains(e.Name)).Sum(e => e.OriginalSize));
     ArchiveOperations.Remove(archive, raw, new CompressionOptions { Password = password });
   }
 
