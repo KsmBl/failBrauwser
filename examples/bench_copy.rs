@@ -10,7 +10,7 @@ fn main() {
     let (src, dest) = (PathBuf::from(&args[1]), PathBuf::from(&args[2]));
     let ctx = JobCtx::new();
     let t = std::time::Instant::now();
-    transfer(&ctx, &[src], &dest, Mode::Copy, &Options { smooth_writes: true, workers: None }).unwrap();
+    transfer(&ctx, &[src], &dest, Mode::Copy, &Options { smooth_writes: true, workers: None, verify: false }).unwrap();
     let s = ctx.snapshot();
     println!("{} files, {} bytes in {:?}", s.files_done, s.bytes_done, t.elapsed());
 }

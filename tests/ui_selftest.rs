@@ -249,3 +249,18 @@ fn custom_actions() {
         .unwrap();
     }, |_| {});
 }
+
+#[test]
+fn queued_paused_and_verified_copies() {
+    run_checked("queue.fbt", &[], |t| {
+        let s = t.join("src");
+        std::fs::create_dir_all(s.join("out")).unwrap();
+        for (n, size) in [("a.bin", 8 << 20), ("b.bin", 3 << 20), ("c.bin", 5 << 20)] {
+            std::fs::write(s.join(n), vec![7u8; size]).unwrap();
+        }
+    }, |t| {
+        for n in ["a.bin", "b.bin", "c.bin"] {
+            assert_eq!(std::fs::read(t.join("src/out").join(n)).unwrap(), std::fs::read(t.join("src").join(n)).unwrap());
+        }
+    });
+}

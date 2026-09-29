@@ -175,7 +175,7 @@ pub fn transfer(w: &Window, sources: Vec<ClipSource>, dest: Location, mode: Mode
     let verb = if mode == Mode::Move { "Moving" } else { "Copying" };
     let n = sources.len();
     let title = format!("{verb} {n} item{} to “{}”", if n == 1 { "" } else { "s" }, dest.title());
-    let opts = copy::Options { smooth_writes: w.app.settings.borrow().smooth_writes, workers: None };
+    let opts = copy::Options { smooth_writes: w.app.settings.borrow().smooth_writes, workers: None, verify: w.app.settings.borrow().verify_copies };
     let weak = Rc::downgrade(&w.me());
     let dest2 = dest.clone();
     let touched: Vec<ArchiveLoc> = sources

@@ -32,6 +32,8 @@ pub struct Options {
     pub smooth_writes: bool,
     /// Override the automatic number of workers.
     pub workers: Option<usize>,
+    /// Read every copied file back from the device and compare it with the original.
+    pub verify: bool,
 }
 
 #[derive(Debug)]
@@ -221,7 +223,8 @@ pub fn transfer(ctx: &JobCtx, sources: &[PathBuf], dest_dir: &Path, mode: Mode, 
     }
 
     let total: u64 = plan.files.iter().map(|f| f.size).sum();
-    ctx.bytes_total.fetch_add(total, Ordering::Relaxed);
+    // Verifying reads everything once more: the progress bar covers both passes.
+    ctx.bytes_total.fetch_add(if opts.verify { total * 2 } else { total }, Ordering::Relaxed);
     ctx.files_total.fetch_add(plan.files.len() as u64 + plan.links.len() as u64, Ordering::Relaxed);
     ctx.set_phase(Phase::Working);
 
@@ -252,7 +255,7 @@ pub fn transfer(ctx: &JobCtx, sources: &[PathBuf], dest_dir: &Path, mode: Mode, 
         // serialized by the filesystem, different folders proceed in parallel.
         interleave_by_folder(&mut plan.files);
     }
-    copy_files(ctx, &plan.files, mode, throttle, workers)?;
+    copy_files(ctx, &plan.files, mode, throttle, workers, opts.verify)?;
 
     for (src, target, dst) in &plan.links {
         if ctx.is_cancelled() {
@@ -372,7 +375,7 @@ fn interleave_by_folder(files: &mut Vec<FileTask>) {
     files.extend(keyed.into_iter().map(|(_, _, f)| f));
 }
 
-fn copy_files(ctx: &JobCtx, files: &[FileTask], mode: Mode, throttle: bool, workers: usize) -> io::Result<()> {
+fn copy_files(ctx: &JobCtx, files: &[FileTask], mode: Mode, throttle: bool, workers: usize, verify: bool) -> io::Result<()> {
     let next = AtomicUsize::new(0);
     let failure: Mutex<Option<io::Error>> = Mutex::new(None);
     let workers = workers.min(files.len()).max(1);
@@ -383,11 +386,12 @@ fn copy_files(ctx: &JobCtx, files: &[FileTask], mode: Mode, throttle: bool, work
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(task) = files.get(i) else { break };
+                    ctx.wait_while_paused();
                     if ctx.is_cancelled() {
                         break;
                     }
                     ctx.set_current(task.src.file_name().unwrap_or_default().to_string_lossy());
-                    match copy_one(ctx, task, mode, throttle, &mut buf) {
+                    match copy_one(ctx, task, mode, throttle, verify, &mut buf) {
                         Ok(()) => {
                             ctx.files_done.fetch_add(1, Ordering::Relaxed);
                         }
@@ -414,7 +418,7 @@ fn copy_files(ctx: &JobCtx, files: &[FileTask], mode: Mode, throttle: bool, work
 }
 
 /// Copies one file. Errors the user chose to skip return `Ok`.
-fn copy_one(ctx: &JobCtx, t: &FileTask, mode: Mode, throttle: bool, buf: &mut Vec<u8>) -> io::Result<()> {
+fn copy_one(ctx: &JobCtx, t: &FileTask, mode: Mode, throttle: bool, verify: bool, buf: &mut Vec<u8>) -> io::Result<()> {
     let src_meta = match fs::symlink_metadata(&t.src) {
         Ok(m) => m,
         Err(e) => {
@@ -440,7 +444,13 @@ fn copy_one(ctx: &JobCtx, t: &FileTask, mode: Mode, throttle: bool, buf: &mut Ve
     };
     let done = with_retry(ctx, &t.src, || {
         let mut counted = 0;
-        let r = write_file(ctx, t, &dst, throttle, buf, &mut counted);
+        let mut r = write_file(ctx, t, &dst, throttle, buf, &mut counted);
+        if r.is_ok() && verify {
+            r = verify_copy(ctx, &t.src, &dst, &mut counted);
+            if r.is_err() {
+                let _ = fs::remove_file(&dst);
+            }
+        }
         if r.is_err() {
             // A retry starts over: take back what the failed attempt counted.
             ctx.bytes_done.fetch_sub(counted, Ordering::Relaxed);
@@ -462,6 +472,48 @@ fn copy_one(ctx: &JobCtx, t: &FileTask, mode: Mode, throttle: bool, buf: &mut Ve
         let _ = with_retry(ctx, &t.src, || fs::remove_file(&t.src))?;
     }
     Ok(())
+}
+
+/// Compares a copy with its original, reading the copy from the device rather than from
+/// the page cache (it is flushed and dropped first).
+pub fn verify_copy(ctx: &JobCtx, src: &Path, dst: &Path, counted: &mut u64) -> io::Result<()> {
+    use std::io::Read;
+    ctx.set_phase(Phase::Working);
+    let mut a = fs::File::open(src)?;
+    let mut b = fs::File::open(dst)?;
+    unsafe {
+        libc::fdatasync(b.as_raw_fd());
+        libc::posix_fadvise(b.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+    }
+    let mut x = vec![0u8; 1 << 20];
+    let mut y = vec![0u8; 1 << 20];
+    loop {
+        ctx.wait_while_paused();
+        if ctx.is_cancelled() {
+            return Err(fastcopy::cancelled());
+        }
+        let n = read_full(&mut a, &mut x)?;
+        let m = read_full(&mut b, &mut y)?;
+        if n != m || x[..n] != y[..m] {
+            return Err(io::Error::other("verification failed: the copy differs from the original"));
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        ctx.add_bytes(n as u64);
+        *counted += n as u64;
+    }
+
+    fn read_full(f: &mut fs::File, buf: &mut [u8]) -> io::Result<usize> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            match f.read(&mut buf[filled..])? {
+                0 => break,
+                n => filled += n,
+            }
+        }
+        Ok(filled)
+    }
 }
 
 fn write_file(ctx: &JobCtx, t: &FileTask, dst: &Path, throttle: bool, buf: &mut Vec<u8>, counted: &mut u64) -> io::Result<()> {

@@ -96,6 +96,18 @@ pub fn install_app_actions(ctx: &Rc<AppCtx>) {
     });
     app.add_action(&a);
 
+    let verify = ctx.settings.borrow().verify_copies;
+    let a = gio::SimpleAction::new_stateful("verify-copies", None, &verify.to_variant());
+    let c = Rc::downgrade(ctx);
+    a.connect_change_state(move |a, v| {
+        let Some(c) = c.upgrade() else { return };
+        let on = v.and_then(|v| v.get::<bool>()).unwrap_or(false);
+        a.set_state(&on.to_variant());
+        c.settings.borrow_mut().verify_copies = on;
+        c.save_settings_soon();
+    });
+    app.add_action(&a);
+
     let a = gio::SimpleAction::new("about", None);
     let c = Rc::downgrade(ctx);
     a.connect_activate(move |_, _| {
@@ -170,6 +182,7 @@ pub fn menubar_model() -> gio::Menu {
     section(&edit, |s| {
         item(s, "Keep Running in _Background", "app.daemon");
         item(s, "_Smooth Writes to Slow Drives", "app.smooth-writes");
+        item(s, "_Verify Copies", "app.verify-copies");
     });
     bar.append_submenu(Some("_Edit"), &edit);
 

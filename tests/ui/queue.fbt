@@ -1,0 +1,26 @@
+# Copies to the same drive wait for each other; pause holds a copy; verify checks copies.
+open $T/src
+jobs-start-paused on
+select a.bin
+action win.copy
+select out
+action win.paste-into
+expect-jobs 1 0
+select b.bin
+action win.copy
+select out
+action win.paste-into
+expect-jobs 1 1
+jobs-start-paused off
+jobs-pause off
+wait-no-jobs
+wait-exists $T/src/out/a.bin
+wait-exists $T/src/out/b.bin
+# With verification on, a copy still arrives complete.
+action app.verify-copies
+select c.bin
+action win.copy
+select out
+action win.paste-into
+wait-no-jobs
+wait-exists $T/src/out/c.bin
