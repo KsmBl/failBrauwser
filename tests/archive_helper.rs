@@ -169,3 +169,58 @@ fn encrypted_archives_stay_encrypted_when_edited() {
     h.add(&sz, &[(a, "a.txt".into())], Some("pw")).unwrap();
     assert!(h.extract(&sz, None, &dir.path().join("o7"), None).unwrap_err().needs_password());
 }
+
+fn xorriso(args: &[&str]) -> Option<String> {
+    let out = Command::new("xorriso").args(args).output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr))
+}
+
+#[test]
+fn iso_edits_keep_rock_ridge_joliet_and_boot_records() {
+    let Some(h) = helper() else { return };
+    if xorriso(&["-version"]).is_none() {
+        eprintln!("xorriso missing, skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    fs::create_dir_all(src.join("boot")).unwrap();
+    fs::create_dir_all(src.join("empty")).unwrap();
+    let long = "a name that is much longer than the sixty-four characters Joliet can hold.txt";
+    fs::write(src.join(long), "long").unwrap();
+    fs::write(src.join("run.sh"), "#!/bin/sh\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(src.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(src.join("boot/isolinux.bin"), vec![0x5au8; 4096]).unwrap();
+    fs::write(src.join("boot/efi.img"), vec![0xa5u8; 32768]).unwrap();
+    let iso = dir.path().join("b.iso");
+    let made = Command::new("xorriso")
+        .args(["-as", "mkisofs", "-R", "-J", "-V", "KEEPME", "-b", "boot/isolinux.bin", "-c", "boot/boot.cat", "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table", "-eltorito-alt-boot", "-e", "boot/efi.img", "-no-emul-boot", "-o"])
+        .arg(&iso)
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+
+    let extra = dir.path().join("extra.txt");
+    fs::write(&extra, "added").unwrap();
+    h.add(&iso, &[(extra, "new folder/extra.txt".into())], None).unwrap();
+    h.rename(&iso, "run.sh", "start.sh", None).unwrap();
+
+    let iso_s = iso.to_str().unwrap();
+    let rr = xorriso(&["-indev", iso_s, "-find", "/", "-exec", "lsdl"]).unwrap();
+    assert!(rr.contains(&format!("'/{long}'")), "{rr}");
+    assert!(rr.contains("'/new folder/extra.txt'"), "{rr}");
+    assert!(rr.contains("'/empty'"), "{rr}");
+    assert!(rr.lines().any(|l| l.starts_with("-rwxr-xr-x") && l.ends_with("'/start.sh'")), "{rr}");
+    let joliet = xorriso(&["-rockridge", "off", "-indev", iso_s, "-find", "/"]).unwrap();
+    assert!(joliet.contains("'/new folder/extra.txt'"), "{joliet}");
+    let boot = xorriso(&["-indev", iso_s, "-report_el_torito", "plain"]).unwrap();
+    assert!(boot.contains("El Torito img path :   1  /boot/isolinux.bin"), "{boot}");
+    assert!(boot.contains("El Torito img opts :   1  boot-info-table"), "{boot}");
+    assert!(boot.contains("El Torito img path :   2  /boot/efi.img"), "{boot}");
+    assert!(boot.contains("Volume id    : 'KEEPME'"), "{boot}");
+    // And our own listing reads it back with the full names.
+    let names: Vec<String> = h.list(&iso, None).unwrap().entries.into_iter().map(|e| e.name).collect();
+    assert!(names.contains(&long.to_string()), "{names:?}");
+}

@@ -126,6 +126,13 @@ fn iso_images() {
             .output()
             .unwrap();
         assert!(ok.status.success());
+        let hy = Command::new("xorriso")
+            .args(["-as", "mkisofs", "-R", "-J", "--protective-msdos-label", "-o"])
+            .arg(w.join("hybrid.iso"))
+            .arg(w.join("src"))
+            .output()
+            .unwrap();
+        assert!(hy.status.success());
         std::fs::remove_dir_all(w.join("src")).unwrap();
     });
 }
