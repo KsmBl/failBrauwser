@@ -1155,6 +1155,13 @@ impl Pane {
         self.store.value(iter, column as i32).get::<String>().ok()
     }
 
+    /// (files, folders) shown right now.
+    pub fn counts(&self) -> (usize, usize) {
+        let st = self.st.borrow();
+        let dirs = st.rows.values().filter(|(i, _)| i.is_dir_like()).count();
+        (st.rows.len() - dirs, dirs)
+    }
+
     /// Names of the folders shown.
     pub fn dir_names(&self) -> Vec<OsString> {
         self.st.borrow().rows.values().filter(|(i, _)| i.is_dir_like()).map(|(i, _)| i.os_name()).collect()

@@ -54,6 +54,9 @@ pub fn pane_scrolled(w: &Window, p: &Rc<Pane>) {
 
 pub fn pane_contents_changed(w: &Window, p: &Rc<Pane>) {
     super::dirsize::update(w, p);
+    if Rc::ptr_eq(p, &w.current_pane()) {
+        super::summary::update(w, true);
+    }
     // After the rows are laid out, so the visible range is known.
     let (ww, pw) = (Rc::downgrade(&w.me()), Rc::downgrade(p));
     gtk::glib::idle_add_local_once(move || {

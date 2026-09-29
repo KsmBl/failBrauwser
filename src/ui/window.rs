@@ -157,6 +157,7 @@ impl Window {
 
     /// Hook for features that attach to a freshly built window (side panel, drives page).
     fn after_build(self: &Rc<Self>) {
+        super::summary::attach(self, &self.statusbar);
         super::extensions::window_created(self);
     }
 
@@ -305,6 +306,7 @@ impl Window {
     }
 
     pub fn update_status(&self) {
+        super::summary::update(self, false);
         let pane = self.current_pane();
         let ctx = self.statusbar.context_id("main");
         self.statusbar.remove_all(ctx);
