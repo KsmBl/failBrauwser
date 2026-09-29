@@ -275,26 +275,32 @@ impl Pane {
     pub fn select_names(&self, names: &[OsString]) {
         // An explicit selection wins over one still waiting for its rows.
         self.cancel_pending_selection();
-        let st = self.st.borrow();
-        let mut first = None;
+        let paths: Vec<gtk::TreePath> = {
+            let st = self.st.borrow();
+            names
+                .iter()
+                .filter_map(|n| st.by_name.get(n).and_then(|k| st.rows.get(k)))
+                .filter_map(|(_, iter)| self.store.path(iter))
+                .collect()
+        };
         self.unselect_all();
-        for n in names {
-            if let Some((_, iter)) = st.by_name.get(n).and_then(|k| st.rows.get(k)) {
-                let Some(path) = self.store.path(iter) else { continue };
-                self.tree.selection().select_iter(iter);
-                self.icons.select_path(&path);
-                if first.is_none() {
-                    first = Some(path);
-                }
+        // The keyboard cursor first: moving it resets the selection to that one row.
+        if let Some(p) = paths.first() {
+            if self.view_is_icons() {
+                self.icons.set_cursor(p, None::<&gtk::CellRenderer>, false);
+            } else {
+                self.tree.set_cursor(p, None::<&gtk::TreeViewColumn>, false);
             }
         }
-        if let Some(p) = first {
+        for p in &paths {
+            self.tree.selection().select_path(p);
+            self.icons.select_path(p);
+        }
+        if let Some(p) = paths.first() {
             if self.view_is_icons() {
-                self.icons.set_cursor(&p, None::<&gtk::CellRenderer>, false);
-                self.icons.scroll_to_path(&p, false, 0.0, 0.0);
+                self.icons.scroll_to_path(p, false, 0.0, 0.0);
             } else {
-                self.tree.set_cursor(&p, None::<&gtk::TreeViewColumn>, false);
-                self.tree.scroll_to_cell(Some(&p), None::<&gtk::TreeViewColumn>, false, 0.0, 0.0);
+                self.tree.scroll_to_cell(Some(p), None::<&gtk::TreeViewColumn>, false, 0.0, 0.0);
             }
         }
     }
