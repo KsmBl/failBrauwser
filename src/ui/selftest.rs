@@ -189,6 +189,11 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("drives entry selected: {sel}"));
             }
         }
+        "trash-bar" => {
+            if !super::trash::click_bar(&w.current_pane(), arg) {
+                return Err(format!("trash bar button {arg:?} is not shown or not clickable"));
+            }
+        }
         "crumb-click" => {
             if !w.pathbar.click(arg) {
                 return Err(format!("no button {arg:?}, have {:?}", w.pathbar.labels()));
