@@ -60,10 +60,8 @@ that; windows then take a moment longer the first time).
 ### Requirements
 
 - Rust 1.92 or newer, GTK 3.24 (development files), `pkg-config`
-- For archives: the .NET 10 SDK and a checkout of
-  [CompressionWorkbench](https://github.com/Hawkynt/CompressionWorkbench) next to this
-  repository (`../compressionworkbench`, or set `CWB_ROOT`), branch
-  `fix/failbrauwser-integration` (see below). Without them failBrauwser works, minus archives.
+- For archives: the .NET 10 SDK (the archive library is included in `vendor/`). Without it
+  failBrauwser works, minus archives.
 - Optional at run time: UDisks2 (drives page details and mounting), GVfs (trash, places).
 
 ## Using it
@@ -185,7 +183,13 @@ helper/FbArchive/  fb-archive: C# (NativeAOT) host for CompressionWorkbench's ar
 tests/             engine, archive and headless UI tests
 ```
 
-Archive support uses the archive logic of CompressionWorkbench (`Compression.Lib`) through a
+Archive support is the work of **[@Hawkynt](https://github.com/Hawkynt)**: his
+[CompressionWorkbench](https://github.com/Hawkynt/CompressionWorkbench) reads and writes
+hundreds of archive, compression and file system formats. The parts failBrauwser needs are
+included in `vendor/compressionworkbench` (see `VENDORED.md` there for the upstream commit and
+every local change), so this repository builds on its own.
+
+failBrauwser uses the archive logic of CompressionWorkbench (`Compression.Lib`) through a
 small NativeAOT helper, `fb-archive`, spoken to with one JSON object per line on stdin/stdout.
 It starts in about 15 ms, only when an archive is opened, and exits after 45 s without work,
 so plain browsing never carries the .NET runtime. Nested archives are extracted into
@@ -193,8 +197,8 @@ so plain browsing never carries the .NET runtime. Nested archives are extracted 
 
 ### Changes to CompressionWorkbench
 
-Editing archives like folders needed fixes in the library; they are on the branch
-`fix/failbrauwser-integration` of the CompressionWorkbench checkout:
+Editing archives like folders needed fixes in the library, made in the vendored copy and
+listed in `vendor/compressionworkbench/VENDORED.md`:
 
 - Removing an entry through a rebuild also removed every file with the same *leaf name* in
   other folders (`a.txt` took `sub/a.txt` with it), compared case-insensitively, and left the
@@ -203,7 +207,7 @@ Editing archives like folders needed fixes in the library; they are on the branc
 - Adding an empty folder to an existing archive silently did nothing (rebuild path and ZIP).
 - Rebuilds reset all timestamps to 1970/1980 and dropped executable bits. TAR and ZIP now keep
   entry times and modes, and restore them on extraction; TAR listings report UTC.
-- Regression tests: `Compression.Tests/Operations/RebuildEditSemanticsTests.cs`.
+- Regression tests: `helper/FbArchive.Tests` (run by `make test`).
 
 ## Development
 
@@ -230,4 +234,5 @@ such a script (see `src/ui/selftest.rs` for the commands).
 
 ## License
 
-GPL-3.0-or-later. The archive helper links CompressionWorkbench (LGPL-3.0-or-later).
+GPL-3.0-or-later. The archive helper links CompressionWorkbench by
+[@Hawkynt](https://github.com/Hawkynt) (LGPL-3.0-or-later, `vendor/compressionworkbench/LICENSE`).
