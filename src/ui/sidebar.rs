@@ -113,6 +113,38 @@ impl Sidebar {
         Some(PathBuf::from(p))
     }
 
+    fn tree_path_of(&self, dir: &Path) -> Option<gtk::TreePath> {
+        let mut found = None;
+        self.store.foreach(|m, path, iter| {
+            let p: String = m.value(iter, T_PATH as i32).get().unwrap_or_default();
+            if Path::new(&p) == dir {
+                found = Some(path.clone());
+                return true;
+            }
+            false
+        });
+        found
+    }
+
+    /// Expands a folder once, like a click on its triangle (it must be shown).
+    pub fn expand(&self, dir: &Path) -> bool {
+        match self.tree_path_of(dir) {
+            Some(p) => {
+                self.tree.expand_row(&p, false);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The folder is expanded and shows its real subfolders (not the placeholder).
+    pub fn expanded_with_children(&self, dir: &Path) -> bool {
+        let Some(p) = self.tree_path_of(dir) else { return false };
+        let Some(iter) = self.store.iter(&p) else { return false };
+        let first: Option<String> = self.store.iter_children(Some(&iter)).map(|c| self.store.value(&c, T_PATH as i32).get().unwrap_or_default());
+        self.tree.row_expanded(&p) && first.is_some_and(|f| !f.is_empty())
+    }
+
     /// Selects a folder in the tree as if clicked (it must be shown).
     pub fn click(&self, dir: &Path) -> bool {
         let mut found = None;
@@ -292,9 +324,14 @@ impl Sidebar {
             let dirs = gio::spawn_blocking(move || subfolders(Path::new(&path), show_hidden)).await.unwrap_or_default();
             let Some(sb) = me.upgrade() else { return };
             let Some(iter) = row.and_then(|r| r.path()).and_then(|p| sb.store.iter(&p)) else { return };
-            // Drop the placeholder, add the real subfolders.
-            if let Some(child) = sb.store.iter_children(Some(&iter)) {
-                while sb.store.remove(&child) {}
+            // Add the real subfolders first, then drop the placeholder: a row that is left
+            // without children for a moment gets collapsed by GTK, which made the first
+            // click on an expander look like it did nothing.
+            let mut old = Vec::new();
+            let mut child = sb.store.iter_children(Some(&iter));
+            while let Some(c) = child {
+                old.push(c.clone());
+                child = if sb.store.iter_next(&c) { Some(c) } else { None };
             }
             for d in dirs {
                 let icon = super::util::icon_for_entry(&d.entry);
@@ -302,6 +339,9 @@ impl Sidebar {
                 if d.has_children {
                     sb.add_placeholder(&child);
                 }
+            }
+            for c in old {
+                sb.store.remove(&c);
             }
             if let Some(f) = then {
                 f(&sb);
