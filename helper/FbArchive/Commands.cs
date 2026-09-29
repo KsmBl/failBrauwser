@@ -146,6 +146,20 @@ public static class Commands {
       return;
     }
     RequireWritable(archive);
+    if (password != null) {
+      // In-place edits of some formats (ZIP) ignore the password and would add new entries
+      // unencrypted: with a password the archive is rebuilt, everything encrypted.
+      RebuildEncrypted(archive, password, tmp => {
+        foreach (var i in inputs) {
+          var dest = Path.Combine(tmp, Normalize(i.EntryName));
+          if (i.IsDirectory) { Directory.CreateDirectory(dest); continue; }
+          Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+          File.Copy(i.FullPath, dest, overwrite: true);
+          File.SetLastWriteTimeUtc(dest, File.GetLastWriteTimeUtc(i.FullPath));
+        }
+      });
+      return;
+    }
     var existing = ArchiveOperations.List(archive, password).Select(e => Normalize(e.Name)).ToHashSet(StringComparer.Ordinal);
     // Replacing a file means dropping the old entry first, otherwise some formats keep both.
     var replaced = inputs.Where(i => !i.IsDirectory && existing.Contains(Normalize(i.EntryName))).Select(i => Normalize(i.EntryName)).ToArray();
@@ -202,6 +216,16 @@ public static class Commands {
       .Select(e => e.Name)
       .ToArray();
     if (raw.Length == 0) return;
+    if (password != null) {
+      RebuildEncrypted(archive, password, tmp => {
+        foreach (var n in wanted) {
+          var p = Path.Combine(tmp, n);
+          if (File.Exists(p)) File.Delete(p);
+          else if (Directory.Exists(p)) Directory.Delete(p, true);
+        }
+      });
+      return;
+    }
     // A rebuild re-reads what stays.
     Progress.Current?.Phase("removing", listing.Where(e => !e.IsDirectory && !raw.Contains(e.Name)).Sum(e => e.OriginalSize));
     ArchiveOperations.Remove(archive, raw, new CompressionOptions { Password = password });
@@ -243,6 +267,31 @@ public static class Commands {
       var items = new List<AddItem> { new(staged, dst) };
       Remove(archive, [src], password);
       Add(archive, items, password);
+    }
+    finally {
+      try { temp.Delete(true); } catch (IOException) { }
+    }
+  }
+
+  /// <summary>
+  /// Extracts everything with the password, lets <paramref name="mutate"/> change the tree,
+  /// and writes the archive anew in the same format, encrypted with the same password.
+  /// </summary>
+  private static void RebuildEncrypted(string archive, string password, Action<string> mutate) {
+    var format = FormatDetector.Detect(archive);
+    var temp = Directory.CreateTempSubdirectory("fb-archive-crypt-");
+    try {
+      var all = ArchiveOperations.List(archive, password);
+      Progress.Current?.Phase("removing", all.Where(e => !e.IsDirectory).Sum(e => e.OriginalSize));
+      ArchiveOperations.Extract(archive, temp.FullName, password, null);
+      foreach (var d in all.Where(e => e.IsDirectory)) Directory.CreateDirectory(Path.Combine(temp.FullName, Normalize(d.Name)));
+      mutate(temp.FullName);
+      var inputs = new List<ArchiveInput>();
+      foreach (var dir in Directory.GetDirectories(temp.FullName, "*", SearchOption.AllDirectories))
+        inputs.Add(new ArchiveInput(dir, Path.GetRelativePath(temp.FullName, dir).Replace('\\', '/') + "/"));
+      foreach (var file in Directory.GetFiles(temp.FullName, "*", SearchOption.AllDirectories))
+        inputs.Add(new ArchiveInput(file, Path.GetRelativePath(temp.FullName, file).Replace('\\', '/')));
+      ArchiveOperations.Create(archive, inputs, new CompressionOptions { Password = password }, format);
     }
     finally {
       try { temp.Delete(true); } catch (IOException) { }

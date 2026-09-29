@@ -69,6 +69,7 @@ pub fn pane_contents_changed(w: &Window, p: &Rc<Pane>) {
         }
     });
     super::trash::update_bar(p);
+    super::archive::maybe_ask_password(w, p);
     // "Empty Trash" and friends depend on what is there now.
     if Rc::ptr_eq(p, &w.current_pane()) {
         fileops::update_sensitivity(w);

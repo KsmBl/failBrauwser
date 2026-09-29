@@ -239,6 +239,8 @@ impl Jobs {
             let errors = job.ctx.errors();
             if let Some(parent) = job.parent.upgrade() {
                 match &outcome {
+                    // A missing password is asked for by the operation itself.
+                    Outcome::Failed(msg) if msg.starts_with(super::archive::PASSWORD_MARK) => {}
                     Outcome::Failed(msg) => util::show_error(&parent, &format!("{} failed", job.title), msg),
                     _ if !errors.is_empty() => {
                         let mut text = errors.iter().take(15).cloned().collect::<Vec<_>>().join("\n");
