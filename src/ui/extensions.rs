@@ -19,6 +19,7 @@ pub fn window_created(w: &Rc<Window>) {
     w.add_action("compress", archive::compress);
     w.add_action("open-as-archive", archive::open_as_archive);
     w.add_action("properties", super::properties::show);
+    super::trash::install_actions(w);
     super::sidebar::attach(w);
 }
 
@@ -28,6 +29,10 @@ pub fn ask_archive_password(w: &Window, p: &Rc<Pane>, loc: &Location) {
 
 /// Places that are not local folders (network shares mounted through GVfs without a path).
 pub fn open_uri(w: &Window, uri: &str) {
+    if uri.starts_with("trash:") {
+        w.navigate(Location::Trash);
+        return;
+    }
     util::show_error(&w.win, "Cannot open location", &format!("“{uri}” is not a local folder."));
 }
 
@@ -42,6 +47,10 @@ pub fn pane_location_changed(_w: &Window, p: &Rc<Pane>) {
 
 pub fn pane_contents_changed(w: &Window, p: &Rc<Pane>) {
     super::dirsize::update(w, p);
+    // Folders created or removed here must show up in the tree too.
+    if let (Some(sb), Some(dir)) = (super::sidebar::for_window(w), p.location().local_path()) {
+        sb.refresh_dir(dir);
+    }
 }
 
 /// Total sizes for locations that are not plain folders.
@@ -72,7 +81,8 @@ pub fn location_writable(loc: &Location) -> bool {
         }
         // Known once the archive was listed (always the case while it is shown).
         Location::Archive(a) => failbrauwser::archive::vfs::Vfs::global().cached(a).is_some_and(|x| x.writable),
-        Location::Drives => false,
+        // Nothing can be put into the trash view; items there are restored or deleted.
+        Location::Drives | Location::Trash => false,
     }
 }
 
@@ -112,6 +122,17 @@ fn section(menu: &gio::Menu, items: &[(&str, &str)]) {
 /// The right-click menu for the current selection (or the folder background).
 pub fn context_menu_model(_w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::Menu {
     let menu = gio::Menu::new();
+    if pane.location() == Location::Trash {
+        if items.is_empty() {
+            section(&menu, &[("_Empty Trash", "win.empty-trash")]);
+            section(&menu, &[("Select _All", "win.select-all"), ("_Reload", "win.reload")]);
+        } else {
+            section(&menu, &[("_Restore", "win.restore")]);
+            section(&menu, &[("_Delete Permanently", "win.delete")]);
+            section(&menu, &[("_Properties…", "win.properties")]);
+        }
+        return menu;
+    }
     let local = matches!(pane.location(), Location::Dir(_));
     if items.is_empty() {
         section(&menu, &[("Create _Folder…", "win.new-folder"), ("Create _Document…", "win.new-file")]);

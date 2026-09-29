@@ -55,7 +55,10 @@ pub fn update_sensitivity(w: &Window) {
     set_enabled(w, "paste-into", n == 1 && writable);
     set_enabled(w, "rename", n == 1 && writable);
     set_enabled(w, "trash", n > 0 && writable && matches!(loc, Location::Dir(_)));
-    set_enabled(w, "delete", n > 0 && writable);
+    let in_trash = loc == Location::Trash;
+    set_enabled(w, "delete", n > 0 && (writable || in_trash));
+    set_enabled(w, "copy", n > 0 && !in_trash);
+    super::trash::update_sensitivity(w, |name, on| set_enabled(w, name, on));
     set_enabled(w, "new-folder", writable && browsable);
     set_enabled(w, "new-file", writable && browsable);
 }
@@ -176,6 +179,10 @@ fn delete_selection(w: &Window) {
     util::confirm(&w.win, &format!("Permanently delete {what}?"), "Deleted items cannot be restored.", "_Delete", move || {
         let Some(w) = weak.upgrade() else { return };
         let pane = w.current_pane();
+        if pane.location() == Location::Trash {
+            super::trash::delete_selection(&w);
+            return;
+        }
         if let Location::Archive(_) = pane.location() {
             super::extensions::delete_non_local(&w, &pane);
             return;
@@ -215,6 +222,7 @@ fn rename_selection(w: &Window) {
                 }
             }
             Item::Archive(_) => super::extensions::rename_non_local(&w, &pane, &item, &new),
+            Item::Trash(..) => {}
         }
     });
 }

@@ -32,6 +32,9 @@ pub struct Crumb {
 
 /// The steps from `/` down to `loc`.
 pub fn crumbs_for(loc: &Location) -> Vec<Crumb> {
+    if *loc == Location::Trash {
+        return vec![Crumb { label: "Trash".into(), icon: Some("user-trash-symbolic"), location: Location::Trash }];
+    }
     if *loc == Location::Drives {
         return vec![Crumb { label: "Drives".into(), icon: Some("drive-harddisk-symbolic"), location: Location::Drives }];
     }
