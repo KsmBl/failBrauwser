@@ -243,6 +243,14 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("{n} items selected"));
             }
         }
+        "expect-custom-actions" => {
+            // expect-custom-actions <a> | <b>  (in menu order)
+            let want: Vec<String> = arg.split(" | ").map(str::to_string).collect();
+            let got = super::customactions::available(&w);
+            if got != want {
+                return Err(format!("actions are {got:?}"));
+            }
+        }
         "crumb-click" => {
             if !w.pathbar.click(arg) {
                 return Err(format!("no button {arg:?}, have {:?}", w.pathbar.labels()));

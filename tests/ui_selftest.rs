@@ -227,3 +227,25 @@ fn click_into_empty_space() {
         std::fs::write(t.join("d/b.txt"), "b").unwrap();
     });
 }
+
+#[test]
+fn custom_actions() {
+    // Any existing program makes the built-in "Open Terminal Here" appear, on any machine.
+    run_checked("custom_actions.fbt", &[("TERMINAL", "sh")], |t| {
+        let w = t.join("w");
+        std::fs::create_dir_all(w.join("sub")).unwrap();
+        std::fs::write(w.join("pic.png"), "png").unwrap();
+        std::fs::create_dir_all(t.join("config/Thunar")).unwrap();
+        std::fs::create_dir_all(t.join("config/failbrauwser")).unwrap();
+        std::fs::write(
+            t.join("config/Thunar/uca.xml"),
+            "<actions><action><name>Thunar Folder Action</name><command>touch %f/marker</command><patterns>*</patterns><directories/></action></actions>",
+        )
+        .unwrap();
+        std::fs::write(
+            t.join("config/failbrauwser/actions.xml"),
+            "<actions><action><name>Image Action</name><command>touch %f.done</command><patterns>*.png</patterns><image-files/></action></actions>",
+        )
+        .unwrap();
+    }, |_| {});
+}
