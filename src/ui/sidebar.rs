@@ -19,6 +19,8 @@ const T_LOADED: u32 = 3;
 
 pub struct Sidebar {
     pub places: gtk::PlacesSidebar,
+    /// "Drives" above the places (GTK's places list cannot show custom locations).
+    drives: gtk::ListBox,
     tree: gtk::TreeView,
     store: gtk::TreeStore,
     tree_box: gtk::ScrolledWindow,
@@ -72,8 +74,29 @@ pub fn attach(w: &Rc<Window>) {
     tree_box.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
     tree_box.add(&tree);
 
+    let drives = gtk::ListBox::new();
+    drives.style_context().add_class("sidebar");
+    drives.style_context().add_class("fb-shortcuts");
+    drives.set_selection_mode(gtk::SelectionMode::Single);
+    drives.set_activate_on_single_click(true);
+    let row = gtk::ListBoxRow::new();
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let icon = gtk::Image::from_gicon(&gio::ThemedIcon::from_names(&["drive-harddisk-symbolic", "drive-harddisk"]), gtk::IconSize::Menu);
+    icon.style_context().add_class("sidebar-icon");
+    let label = gtk::Label::new(Some("Drives"));
+    label.set_xalign(0.0);
+    label.style_context().add_class("sidebar-label");
+    content.pack_start(&icon, false, false, 0);
+    content.pack_start(&label, true, true, 0);
+    row.add(&content);
+    row.set_tooltip_text(Some("All drives with their fill levels (Alt+D)"));
+    drives.add(&row);
+    let top = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    top.pack_start(&drives, false, false, 0);
+    top.pack_start(&places, true, true, 0);
+
     let split = gtk::Paned::new(gtk::Orientation::Vertical);
-    split.pack1(&places, true, false);
+    split.pack1(&top, true, false);
     split.pack2(&tree_box, true, false);
     split.set_position(w.app.settings.borrow().sidebar_split);
     w.side.pack_start(&split, true, true, 0);
@@ -81,6 +104,7 @@ pub fn attach(w: &Rc<Window>) {
 
     let sb = Rc::new(Sidebar {
         places,
+        drives,
         tree,
         store,
         tree_box,
@@ -101,6 +125,17 @@ pub fn attach(w: &Rc<Window>) {
 }
 
 impl Sidebar {
+    /// Activates the Drives entry as a click would (tests).
+    pub fn click_drives(&self) {
+        if let Some(r) = self.drives.row_at_index(0) {
+            r.activate();
+        }
+    }
+
+    pub fn drives_selected(&self) -> bool {
+        self.drives.selected_row().is_some()
+    }
+
     /// The folder at the top of the tree.
     pub fn root_path(&self) -> Option<PathBuf> {
         self.root.borrow().clone()
@@ -185,6 +220,13 @@ impl Sidebar {
             }
         });
 
+        let win = self.window.clone();
+        self.drives.connect_row_activated(move |_, _| {
+            if let Some(w) = win.upgrade() {
+                w.navigate(Location::Drives);
+            }
+        });
+
         let me = Rc::downgrade(self);
         self.tree.connect_test_expand_row(move |_, iter, _| {
             if let Some(sb) = me.upgrade() {
@@ -262,6 +304,13 @@ impl Sidebar {
         match loc.local_path() {
             Some(p) => self.places.set_location(Some(&gio::File::for_path(p))),
             None => self.places.set_location(None::<&gio::File>),
+        }
+        if loc == Location::Drives {
+            if let Some(r) = self.drives.row_at_index(0) {
+                self.drives.select_row(Some(&r));
+            }
+        } else {
+            self.drives.unselect_all();
         }
         if !w.app.settings.borrow().show_tree {
             return;
