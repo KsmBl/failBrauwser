@@ -1,0 +1,357 @@
+#pragma warning disable CS1591
+using System.Text;
+using Codec.Pcm;
+using Codec.Wma;
+using Codec.WmaLossless;
+using Codec.WmaPro;
+using Compression.Registry;
+
+namespace FileFormat.Asf;
+
+/// <summary>
+/// Surfaces a Microsoft Advanced Systems Format container (<c>.asf</c>/<c>.wma</c>/
+/// <c>.wmv</c>) as an archive of the byte-exact original (<c>FULL.asf</c>, Kind
+/// <c>Container</c>) plus rich metadata and a description of each carried stream.
+/// The Data Object packets are depayloaded into per-stream elementary bitstreams
+/// (<c>streams/stream_NN.bin</c>, Kind <c>Stream</c>) and each stream is described in
+/// <c>streams/stream_NN.info.txt</c> (Kind <c>Tag</c>) carrying its WAVEFORMATEX data,
+/// media-object boundaries and codec / bitrate.
+/// WMA v1/v2 audio streams (WAVEFORMATEX tags <c>0x160</c>/<c>0x161</c>) are decoded
+/// via <c>Codec.Wma</c> and WMA 9 Professional streams (tag <c>0x162</c>) via
+/// <c>Codec.WmaPro</c>, and WMA Lossless streams (tag <c>0x163</c>) bit-exactly via
+/// <c>Codec.WmaLossless</c>, into one mono <c>&lt;CHANNEL&gt;.wav</c> per channel (Kind
+/// <c>Channel</c>). The encoded <c>stream_NN.bin</c> is retained as well, so decoding
+/// never destroys the information required for a byte-exact codec remux.
+/// <para>
+/// The write side muxes arbitrary unencrypted audio WAVEFORMATEX streams from
+/// <c>stream_NN.info.txt</c> + <c>stream_NN.bin</c>, preserving codec-private data and
+/// media-object boundaries. Fresh encoding from WAV supports integer PCM and G.711
+/// A-law/µ-law; an IEEE-float or G.711 WAV can also be passed through directly. WMA-family
+/// codecs remain remux-only because the checked-in managed codecs are decoders, not encoders.
+/// Existing instances are edited transactionally by reconstructing their canonical encoded
+/// stream entries and remuxing them.
+/// </para>
+/// <para>
+/// Video and mixed multi-track containers are served by a second, codec-preserving write
+/// route. Every stream additionally surfaces its byte-exact Stream Properties body
+/// (<c>streams/stream_NN.properties.bin</c>) and a media-object manifest carrying object
+/// boundaries, presentation timestamps and key-frame flags
+/// (<c>streams/stream_NN.objects.csv</c>), and the opaque Header Object children land in
+/// <c>metadata/preserved-header.bin</c>. Handed those artifacts back, the container writer
+/// rebuilds any mixture of audio and video streams — WMV video included — with their codec
+/// bytes, object layout, timing, key frames and header metadata intact, emitting a Simple
+/// Index Object per video stream. Neither route subsumes the other: the audio route is what
+/// encodes fresh WAV input, the container route is what carries a stream the managed codecs
+/// cannot synthesize a header for.
+/// </para>
+/// File properties and the content description land in <c>metadata.ini</c>; the Extended
+/// Content Description tags land in <c>metadata/tags.ini</c>. Malformed reads stop gracefully,
+/// keeping whatever was parsed.
+/// </summary>
+public sealed class AsfFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveInMemoryExtract,
+  IArchiveWriteConstraints, IArchiveCreatable, IArchiveModifiable {
+
+  /// <summary>Gets the id.</summary>
+  public string Id => "Asf";
+  /// <summary>Gets the display name.</summary>
+  public string DisplayName => "ASF (Advanced Systems Format)";
+  /// <summary>Gets the category.</summary>
+  public FormatCategory Category => FormatCategory.Audio;
+  /// <summary>Gets the capabilities.</summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanList | FormatCapabilities.CanExtract | FormatCapabilities.CanCreate |
+    FormatCapabilities.CanModify | FormatCapabilities.CanTest | FormatCapabilities.SupportsMultipleEntries;
+  /// <summary>Gets the default extension.</summary>
+  public string DefaultExtension => ".asf";
+  /// <summary>Gets the extensions.</summary>
+  public IReadOnlyList<string> Extensions => [".asf", ".wma", ".wmv"];
+  /// <summary>Gets the compound extensions.</summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  /// <summary>Gets the magic signatures.</summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [
+    // ASF Header Object GUID (little-endian byte order on disk).
+    new([0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
+         0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C], Confidence: 0.95),
+  ];
+  /// <summary>Gets the methods.</summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [
+    new("stored", "Stored / remux"),
+    new("pcm", "PCM"),
+    new("alaw", "G.711 A-law"),
+    new("mulaw", "G.711 mu-law"),
+  ];
+  /// <summary>Gets the tar compression format id.</summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>Gets the family.</summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Archive;
+  /// <summary>Gets the description.</summary>
+  public string Description => "ASF/WMA/WMV container; demux + managed audio mux/remux with PCM/G.711 encoding and codec-preserving multi-track video remux.";
+
+  /// <summary>One-line write-input summary for UI/CLI validation.</summary>
+  public string AcceptedInputsDescription => AsfWriteSupport.AcceptedInputsDescription;
+  /// <summary>ASF has no useful aggregate input-size ceiling below the managed byte-array limit.</summary>
+  public long? MaxTotalArchiveSize => null;
+  /// <summary>ASF has no valid zero-stream representation.</summary>
+  public bool CanPurgeToEmpty => false;
+
+  /// <summary>Checks whether an input participates in ASF mux/remux creation.</summary>
+  public bool CanAccept(ArchiveInputInfo input, out string? reason) => AsfWriteSupport.CanAccept(input, out reason);
+
+  /// <summary>
+  /// Creates an ASF file. Inputs naming the codec-preserving container artifacts
+  /// (<c>.properties.bin</c>, <c>.objects.csv</c>, <c>metadata/preserved-header.bin</c>) build
+  /// the container through <see cref="AsfRemuxer"/>; everything else — WAV audio,
+  /// <c>stream_NN.info.txt</c> pairs, a <c>FULL.*</c> pass-through — takes the audio route.
+  /// </summary>
+  public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
+    if (UsesContainerArtifacts(inputs))
+      AsfRemuxer.Create(output, inputs, options);
+    else
+      AsfWriteSupport.Create(output, inputs, options);
+  }
+
+  /// <summary>Adds/replaces canonical mux inputs and transactionally remuxes the existing ASF.</summary>
+  public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
+    if (UsesContainerArtifacts(inputs) || NeedsContainerRoute(archive))
+      AsfRemuxer.Add(archive, inputs);
+    else
+      AsfWriteSupport.Add(archive, inputs);
+  }
+
+  /// <summary>Removes canonical stream/tag inputs and transactionally remuxes the existing ASF.</summary>
+  public void Remove(Stream archive, string[] entryNames) {
+    var names = entryNames ?? [];
+    if (names.Any(AsfWriteSupport.IsContainerArtifact) || NeedsContainerRoute(archive))
+      AsfRemuxer.Remove(archive, names);
+    else
+      AsfWriteSupport.Remove(archive, names);
+  }
+
+  private static bool UsesContainerArtifacts(IReadOnlyList<ArchiveInputInfo> inputs)
+    => inputs.Any(static input => !input.IsDirectory && AsfWriteSupport.IsContainerArtifact(input.ArchiveName));
+
+  /// <summary>
+  /// Decides which write route owns an existing instance. The audio route synthesizes Stream
+  /// Properties from WAVEFORMATEX fields and re-authors the content description, so it can only
+  /// rebuild an audio-only container whose remaining Header Object children it can author again
+  /// itself. Anything else — a video or other non-audio stream, or an opaque child such as a
+  /// Codec List, a populated Header Extension or a vendor object — would be silently dropped on
+  /// the way through, so those containers belong to the byte-preserving container route.
+  /// </summary>
+  private static bool NeedsContainerRoute(Stream archive) {
+    if (!archive.CanRead || !archive.CanSeek)
+      return false;
+    var position = archive.Position;
+    try {
+      archive.Position = 0;
+      using var buffer = new MemoryStream();
+      archive.CopyTo(buffer);
+      var parsed = AsfReader.Parse(buffer.ToArray());
+      return parsed.Streams.Any(static stream => stream.Kind != "audio")
+        || parsed.PreservedHeaderObjects.Any(static child => !AsfContainerWriter.IsReproducibleByAudioRoute(child));
+    } finally {
+      archive.Position = position;
+    }
+  }
+
+  /// <summary>Lists the entries in the supplied container.</summary>
+  public List<ArchiveEntryInfo> List(Stream stream, string? password)
+    => AudioPseudoArchive.List(BuildEntries(stream));
+
+  /// <summary>Decodes the supplied input.</summary>
+  public void Extract(Stream stream, string outputDir, string? password, string[]? files)
+    => AudioPseudoArchive.Extract(BuildEntries(stream), outputDir, files);
+
+  /// <summary>Performs the extract entry operation.</summary>
+  public void ExtractEntry(Stream input, string entryName, Stream output, string? password)
+    => AudioPseudoArchive.ExtractEntry(BuildEntries(input), entryName, output);
+
+  private static IReadOnlyList<AudioPseudoArchive.Entry> BuildEntries(Stream stream) {
+    using var ms = new MemoryStream();
+    stream.CopyTo(ms);
+    var blob = ms.ToArray();
+
+    var entries = new List<AudioPseudoArchive.Entry> {
+      new("FULL.asf", "Container", blob),
+    };
+
+    var parsed = AsfReader.Parse(blob);
+    var depayloaded = AsfWriteSupport.DepayloadWithBoundaries(parsed);
+
+    entries.Add(new("metadata.ini", "Tag", Encoding.UTF8.GetBytes(parsed.RenderMetadataIni())));
+
+    if (parsed.ExtendedTags.Count > 0)
+      entries.Add(new("metadata/tags.ini", "Tag", Encoding.UTF8.GetBytes(parsed.RenderTagsIni())));
+
+    // The opaque Header Object children are what makes a payload-only remux metadata-lossless:
+    // Codec List, Header Extension with its nested objects, mutual-exclusion/bitrate records,
+    // padding and vendor extensions all survive only as their exact bytes.
+    if (parsed.PreservedHeaderObjects.Count > 0)
+      entries.Add(new(AsfRemuxer.PreservedHeaderPath, "Tag",
+        AsfContainerWriter.JoinPreservedHeaderObjects(parsed.PreservedHeaderObjects), Method: "asf_header"));
+
+    foreach (var s in parsed.Streams) {
+      entries.Add(new($"streams/stream_{s.StreamNumber:D2}.info.txt", "Tag",
+        Encoding.UTF8.GetBytes(AsfWriteSupport.RenderStreamInfo(s, depayloaded))));
+
+      if (!parsed.StreamPayloads.TryGetValue(s.StreamNumber, out var payload) || payload.Length == 0)
+        continue;
+
+      // The encoded elementary bytes are the canonical remux source and therefore remain
+      // visible even when a managed decoder can additionally surface channel WAVs.
+      entries.Add(new($"streams/stream_{s.StreamNumber:D2}.bin", "Stream", payload, Method: "asf_stream"));
+
+      // The exact Stream Properties body and the media-object manifest are what let a stream the
+      // managed codecs cannot author a header for — WMV video, an unknown WAVEFORMATEX tag —
+      // be rebuilt byte-for-byte, key-frame flags and presentation times included.
+      if (s.StreamPropertiesBody.Length > 0)
+        entries.Add(new(AsfRemuxer.PropertiesPath(s.StreamNumber), "Tag", s.StreamPropertiesBody,
+          Method: "asf_stream_properties"));
+      entries.Add(new(AsfRemuxer.ObjectsPath(s.StreamNumber), "Tag",
+        AsfRemuxer.RenderObjects(parsed.StreamObjects.TryGetValue(s.StreamNumber, out var manifest)
+          ? manifest
+          : [new AsfMediaObjectInfo(payload.Length, 0, false)]),
+        Method: "asf_media_objects"));
+
+      if (s.Kind == "audio" && s.FormatTag is 0x0160 or 0x0161)
+        TryDecodeWmaChannels(s, payload, entries);
+      else if (s.Kind == "audio" && s.FormatTag == 0x0162)
+        TryDecodeWmaProChannels(s, payload, entries);
+      else if (s.Kind == "audio" && s.FormatTag == 0x0163)
+        TryDecodeWmaLosslessChannels(s, payload, entries);
+    }
+
+    return entries;
+  }
+
+  /// <summary>
+  /// Decodes a WMA v1/v2 audio stream's reassembled superframes (via <see cref="WmaCodec"/>)
+  /// and adds one mono <c>&lt;CHANNEL&gt;.wav</c> per channel under
+  /// <c>streams/stream_NN/</c>. Each ASF media object is one coded superframe. Returns
+  /// false when the stream lacks the parameters needed to construct the decoder or decoding fails.
+  /// </summary>
+  private static bool TryDecodeWmaChannels(AsfReader.StreamInfo s, byte[] payload, List<AudioPseudoArchive.Entry> entries) {
+    try {
+      if (s.Channels is not (> 0) || s.SampleRate is not (> 0) || s.ByteRate is not (> 0) || s.BlockAlign is not (> 0))
+        return false;
+
+      var version = s.FormatTag == 0x0160 ? 1 : 2;
+      var codec = new WmaCodec(version, s.Channels.Value, s.SampleRate.Value,
+        s.ByteRate.Value * 8, s.BlockAlign.Value, s.ExtraData ?? []);
+
+      var blockAlign = s.BlockAlign.Value;
+      using var pcm = new MemoryStream();
+      var decodedAny = false;
+      for (var off = 0; off + 1 <= payload.Length; off += blockAlign) {
+        var len = Math.Min(blockAlign, payload.Length - off);
+        var samples = codec.DecodeSuperframe(payload.AsSpan(off, len));
+        if (samples.Length == 0) continue;
+        decodedAny = true;
+        var bytes = new byte[samples.Length * 2];
+        Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
+        pcm.Write(bytes);
+      }
+      if (!decodedAny || pcm.Length == 0)
+        return false;
+
+      var prefix = $"streams/stream_{s.StreamNumber:D2}";
+      var raw = pcm.ToArray();
+      if (s.Channels.Value == 1) {
+        entries.Add(new($"{prefix}/MONO.wav", "Channel", PcmCodec.ToWavBlob(raw, 1, s.SampleRate.Value, 16), Method: "pcm"));
+      } else {
+        foreach (var (name, wav) in PcmCodec.SplitInterleavedPcm(raw, s.Channels.Value, s.SampleRate.Value, 16))
+          entries.Add(new($"{prefix}/{name}.wav", "Channel", wav, Method: "pcm"));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /// <summary>
+  /// Decodes a WMA 9 Professional (tag <c>0x0162</c>) audio stream's reassembled packets
+  /// (via <see cref="WmaProCodec"/>) and adds one mono <c>&lt;CHANNEL&gt;.wav</c> per
+  /// channel under <c>streams/stream_NN/</c>; the decoder's channel count comes from the
+  /// extradata channel mask, which may differ from the WAVEFORMATEX nChannels.
+  /// </summary>
+  private static bool TryDecodeWmaProChannels(AsfReader.StreamInfo s, byte[] payload, List<AudioPseudoArchive.Entry> entries) {
+    try {
+      if (s.Channels is not (> 0) || s.SampleRate is not (> 0) || s.BlockAlign is not (> 0) ||
+          s.BitsPerSample is not (> 0) || s.ExtraData is not { Length: >= 18 })
+        return false;
+
+      var codec = new WmaProCodec(s.Channels.Value, s.SampleRate.Value, s.BitsPerSample.Value,
+        s.BlockAlign.Value, (s.ByteRate ?? 0), s.ExtraData);
+      var channels = codec.Channels;
+
+      var blockAlign = s.BlockAlign.Value;
+      using var pcm = new MemoryStream();
+      var decodedAny = false;
+      for (var off = 0; off + blockAlign <= payload.Length; off += blockAlign) {
+        var samples = codec.DecodePacket(payload.AsSpan(off, blockAlign));
+        if (samples.Length == 0) continue;
+        decodedAny = true;
+        var bytes = new byte[samples.Length * 2];
+        Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
+        pcm.Write(bytes);
+      }
+      if (!decodedAny || pcm.Length == 0)
+        return false;
+
+      var prefix = $"streams/stream_{s.StreamNumber:D2}";
+      var raw = pcm.ToArray();
+      if (channels == 1) {
+        entries.Add(new($"{prefix}/MONO.wav", "Channel", PcmCodec.ToWavBlob(raw, 1, s.SampleRate.Value, 16), Method: "pcm"));
+      } else {
+        foreach (var (name, wav) in PcmCodec.SplitInterleavedPcm(raw, channels, s.SampleRate.Value, 16))
+          entries.Add(new($"{prefix}/{name}.wav", "Channel", wav, Method: "pcm"));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /// <summary>
+  /// Decodes a WMA Lossless (tag <c>0x0163</c>) audio stream's reassembled packets (via
+  /// <see cref="WmaLosslessCodec"/>) into one mono <c>&lt;CHANNEL&gt;.wav</c> per channel
+  /// under <c>streams/stream_NN/</c>. The decoder's channel count comes from the extradata
+  /// channel mask.
+  /// </summary>
+  private static bool TryDecodeWmaLosslessChannels(AsfReader.StreamInfo s, byte[] payload, List<AudioPseudoArchive.Entry> entries) {
+    try {
+      if (s.Channels is not (> 0) || s.SampleRate is not (> 0) || s.BlockAlign is not (> 0) ||
+          s.ExtraData is not { Length: >= 18 })
+        return false;
+
+      var codec = new WmaLosslessCodec(s.Channels.Value, s.SampleRate.Value, s.BlockAlign.Value, s.ExtraData);
+      var channels = codec.Channels;
+
+      var blockAlign = s.BlockAlign.Value;
+      using var pcm = new MemoryStream();
+      var decodedAny = false;
+      for (var off = 0; off + blockAlign <= payload.Length; off += blockAlign) {
+        var samples = codec.DecodePacket(payload.AsSpan(off, blockAlign));
+        if (samples.Length == 0) continue;
+        decodedAny = true;
+        var bytes = new byte[samples.Length * 2];
+        Buffer.BlockCopy(samples, 0, bytes, 0, bytes.Length);
+        pcm.Write(bytes);
+      }
+      if (!decodedAny || pcm.Length == 0)
+        return false;
+
+      var prefix = $"streams/stream_{s.StreamNumber:D2}";
+      var raw = pcm.ToArray();
+      if (channels == 1) {
+        entries.Add(new($"{prefix}/MONO.wav", "Channel", PcmCodec.ToWavBlob(raw, 1, s.SampleRate.Value, 16), Method: "pcm"));
+      } else {
+        foreach (var (name, wav) in PcmCodec.SplitInterleavedPcm(raw, channels, s.SampleRate.Value, 16))
+          entries.Add(new($"{prefix}/{name}.wav", "Channel", wav, Method: "pcm"));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}

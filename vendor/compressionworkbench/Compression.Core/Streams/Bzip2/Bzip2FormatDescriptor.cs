@@ -1,0 +1,213 @@
+#pragma warning disable CS1591
+using Compression.Registry;
+
+namespace FileFormat.Bzip2;
+
+/// <summary>
+/// Describes bzip 2 format.
+/// </summary>
+public sealed class Bzip2FormatDescriptor : IFormatDescriptor, IStreamFormatOperations, IFormatValidator, IFormatOptionsSchema {
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "Bzip2";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "BZip2";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Stream;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanExtract | FormatCapabilities.CanCreate | FormatCapabilities.CanTest |
+    FormatCapabilities.SupportsOptimize | FormatCapabilities.CanCompoundWithTar;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".bz2";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [".bz2", ".bzip2"];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [new([0x42, 0x5A, 0x68], Confidence: 0.85)];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("bzip2", "BZip2", SupportsOptimize: true)];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Classic;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description => "BWT + MTF + Huffman, good ratio for text data";
+
+  // ── IFormatOptionsSchema ───────────────────────────────────────────────
+  /// <summary>Block size 1..9 in units of 100 KB (1 = 100 KB blocks, 9 = 900 KB
+  /// blocks). A larger block lets the Burrows-Wheeler transform see more context
+  /// at once, which only helps once the input is bigger than the block. The
+  /// optimizer searches these to find the smallest output for the given input.</summary>
+  public IReadOnlyList<FormatOptionDescriptor> OptionsSchema { get; } = [
+    new FormatOptionDescriptor(
+      Key: "BlockSize",
+      DisplayName: "Block size (×100 KB)",
+      Kind: FormatOptionKind.Enum,
+      Default: "9",
+      AllowedValues: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+      Description: "BZip2 block size in units of 100 KB (1 = 100 KB, 9 = 900 KB)."),
+  ];
+
+  /// <summary>Parses the BZip2 block-size multiplier from the format-specific
+  /// options, clamped to the supported 1..9 range; falls back to the generic
+  /// compression level if set, otherwise the default (9).</summary>
+  internal static int ParseBlockSize(FormatCreateOptions options) {
+    var raw = options.GetString("BlockSize");
+    if (raw is not null && int.TryParse(raw, out var bs)) return Math.Clamp(bs, 1, 9);
+    return options.Level is { } l ? Math.Clamp(l, 1, 9) : 9;
+  }
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Decompress(Stream input, Stream output) {
+    using var ds = new Bzip2Stream(input, Compression.Core.Streams.CompressionStreamMode.Decompress, leaveOpen: true);
+    ds.CopyTo(output);
+  }
+  /// <summary>
+  /// Encodes the supplied input.
+  /// </summary>
+  public void Compress(Stream input, Stream output) {
+    using var cs = new Bzip2Stream(output, Compression.Core.Streams.CompressionStreamMode.Compress, leaveOpen: true);
+    input.CopyTo(cs);
+  }
+  /// <summary>
+  /// Encodes the supplied input.
+  /// </summary>
+  public void Compress(Stream input, Stream output, FormatCreateOptions options) {
+    using var cs = new Bzip2Stream(output, Compression.Core.Streams.CompressionStreamMode.Compress,
+      blockSize100k: ParseBlockSize(options), leaveOpen: true);
+    input.CopyTo(cs);
+  }
+  /// <summary>
+  /// Performs the compress optimal operation.
+  /// </summary>
+  public void CompressOptimal(Stream input, Stream output) {
+    using var cs = new Bzip2Stream(output, Compression.Core.Streams.CompressionStreamMode.Compress,
+      blockSize100k: 9, leaveOpen: true);
+    input.CopyTo(cs);
+  }
+  /// <summary>
+  /// Performs the wrap decompress operation.
+  /// </summary>
+  public Stream? WrapDecompress(Stream input) =>
+    new Bzip2Stream(input, Compression.Core.Streams.CompressionStreamMode.Decompress, leaveOpen: true);
+  /// <summary>
+  /// Performs the wrap compress operation.
+  /// </summary>
+  public Stream? WrapCompress(Stream output) =>
+    new Bzip2Stream(output, Compression.Core.Streams.CompressionStreamMode.Compress, leaveOpen: true);
+
+  // ── IFormatValidator ─────────────────────────────────────────────
+
+  /// <summary>
+  /// Validates the supplied data.
+  /// </summary>
+  public ValidationResult ValidateHeader(ReadOnlySpan<byte> header, long fileSize) {
+    var issues = new List<ValidationIssue>();
+    if (header.Length < 4) {
+      issues.Add(new(ValidationLevel.Header, IssueSeverity.Error, "BZ2_TOO_SHORT",
+        "File too short for BZip2 header (need 4 bytes minimum)"));
+      return new() { IsValid = false, Confidence = 0.3, Health = FormatHealth.Damaged,
+        Level = ValidationLevel.Header, Issues = issues };
+    }
+    // Magic already checked (BZ), verify version byte = 'h'
+    if (header[2] != Bzip2Constants.VersionByte) {
+      issues.Add(new(ValidationLevel.Header, IssueSeverity.Error, "BZ2_BAD_VERSION",
+        $"Invalid version byte: 0x{header[2]:X2} (expected 0x{Bzip2Constants.VersionByte:X2}='h')", 2));
+      return new() { IsValid = false, Confidence = 0.4, Health = FormatHealth.Damaged,
+        Level = ValidationLevel.Header, Issues = issues };
+    }
+    // Block size: '1'..'9'
+    var blockSize = header[3];
+    if (blockSize < (byte)'1' || blockSize > (byte)'9') {
+      issues.Add(new(ValidationLevel.Header, IssueSeverity.Error, "BZ2_BAD_BLOCKSIZE",
+        $"Invalid block size digit: '{(char)blockSize}' (expected '1'-'9')", 3));
+      return new() { IsValid = false, Confidence = 0.4, Health = FormatHealth.Damaged,
+        Level = ValidationLevel.Header, Issues = issues };
+    }
+    // Check for block header magic (6 bytes at bit boundary — approximate check on first block)
+    // The first block header starts at byte 4, first bits should be 0x314159265359
+    if (header.Length >= 10) {
+      // First block magic: bytes 4-9 should be 0x31 0x41 0x59 0x26 0x53 0x59
+      if (header[4] != 0x31 || header[5] != 0x41 || header[6] != 0x59 ||
+          header[7] != 0x26 || header[8] != 0x53 || header[9] != 0x59) {
+        // Could be end-of-stream marker (0x17 0x72 0x45 0x38 0x50 0x90) for empty file
+        if (header[4] == 0x17 && header[5] == 0x72 && header[6] == 0x45 &&
+            header[7] == 0x38 && header[8] == 0x50 && header[9] == 0x90) {
+          // Valid empty bzip2 stream
+        } else {
+          issues.Add(new(ValidationLevel.Header, IssueSeverity.Warning, "BZ2_NO_BLOCK_MAGIC",
+            "First block header magic not found at expected position", 4));
+        }
+      }
+    }
+    var confidence = issues.Any(i => i.Severity == IssueSeverity.Warning) ? 0.78 : 0.88;
+    var health = issues.Any(i => i.Severity >= IssueSeverity.Warning) ? FormatHealth.Degraded : FormatHealth.Good;
+    return new() { IsValid = true, Confidence = confidence, Health = health,
+      Level = ValidationLevel.Header, Issues = issues };
+  }
+
+  /// <summary>
+  /// Validates the supplied data.
+  /// </summary>
+  public ValidationResult ValidateStructure(Stream stream) {
+    var issues = new List<ValidationIssue>();
+    // BZip2 is a stream format — structure check verifies stream ends with end-of-stream marker
+    if (stream.Length < 14) {
+      issues.Add(new(ValidationLevel.Structure, IssueSeverity.Warning, "BZ2_VERY_SHORT",
+        "Stream very short for BZip2 (min realistic size ~14 bytes for empty)"));
+    }
+    // Read last ~10 bytes to look for end-of-stream marker pattern
+    // The EOS marker is bit-aligned so we can't simply check bytes, but we verify basic plausibility
+    return new() { IsValid = true, Confidence = 0.87, Health = issues.Count > 0 ? FormatHealth.Degraded : FormatHealth.Good,
+      Level = ValidationLevel.Structure, Issues = issues };
+  }
+
+  /// <summary>
+  /// Validates the supplied data.
+  /// </summary>
+  public ValidationResult ValidateIntegrity(Stream stream) {
+    var issues = new List<ValidationIssue>();
+    try {
+      stream.Seek(0, SeekOrigin.Begin);
+      using var decompressed = new MemoryStream();
+      using (var bz = new Bzip2Stream(stream, Compression.Core.Streams.CompressionStreamMode.Decompress, leaveOpen: true))
+        bz.CopyTo(decompressed);
+      // If decompression succeeded without exception, integrity is good
+      // BZip2 has per-block CRC32 checks built into the format
+      return new() { IsValid = true, Confidence = 0.99, Health = FormatHealth.Perfect,
+        Level = ValidationLevel.Integrity, Issues = issues };
+    } catch (Exception ex) {
+      issues.Add(new(ValidationLevel.Integrity, IssueSeverity.Error, "BZ2_DECOMPRESS_FAILED",
+        $"Decompression failed: {ex.Message}"));
+      return new() { IsValid = false, Confidence = 0.85, Health = FormatHealth.Damaged,
+        Level = ValidationLevel.Integrity, Issues = issues };
+    }
+  }
+}

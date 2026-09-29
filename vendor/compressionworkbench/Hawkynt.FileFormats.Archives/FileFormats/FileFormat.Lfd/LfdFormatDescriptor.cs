@@ -1,0 +1,154 @@
+#pragma warning disable CS1591
+using Compression.Registry;
+using static Compression.Registry.FormatHelpers;
+
+namespace FileFormat.Lfd;
+
+/// <summary>
+/// LucasArts LFD resource bundle used by X-Wing and TIE Fighter.
+///
+/// References:
+/// <list type="bullet">
+///   <item><description><c>https://github.com/MikeG621/LfdReader</c> — Idmr.LfdReader — community reference implementation with detailed format documentation</description></item>
+///   <item><description>No official specification — community-reverse-engineered LucasArts container</description></item>
+/// </list>
+/// </summary>
+public sealed class LfdFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveDefragmentable, IArchiveLayoutMap {
+
+  /// <inheritdoc />
+  public IEnumerable<DefragBlockInfo> EnumerateLayout(Stream archive) {
+    archive.Position = 0;
+    var r = new LfdReader(archive);
+    foreach (var e in r.Entries) {
+      if (e.Size > 0)
+        yield return new DefragBlockInfo(e.Offset, e.Size, DefragBlockKind.Used, FileName: e.Name);
+    }
+  }
+
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "Lfd";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "LucasArts LFD";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Archive;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanList | FormatCapabilities.CanExtract | FormatCapabilities.CanCreate |
+    FormatCapabilities.CanTest | FormatCapabilities.SupportsMultipleEntries;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".lfd";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [".lfd"];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  // No magic bytes — LFD has no global header. Detection is by extension only; the reader
+  // validates plausibility (header sizes, payload bounds) and throws on garbage.
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("lfd", "LFD")];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Archive;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description => "LucasArts X-Wing / TIE Fighter resource bundle";
+
+  /// <summary>
+  /// Lists the entries in the supplied container.
+  /// </summary>
+  public List<ArchiveEntryInfo> List(Stream stream, string? password) {
+    var r = new LfdReader(stream);
+    return r.Entries.Select((e, i) => new ArchiveEntryInfo(
+      i, e.DisplayName, e.Size, e.Size, "Stored", false, false, null)).ToList();
+  }
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
+    var r = new LfdReader(stream);
+    foreach (var e in r.Entries) {
+      if (files != null && !MatchesFilter(e.DisplayName, files)) continue;
+      WriteFile(outputDir, e.DisplayName, r.Extract(e));
+    }
+  }
+
+  /// <summary>
+  /// Performs the create operation.
+  /// </summary>
+  public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
+    using var w = new LfdWriter(output, leaveOpen: true);
+    foreach (var (name, data) in FormatHelpers.FlatFiles(inputs)) {
+      // Map flat input names to LFD's TYPE.NAME convention. If the name lacks a dot,
+      // synthesize a generic "DATA" type so callers can still feed regular files in.
+      var (type, resName) = SplitName(name);
+      w.AddEntry(type, resName, data);
+    }
+  }
+
+  /// <summary>
+  /// Performs the defragment operation.
+  /// </summary>
+  public void Defragment(Stream archive)
+    => this.Defragment(archive, new DefragOptions { Mode = DefragMode.ConsolidateAtStart });
+
+  /// <summary>
+  /// Performs the defragment operation.
+  /// </summary>
+  public void Defragment(Stream archive, DefragOptions options) {
+    DefragRebuilder.Rebuild(archive, options,
+      readEntries: stream => {
+        var r = new LfdReader(stream);
+        // DisplayName == "TYPE.NAME"; SplitName recovers (type, name) on the rebuild side.
+        return r.Entries.Select(e => (e.DisplayName, r.Extract(e)));
+      },
+      buildImage: files => {
+        using var ms = new MemoryStream();
+        using (var w = new LfdWriter(ms, leaveOpen: true)) {
+          foreach (var (n, d) in files) {
+            var (type, resName) = SplitName(n);
+            w.AddEntry(type, resName, d);
+          }
+        }
+        return ms.ToArray();
+      });
+  }
+
+  private static (string Type, string Name) SplitName(string filename) {
+    var stem = Path.GetFileNameWithoutExtension(filename);
+    var dot = stem.IndexOf('.');
+    if (dot <= 0 || dot >= stem.Length - 1)
+      return ("DATA", Truncate(stem, 8));
+
+    var type = Truncate(stem[..dot], 4);
+    var name = Truncate(stem[(dot + 1)..], 8);
+    return (type, name);
+  }
+
+  private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
+}

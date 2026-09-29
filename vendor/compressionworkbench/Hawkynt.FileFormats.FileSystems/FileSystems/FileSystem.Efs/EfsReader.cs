@@ -1,0 +1,111 @@
+#pragma warning disable CS1591
+using System.Buffers.Binary;
+using Compression.Core.DiskImage;
+using System.Text;
+
+namespace FileSystem.Efs;
+
+/// <summary>
+/// Read-side companion to <see cref="EfsWriter"/>. Walks the on-disk
+/// superblock + inode table + directory blocks emitted by our writer and
+/// yields the file tree as a flat list of <see cref="EfsEntry"/>.
+/// </summary>
+public sealed class EfsReader {
+  /// <summary>
+  /// Random-access view over the image. Copying the volume into a byte[] capped
+  /// the reader at the array limit, which the on-disk block addresses do not.
+  /// </summary>
+  private readonly ImageAccessor _image;
+  private readonly List<EfsEntry> _entries = [];
+
+  /// <summary>
+  /// Parses <paramref name="stream"/> as an EFS image and surfaces every
+  /// file / directory at its full path. Throws on malformed superblock.
+  /// </summary>
+  public EfsReader(Stream stream) {
+    ArgumentNullException.ThrowIfNull(stream);
+    if (stream.CanSeek) stream.Position = 0;
+    _image = new ImageAccessor(stream, leaveOpen: true);
+
+    var sb = EfsSuperblock.TryParse(_image.Read(0, (int)Math.Min(_image.Length, 1024 * 1024)));
+    if (!sb.Valid) throw new InvalidDataException("Not an EFS image: superblock magic mismatch.");
+
+    // Walk from inode 2 (root). For each directory inode we read its first
+    // extent block and decode the variable-length dirent stream.
+    Recurse(2, "");
+  }
+
+  /// <summary>All non-root entries (files + intermediate directories).</summary>
+  public IReadOnlyList<EfsEntry> Entries => _entries;
+
+  /// <summary>Extracts a file entry's bytes by reading its first extent.</summary>
+  public byte[] Extract(EfsEntry entry) {
+    ArgumentNullException.ThrowIfNull(entry);
+    if (entry.IsDirectory) return [];
+    var len = entry.Size;
+    if (len == 0 || entry.FirstBlock == 0) return [];
+    // Block index times block size in ints wraps a couple of gigabytes in, and
+    // the file was then read from the wrong offset — the bytes came back the
+    // right length holding something else.
+    var start = (long)entry.FirstBlock * EfsWriter.BasicBlock;
+    if (start + len > _image.Length)
+      throw new InvalidDataException("EFS extract: extent reaches past image end.");
+    return _image.Read(start, len);
+  }
+
+  private void Recurse(int inode, string prefix) {
+    var info = ReadInode(inode);
+    if (!info.IsDirectory) return;
+    if (info.NumExtents == 0 || info.FirstBlock == 0) return;
+    var off = (long)info.FirstBlock * EfsWriter.BasicBlock;
+    if (off >= _image.Length) return;
+    var blk = _image.Read(off, (int)Math.Min(EfsWriter.BasicBlock, _image.Length - off));
+    if (blk.Length < 4) return;
+    var magic = BinaryPrimitives.ReadUInt16BigEndian(blk[..2]);
+    if (magic != EfsWriter.EfsDirBlockMagic) return;
+
+    // A block holds a slot table — one byte per entry, giving that entry's
+    // offset halved — and the entries themselves packed against the far end.
+    int slots = blk[3];
+    for (var i = 0; i < slots; i++) {
+      var slotAt = 4 + i;
+      if (slotAt >= blk.Length) break;
+
+      var cur = blk[slotAt] << 1;
+      if (cur + 5 > blk.Length) break;
+
+      var childInode = (int)BinaryPrimitives.ReadUInt32BigEndian(blk.AsSpan(cur));
+      int nlen = blk[cur + 4];
+      if (cur + 5 + nlen > blk.Length) break;
+      var name = Encoding.ASCII.GetString(blk.AsSpan(cur + 5, nlen));
+      if (name is "." or "..") continue;
+      var childInfo = ReadInode(childInode);
+      var full = prefix.Length == 0 ? name : $"{prefix}/{name}";
+      _entries.Add(new EfsEntry(full, childInode, childInfo.IsDirectory, childInfo.Size, childInfo.FirstBlock));
+      if (childInfo.IsDirectory) Recurse(childInode, full);
+    }
+  }
+
+  private InodeInfo ReadInode(int inode) {
+    // Inode n sits at block n/4 of the table: numbers 0 and 1 are reserved but
+    // still take their slots.
+    var blockOff = inode / EfsWriter.InodesPerBlock;
+    var slotOff = inode % EfsWriter.InodesPerBlock;
+    var ip = _image.Read(((long)EfsWriter.InodeTableOffset + blockOff) * EfsWriter.BasicBlock + slotOff * EfsWriter.InodeSize, EfsWriter.InodeSize);
+    var mode = BinaryPrimitives.ReadUInt16BigEndian(ip[..2]);
+    var size = BinaryPrimitives.ReadInt32BigEndian(ip[8..]);
+    var numExtents = BinaryPrimitives.ReadInt16BigEndian(ip[28..]);
+    var firstBlock = 0;
+    if (numExtents > 0) {
+      // ex_bn at offset 33..35 (3 bytes BE inside the 8-byte extent).
+      var ex = ip[32..];
+      firstBlock = (ex[1] << 16) | (ex[2] << 8) | ex[3];
+    }
+    return new InodeInfo((mode & 0xF000) == 0x4000, size, numExtents, firstBlock);
+  }
+
+  private readonly record struct InodeInfo(bool IsDirectory, int Size, int NumExtents, int FirstBlock);
+}
+
+/// <summary>One entry surfaced by <see cref="EfsReader"/>.</summary>
+public sealed record EfsEntry(string Name, int Inode, bool IsDirectory, int Size, int FirstBlock);

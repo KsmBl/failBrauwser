@@ -1,0 +1,496 @@
+#pragma warning disable CS1591
+using System.Text;
+using Codec.Mp3;
+using Codec.Pcm;
+using Compression.Registry;
+
+namespace FileFormat.Mp3;
+
+/// <summary>
+/// Surfaces an MP3 file as an archive whose layout is shaped for human/tool use:
+/// one <c>FULL.mp3</c>, one <c>metadata.ini</c> carrying all text/URL/comment
+/// fields as <c>key=value</c>, one <c>cover.&lt;ext&gt;</c> per APIC picture, and
+/// <c>lyrics.txt</c> for USLT. When both ID3v1 and ID3v2 are present the archive
+/// surfaces <c>id3v1/metadata.ini</c> + <c>id3v2/metadata.ini</c> so callers can
+/// see which fields come from which tag version.
+/// <para>
+/// When the MPEG audio decodes (Layer III via <c>Codec.Mp3</c>), the archive also
+/// surfaces one mono <c>&lt;CHANNEL&gt;.wav</c> per channel; the <c>FULL.mp3</c>
+/// entry always carries the original frames unchanged. Inputs the decoder can't
+/// handle (e.g. Layer I/II) fall back to <c>FULL.mp3</c> + metadata only.
+/// </para>
+/// </summary>
+public sealed class Mp3FormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveInMemoryExtract, IArchiveWriteConstraints, IArchiveCreatable, IArchiveDefragmentable, IFileInternalLayoutMap, IFileInternalChunkMover {
+
+  /// <summary>
+  /// Performs the defragment operation.
+  /// </summary>
+  public void Defragment(Stream archive)
+    => throw new NotSupportedException(
+      "MP3 is a single-blob audio file (ID3 tags + MPEG frames) — defragmentation isn't meaningful; use Mp3Optimizer instead.");
+  /// <summary>
+  /// Performs the defragment operation.
+  /// </summary>
+  public void Defragment(Stream archive, DefragOptions options) => this.Defragment(archive);
+
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "Mp3";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "MP3 (MPEG audio)";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Audio;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanList | FormatCapabilities.CanExtract | FormatCapabilities.CanCreate | FormatCapabilities.CanTest |
+    FormatCapabilities.SupportsMultipleEntries;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".mp3";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [".mp3", ".mp2"];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [
+    new("ID3"u8.ToArray(), Confidence: 0.85),
+  ];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("stored", "Stored")];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Archive;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description => "MP3 audio; ID3v1/v2 surfaced as metadata.ini + cover.*";
+
+  /// <inheritdoc />
+  public IEnumerable<DefragBlockInfo> EnumerateChunks(Stream file) => Mp3LayoutMap.Enumerate(file);
+
+  /// <inheritdoc />
+  public void Optimize(Stream file) => Mp3Optimizer.Optimize(file);
+
+  /// <inheritdoc />
+  public void Optimize(Stream file, MetadataPlacementProfile? profile) => Mp3Optimizer.Optimize(file, profile);
+
+  /// <summary>
+  /// Lists the entries in the supplied container.
+  /// </summary>
+  public List<ArchiveEntryInfo> List(Stream stream, string? password) =>
+    BuildEntries(stream).Select((e, i) => new ArchiveEntryInfo(
+      Index: i, Name: e.Name,
+      OriginalSize: e.Data.Length, CompressedSize: e.Data.Length,
+      Method: e.Name.Equals("FULL.mp3", StringComparison.OrdinalIgnoreCase) ? "mp3"
+            : e.Kind == "Channel" ? "pcm" : "stored",
+      IsDirectory: false, IsEncrypted: false, LastModified: null,
+      Kind: e.Kind)).ToList();
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
+    foreach (var e in BuildEntries(stream)) {
+      if (files != null && files.Length > 0 && !FormatHelpers.MatchesFilter(e.Name, files))
+        continue;
+      FormatHelpers.WriteFile(outputDir, e.Name, e.Data);
+    }
+  }
+
+  /// <summary>
+  /// Performs the extract entry operation.
+  /// </summary>
+  public void ExtractEntry(Stream input, string entryName, Stream output, string? password) {
+    foreach (var e in BuildEntries(input)) {
+      if (e.Name.Equals(entryName, StringComparison.OrdinalIgnoreCase)) {
+        output.Write(e.Data);
+        return;
+      }
+    }
+    throw new FileNotFoundException($"Entry not found: {entryName}");
+  }
+
+  private static IReadOnlyList<(string Name, string Kind, byte[] Data)> BuildEntries(Stream stream) {
+    using var ms = new MemoryStream();
+    stream.CopyTo(ms);
+    var blob = ms.ToArray();
+
+    var entries = new List<(string Name, string Kind, byte[] Data)> {
+      ("FULL.mp3", "Container", blob),
+    };
+
+    AddDecodedChannels(blob, entries);
+
+    var (_, v2Frames) = new Id3v2Reader().Read(blob);
+    var v1Tag = new Id3v1Reader().Read(blob);
+    var hasV2 = v2Frames.Count > 0;
+    var hasV1 = v1Tag != null;
+
+    // Choose where the "primary" metadata.ini lives: at the root for single-tag files,
+    // and duplicated under id3v1/ + id3v2/ sub-folders for dual-tagged files (where v2
+    // is the authoritative root metadata.ini).
+    if (hasV1 && hasV2) {
+      entries.Add(("id3v2/metadata.ini", "Tag", BuildV2MetadataIni(v2Frames)));
+      entries.Add(("id3v1/metadata.ini", "Tag", BuildV1MetadataIni(v1Tag!)));
+      entries.Add(("metadata.ini", "Tag", BuildV2MetadataIni(v2Frames)));
+    } else if (hasV2) {
+      entries.Add(("metadata.ini", "Tag", BuildV2MetadataIni(v2Frames)));
+    } else if (hasV1) {
+      entries.Add(("metadata.ini", "Tag", BuildV1MetadataIni(v1Tag!)));
+    }
+
+    // Extract APIC cover images.
+    var apics = v2Frames.Where(f => f.Id == "APIC").ToList();
+    for (var i = 0; i < apics.Count; ++i) {
+      var a = apics[i];
+      var ext = MimeToExtension(a.MimeType);
+      var name = i == 0
+        ? $"cover{ext}"
+        : $"cover_{SanitizeForPath(a.Description, fallback: $"image_{i}")}{ext}";
+      entries.Add((name, "Tag", a.Payload));
+    }
+
+    // USLT (unsynchronised lyrics) — COMM also carries text but that stays in metadata.ini.
+    var lyrics = v2Frames.FirstOrDefault(f => f.Id == "USLT");
+    if (lyrics != null)
+      entries.Add(("lyrics.txt", "Tag", lyrics.Payload));
+
+    // Raw ID3v1 trailer (last 128 bytes starting with "TAG") surfaced verbatim so
+    // the byte-exact tag can be round-tripped, independent of the parsed metadata.ini.
+    if (hasV1 && blob.Length >= 128 &&
+        blob[^128] == (byte)'T' && blob[^127] == (byte)'A' && blob[^126] == (byte)'G')
+      entries.Add(("id3v1.bin", "Tag", blob.AsSpan(blob.Length - 128).ToArray()));
+
+    // Per-frame MPEG audio blocks. Splitting by the 11-bit frame sync is byte-safe
+    // (no decode needed); each frame is sliced from one sync header to the next.
+    AddMpegFrames(blob, entries);
+
+    // Per-channel decoded WAV (best-effort; Layer III only). Complements the raw
+    // per-frame blocks above with playable mono/stereo channel streams.
+    AddDecodedChannels(blob, entries);
+
+    return entries;
+  }
+
+  // Splits the audio region into individual MPEG frames by walking the frame
+  // headers. The frame length is computed from the bitrate/sample-rate/padding
+  // fields, so each block is a self-contained MPEG audio frame. Cannot throw:
+  // any malformed header simply ends the scan.
+  private static void AddMpegFrames(byte[] blob, List<(string Name, string Kind, byte[] Data)> entries) {
+    var audioStart = AudioRegionStart(blob);
+    var audioEnd = AudioRegionEnd(blob);
+    if (audioEnd - audioStart < 4) return;
+
+    var pos = audioStart;
+    var index = 0;
+    const int MaxFrames = 100_000; // guard against pathological inputs
+    while (pos + 4 <= audioEnd && index < MaxFrames) {
+      if (!TryParseFrameHeader(blob, pos, out var frameLen)) {
+        // Resync: advance one byte and look for the next sync word.
+        ++pos;
+        continue;
+      }
+      var end = Math.Min(pos + frameLen, audioEnd);
+      if (end <= pos) break;
+      entries.Add(($"frames/frame_{index:D5}.bin", "Frame", blob.AsSpan(pos, end - pos).ToArray()));
+      ++index;
+      pos = end;
+    }
+  }
+
+  // Returns the offset just past any leading ID3v2 tag.
+  private static int AudioRegionStart(byte[] blob) {
+    if (blob.Length >= 10 && blob[0] == 'I' && blob[1] == 'D' && blob[2] == '3') {
+      var size = (blob[6] & 0x7F) << 21 | (blob[7] & 0x7F) << 14 | (blob[8] & 0x7F) << 7 | (blob[9] & 0x7F);
+      return Math.Min(10 + size, blob.Length);
+    }
+    return 0;
+  }
+
+  // Returns the offset of the trailing ID3v1 tag (if present), else end of file.
+  private static int AudioRegionEnd(byte[] blob) {
+    if (blob.Length >= 128 && blob[^128] == 'T' && blob[^127] == 'A' && blob[^126] == 'G')
+      return blob.Length - 128;
+    return blob.Length;
+  }
+
+  // Decodes an MPEG-1/2/2.5 Layer I/II/III frame header at offset and returns its
+  // on-disk length in bytes. MPEG bitrate/sample-rate tables are version+layer
+  // dependent; "free" or "reserved" combinations are rejected.
+  private static bool TryParseFrameHeader(byte[] b, int off, out int frameLen) {
+    frameLen = 0;
+    if (off + 4 > b.Length) return false;
+    // Sync: 11 bits set (FF Ex/Fx).
+    if (b[off] != 0xFF || (b[off + 1] & 0xE0) != 0xE0) return false;
+
+    var versionBits = (b[off + 1] >> 3) & 0x03; // 0=MPEG2.5,2=MPEG2,3=MPEG1
+    var layerBits = (b[off + 1] >> 1) & 0x03;    // 1=LayerIII,2=LayerII,3=LayerI
+    if (versionBits == 1) return false;           // reserved version
+    if (layerBits == 0) return false;             // reserved layer
+
+    var bitrateIndex = (b[off + 2] >> 4) & 0x0F;
+    var sampleRateIndex = (b[off + 2] >> 2) & 0x03;
+    var padding = (b[off + 2] >> 1) & 0x01;
+    if (bitrateIndex is 0 or 0x0F) return false;  // free-format or invalid
+    if (sampleRateIndex == 3) return false;       // reserved
+
+    var isMpeg1 = versionBits == 3;
+    var layer = 4 - layerBits;                    // 1, 2, or 3
+
+    var bitrate = BitrateKbps(isMpeg1, layer, bitrateIndex);
+    if (bitrate == 0) return false;
+    var sampleRate = SampleRate(versionBits, sampleRateIndex);
+    if (sampleRate == 0) return false;
+
+    if (layer == 1)
+      frameLen = (12 * bitrate * 1000 / sampleRate + padding) * 4;
+    else {
+      // Layer II uses 1152 samples/frame; Layer III uses 576 for MPEG2/2.5, 1152 for MPEG1.
+      var samplesPerFrame = layer == 3 && !isMpeg1 ? 576 : 1152;
+      frameLen = samplesPerFrame / 8 * bitrate * 1000 / sampleRate + padding;
+    }
+    return frameLen >= 4;
+  }
+
+  private static readonly int[,] Mpeg1Bitrates = {
+    // index 0 is free, handled by caller; values in kbps
+    { 0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0 }, // Layer I
+    { 0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0 },    // Layer II
+    { 0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0 },     // Layer III
+  };
+  private static readonly int[,] Mpeg2Bitrates = {
+    { 0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0 },    // Layer I
+    { 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0 },         // Layer II
+    { 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0 },         // Layer III
+  };
+
+  private static int BitrateKbps(bool isMpeg1, int layer, int index) {
+    if (index is <= 0 or >= 15) return 0;
+    var table = isMpeg1 ? Mpeg1Bitrates : Mpeg2Bitrates;
+    return table[layer - 1, index];
+  }
+
+  private static int SampleRate(int versionBits, int srIndex) {
+    int[] rates = versionBits switch {
+      3 => [44100, 48000, 32000],  // MPEG1
+      2 => [22050, 24000, 16000],  // MPEG2
+      _ => [11025, 12000, 8000],   // MPEG2.5
+    };
+    return srIndex < rates.Length ? rates[srIndex] : 0;
+  }
+
+  /// <summary>
+  /// Decodes the MPEG audio to interleaved PCM (via <see cref="Mp3Codec"/>) and adds
+  /// one mono <c>&lt;CHANNEL&gt;.wav</c> per channel. Inputs the decoder rejects
+  /// (Layer I/II, malformed, or header-only) are silently skipped so the archive
+  /// still surfaces <c>FULL.mp3</c> + metadata.
+  /// </summary>
+  private static void AddDecodedChannels(byte[] blob, List<(string Name, string Kind, byte[] Data)> entries) {
+    try {
+      Mp3StreamInfo info;
+      using (var infoStream = new MemoryStream(blob, writable: false))
+        info = Mp3Codec.ReadStreamInfo(infoStream);
+      if (info.Channels < 1 || info.SampleRate <= 0)
+        return;
+
+      byte[] pcm;
+      using (var src = new MemoryStream(blob, writable: false))
+      using (var dst = new MemoryStream()) {
+        Mp3Codec.Decompress(src, dst);
+        pcm = dst.ToArray();
+      }
+      if (pcm.Length == 0)
+        return;
+
+      if (info.Channels == 1)
+        entries.Add(("MONO.wav", "Channel", PcmCodec.ToWavBlob(pcm, 1, info.SampleRate, 16)));
+      else
+        foreach (var (name, wav) in PcmCodec.SplitInterleavedPcm(pcm, info.Channels, info.SampleRate, 16))
+          entries.Add(($"{name}.wav", "Channel", wav));
+    } catch {
+      // Undecodable (Layer I/II, unsupported, truncated) — FULL.mp3 + metadata only.
+    }
+  }
+
+  private static byte[] BuildV2MetadataIni(IReadOnlyList<Id3v2Reader.Frame> frames) {
+    var sb = new StringBuilder();
+    sb.AppendLine("; ID3v2 metadata");
+    foreach (var f in frames) {
+      if (f.Id == "APIC" || f.Id == "USLT") continue;  // have dedicated entries
+      // Text frames (TIT2, TPE1, TALB, TDRC, TCON, TRCK, …) carry UTF-8 text bytes.
+      // URL frames (WOAF, WORS, …) carry a URL as ASCII/UTF-8.
+      // Other binary frames are skipped (not expressible as ini).
+      if (f.Id.StartsWith('T') || f.Id.StartsWith('W')) {
+        var text = Encoding.UTF8.GetString(f.Payload).TrimEnd('\0').Trim();
+        sb.Append(f.Id).Append('=').AppendLine(text);
+      } else if (f.Id == "COMM") {
+        var text = Encoding.UTF8.GetString(f.Payload).TrimEnd('\0').Trim();
+        var descKey = string.IsNullOrEmpty(f.Description) ? "COMM" : $"COMM/{f.Description}";
+        sb.Append(descKey).Append('=').AppendLine(text);
+      }
+    }
+    return Encoding.UTF8.GetBytes(sb.ToString());
+  }
+
+  private static byte[] BuildV1MetadataIni(Id3v1Reader.Tag t) {
+    var sb = new StringBuilder();
+    sb.AppendLine("; ID3v1 metadata");
+    if (!string.IsNullOrEmpty(t.Title)) sb.Append("title=").AppendLine(t.Title);
+    if (!string.IsNullOrEmpty(t.Artist)) sb.Append("artist=").AppendLine(t.Artist);
+    if (!string.IsNullOrEmpty(t.Album)) sb.Append("album=").AppendLine(t.Album);
+    if (!string.IsNullOrEmpty(t.Year)) sb.Append("year=").AppendLine(t.Year);
+    if (!string.IsNullOrEmpty(t.Comment)) sb.Append("comment=").AppendLine(t.Comment);
+    if (t.Track.HasValue) sb.Append("track=").AppendLine(t.Track.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    sb.Append("genre_code=").AppendLine(t.GenreByte.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    return Encoding.UTF8.GetBytes(sb.ToString());
+  }
+
+  // ── IArchiveCreatable: assemble MP3 from dropped metadata.ini / cover.* / FULL.mp3 ─────
+
+  /// <summary>
+  /// Performs the create operation.
+  /// </summary>
+  public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
+    byte[]? fullAudioPayload = null;
+    byte[]? coverBytes = null;
+    var textFrames = new Dictionary<string, string>(StringComparer.Ordinal);
+    string? lyrics = null;
+
+    foreach (var (name, data) in FormatHelpers.FilesOnly(inputs)) {
+      var lowered = name.Replace('\\', '/').ToLowerInvariant();
+      var fileName = System.IO.Path.GetFileName(lowered);
+
+      if (fileName == "full.mp3") {
+        fullAudioPayload = data;
+      } else if (fileName.StartsWith("cover") && IsKnownImageExtension(fileName)) {
+        coverBytes = data;
+      } else if (fileName == "metadata.ini") {
+        // Only the root metadata.ini feeds the canonical tag; id3v1/ and id3v2/ subfolders
+        // are v1/v2 archive views and are not used on re-creation (we always emit v2).
+        var dir = System.IO.Path.GetDirectoryName(lowered)?.Replace('\\', '/') ?? "";
+        if (dir == "" || dir == "id3v2") ParseIni(data, textFrames);
+      } else if (fileName == "lyrics.txt") {
+        lyrics = Encoding.UTF8.GetString(data);
+      }
+    }
+
+    // Build ID3v2 tag.
+    var writer = new Id3v2Writer();
+    foreach (var (id, value) in textFrames.Where(kvp => kvp.Key.StartsWith('T'))) {
+      writer.AddText(id, value);
+    }
+    foreach (var (id, value) in textFrames.Where(kvp => kvp.Key.StartsWith('W'))) {
+      writer.AddUrl(id, value);
+    }
+    if (coverBytes != null) writer.AddPicture(coverBytes);
+    if (lyrics != null) writer.AddLyrics(lyrics);
+    var tag = writer.Build();
+
+    // Concatenate: ID3v2 tag + audio frames. Strip any existing ID3v2 tag from the input
+    // FULL.mp3 to avoid double-tagging.
+    output.Write(tag);
+    if (fullAudioPayload != null) {
+      var audioStart = StripExistingId3v2(fullAudioPayload);
+      output.Write(fullAudioPayload, audioStart, fullAudioPayload.Length - audioStart);
+    }
+  }
+
+  private static bool IsKnownImageExtension(string fileName)
+    => fileName.EndsWith(".jpg") || fileName.EndsWith(".jpeg") || fileName.EndsWith(".png") ||
+       fileName.EndsWith(".gif") || fileName.EndsWith(".webp");
+
+  private static void ParseIni(byte[] data, Dictionary<string, string> frames) {
+    var text = Encoding.UTF8.GetString(data);
+    foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries)) {
+      var trimmed = line.Trim();
+      if (trimmed.Length == 0 || trimmed[0] == ';' || trimmed[0] == '#') continue;
+      var eq = trimmed.IndexOf('=');
+      if (eq <= 0) continue;
+      var key = trimmed[..eq].Trim();
+      var value = trimmed[(eq + 1)..].Trim();
+      if (key.Length == 4) frames[key] = value;
+    }
+  }
+
+  private static int StripExistingId3v2(byte[] mp3) {
+    if (mp3.Length < 10 || mp3[0] != 'I' || mp3[1] != 'D' || mp3[2] != '3') return 0;
+    var tagSize = (mp3[6] & 0x7F) << 21 | (mp3[7] & 0x7F) << 14 | (mp3[8] & 0x7F) << 7 | (mp3[9] & 0x7F);
+    return 10 + tagSize;
+  }
+
+  // ── IArchiveWriteConstraints ──────────────────────────────────────────────
+
+  /// <summary>
+  /// Gets the max total archive size.
+  /// </summary>
+  public long? MaxTotalArchiveSize => null;
+  /// <summary>
+  /// Gets the accepted inputs description.
+  /// </summary>
+  public string AcceptedInputsDescription =>
+    "MP3 archive accepts: metadata.ini, cover.jpg/png/gif/webp, lyrics.txt, FULL.mp3";
+
+  /// <summary>
+  /// Performs the can accept operation.
+  /// </summary>
+  public bool CanAccept(ArchiveInputInfo input, out string? reason) {
+    var name = System.IO.Path.GetFileName(input.ArchiveName).ToLowerInvariant();
+    var dir = System.IO.Path.GetDirectoryName(input.ArchiveName)?.Replace('\\', '/').ToLowerInvariant() ?? "";
+
+    if (dir is "" or "id3v1" or "id3v2") {
+      if (name == "metadata.ini" || name == "lyrics.txt" || name == "full.mp3") {
+        reason = null; return true;
+      }
+      if (name.StartsWith("cover") &&
+          (name.EndsWith(".jpg") || name.EndsWith(".jpeg") || name.EndsWith(".png") ||
+           name.EndsWith(".gif") || name.EndsWith(".webp"))) {
+        reason = null; return true;
+      }
+    }
+    reason = $"not an MP3-archive input (got {input.ArchiveName}); {AcceptedInputsDescription}";
+    return false;
+  }
+
+  // ── helpers ───────────────────────────────────────────────────────────────
+
+  private static string MimeToExtension(string mime) => mime.ToLowerInvariant() switch {
+    "image/jpeg" => ".jpg",
+    "image/jpg" => ".jpg",
+    "image/png" => ".png",
+    "image/gif" => ".gif",
+    "image/webp" => ".webp",
+    _ => ".bin",
+  };
+
+  private static string SanitizeForPath(string s, string fallback) {
+    if (string.IsNullOrEmpty(s)) return fallback;
+    var sb = new StringBuilder(Math.Min(s.Length, 40));
+    foreach (var c in s) {
+      if (sb.Length >= 40) break;
+      if (char.IsLetterOrDigit(c) || c is '-' or '_') sb.Append(c);
+      else if (sb.Length > 0 && sb[^1] != '_') sb.Append('_');
+    }
+    return sb.Length > 0 ? sb.ToString().Trim('_') : fallback;
+  }
+}

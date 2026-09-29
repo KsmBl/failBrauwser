@@ -3,3 +3,5 @@
 /helper/**/obj
 /dist
 *.swp
+/vendor/**/bin
+/vendor/**/obj

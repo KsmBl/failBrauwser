@@ -1,0 +1,153 @@
+#pragma warning disable CS1591
+using Compression.Registry;
+using static Compression.Registry.FormatHelpers;
+
+namespace FileFormat.DiskDoubler;
+
+/// <summary>
+/// DiskDoubler compressed file (Salient Software, 1989-1993) — classic-Mac per-file compressor.
+///
+/// References:
+/// <list type="bullet">
+///   <item><description><c>https://github.com/MacPaw/XADMaster</c> — The Unarchiver's XADMaster — open-source DiskDoubler decoder</description></item>
+///   <item><description><c>https://en.wikipedia.org/wiki/DiskDoubler</c> — format history</description></item>
+/// </list>
+/// </summary>
+public sealed class DiskDoublerFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveLayoutMap {
+
+  /// <inheritdoc />
+  public IEnumerable<DefragBlockInfo> EnumerateLayout(Stream archive) {
+    archive.Position = 0;
+    var r = new DiskDoublerReader(archive);
+    foreach (var e in r.Entries) {
+      if (e.CompressedSize > 0)
+        yield return new DefragBlockInfo(e.DataOffset, e.CompressedSize, DefragBlockKind.Used, FileName: e.Name);
+    }
+  }
+
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "DiskDoubler";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "DiskDoubler";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Archive;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanList | FormatCapabilities.CanExtract | FormatCapabilities.CanCreate |
+    FormatCapabilities.SupportsMultipleEntries;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".dd";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [".dd", ".sea"];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  // DiskDoubler has no universally reliable magic bytes; detection is primarily by extension.
+  // The header version identifier at offset 0 varies by version so we use a low-confidence hint.
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("diskdoubler", "DiskDoubler")];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Archive;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description => "DiskDoubler compressed Macintosh file (Salient Software, 1989-1993)";
+
+  /// <summary>
+  /// Lists the entries in the supplied container.
+  /// </summary>
+  public List<ArchiveEntryInfo> List(Stream stream, string? password) {
+    var r = new DiskDoublerReader(stream, leaveOpen: true);
+    return r.Entries
+      .Select((e, i) => new ArchiveEntryInfo(
+        i,
+        e.Name,
+        e.OriginalSize,
+        e.CompressedSize,
+        $"Method {e.Method}",
+        false,
+        false,
+        DateTime.MinValue))
+      .ToList();
+  }
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
+    var r = new DiskDoublerReader(stream, leaveOpen: true);
+    foreach (var e in r.Entries) {
+      if (files != null && !MatchesFilter(e.Name, files)) continue;
+      WriteFile(outputDir, e.Name, r.Extract(e));
+    }
+  }
+
+  /// <summary>
+  /// Opens a single DiskDoubler entry as a bounded read-only stream. The
+  /// reader produces the decoded data; the matched bytes are wrapped in a
+  /// <see cref="Compression.Registry.Streaming.BoundedEntryStream"/> sized
+  /// to the entry's original length.
+  /// </summary>
+  public Stream OpenEntry(Stream archive, string entryName, string? password) {
+    ArgumentNullException.ThrowIfNull(archive);
+    ArgumentNullException.ThrowIfNull(entryName);
+    if (archive.CanSeek) archive.Position = 0;
+    var r = new DiskDoublerReader(archive, leaveOpen: true);
+    foreach (var e in r.Entries) {
+      if (!string.Equals(e.Name, entryName, StringComparison.OrdinalIgnoreCase)) continue;
+      var bytes = r.Extract(e);
+      return new Compression.Registry.Streaming.BoundedEntryStream(
+        new MemoryStream(bytes, writable: false), bytes.Length, leaveOpen: false);
+    }
+    return new Compression.Registry.Streaming.BoundedEntryStream(
+      new MemoryStream(System.Array.Empty<byte>(), writable: false), 0, leaveOpen: false);
+  }
+
+  /// <summary>Native in-memory single-entry extraction routed through the bounded <see cref="OpenEntry"/>.</summary>
+  public byte[] ExtractEntryToMemory(Stream archive, string entryName, string? password) {
+    using var s = this.OpenEntry(archive, entryName, password);
+    using var memoryStream = new MemoryStream();
+    s.CopyTo(memoryStream);
+    return memoryStream.ToArray();
+  }
+
+  /// <summary>
+  /// Performs the create operation.
+  /// </summary>
+  public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
+    // WORM: store the first input as a DiskDoubler data fork (method 0 = stored).
+    // DiskDoubler wraps a single Macintosh file, not a multi-file archive.
+    var w = new DiskDoublerWriter();
+    foreach (var i in inputs) {
+      if (i.IsDirectory) continue;
+      w.SetFile(Path.GetFileName(i.ArchiveName), i.ReadContent());
+      break;
+    }
+    w.WriteTo(output);
+  }
+}

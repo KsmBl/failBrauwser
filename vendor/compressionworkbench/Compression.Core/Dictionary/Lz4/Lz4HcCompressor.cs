@@ -1,0 +1,161 @@
+using System.Buffers;
+using System.Buffers.Binary;
+
+namespace Compression.Core.Dictionary.Lz4;
+
+/// <summary>
+/// LZ4 High Compression (HC) block compressor using hash chains for deeper match finding.
+/// Produces the same block format as <see cref="Lz4BlockCompressor"/> but with better ratios.
+/// </summary>
+internal static class Lz4HcCompressor {
+  /// <summary>
+  /// Compresses using hash chains with the specified chain depth.
+  /// </summary>
+  internal static byte[] Compress(ReadOnlySpan<byte> source, int maxChainDepth) {
+    if (source.Length == 0)
+      return [];
+
+    var destLen = Lz4BlockCompressor.CompressBound(source.Length);
+    var dest = ArrayPool<byte>.Shared.Rent(destLen);
+    try {
+      var written = CompressCore(source, dest, maxChainDepth);
+      return dest.AsSpan(0, written).ToArray();
+    } finally {
+      ArrayPool<byte>.Shared.Return(dest);
+    }
+  }
+
+  private static int CompressCore(ReadOnlySpan<byte> src, Span<byte> dst, int maxChainDepth) {
+    var srcLen = src.Length;
+    if (srcLen == 0)
+      return 0;
+
+    // Hash table: maps hash → most recent position
+    var hashTable = ArrayPool<int>.Shared.Rent(Lz4Constants.HashTableSize);
+    // Chain table: for each position, stores the previous position with the same hash
+    var chainTable = ArrayPool<int>.Shared.Rent(srcLen);
+    try {
+      hashTable.AsSpan(0, Lz4Constants.HashTableSize).Fill(-1);
+      chainTable.AsSpan(0, srcLen).Fill(-1);
+
+      var dstPos = 0;
+      var anchor = 0;
+      var pos = 0;
+      // No match may start within MFLIMIT (12) bytes of the end; the final
+      // LASTLITERALS (5) bytes must always remain literals.
+      var searchLimit = srcLen - Lz4Constants.MfLimit;
+      var matchLimit = srcLen - Lz4Constants.LastLiterals;
+
+      while (pos < searchLimit) {
+        var bestOffset = 0;
+        var bestLength = 0;
+
+        if (pos + 3 < srcLen) {
+          var h = Hash4(src, pos);
+
+          // Insert current position into chain
+          var prev = hashTable[h];
+          hashTable[h] = pos;
+          if (prev >= 0)
+            chainTable[pos] = prev;
+
+          // Walk the chain to find the best match. The lazy-match path below
+          // inserts pos+1 into the hash table and then re-enters the loop at that
+          // same position, so the chain head can point at pos itself; require a
+          // strictly earlier candidate so a match never has a zero offset.
+          var candidate = prev;
+          var depth = maxChainDepth;
+          while (candidate >= 0 && candidate < pos && depth-- > 0 && pos - candidate <= Lz4Constants.MaxDistance) {
+            // Check 4-byte prefix
+            if (src[candidate] == src[pos] &&
+                src[candidate + 1] == src[pos + 1] &&
+                src[candidate + 2] == src[pos + 2] &&
+                src[candidate + 3] == src[pos + 3]) {
+              var len = 4;
+              while (pos + len < matchLimit && src[candidate + len] == src[pos + len])
+                ++len;
+
+              if (len > bestLength) {
+                bestLength = len;
+                bestOffset = pos - candidate;
+              }
+            }
+
+            candidate = chainTable[candidate];
+          }
+        }
+
+        if (bestLength < Lz4Constants.MinMatch) {
+          ++pos;
+          continue;
+        }
+
+        // Lazy matching: check if next position has a better match
+        if (pos + 1 < matchLimit && bestLength < srcLen - pos - 1) {
+          var h2 = Hash4(src, pos + 1);
+          var prev2 = hashTable[h2];
+          hashTable[h2] = pos + 1;
+          if (prev2 >= 0)
+            chainTable[pos + 1] = prev2;
+
+          var candidate = prev2;
+          var depth = maxChainDepth;
+          var lazyBest = 0;
+          while (candidate >= 0 && candidate < pos + 1 && depth-- > 0 && (pos + 1) - candidate <= Lz4Constants.MaxDistance) {
+            if (src[candidate] == src[pos + 1] &&
+                src[candidate + 1] == src[pos + 2] &&
+                src[candidate + 2] == src[pos + 3]) {
+              var len = 3;
+              // Use the same end bound as the primary match (never into the
+              // final LASTLITERALS bytes); otherwise the lazy match looks up to
+              // LASTLITERALS bytes longer than any primary match near the tail
+              // and the encoder defers every position, emitting only literals.
+              while (pos + 1 + len < matchLimit && src[candidate + len] == src[pos + 1 + len])
+                ++len;
+              if (len > lazyBest)
+                lazyBest = len;
+            }
+            candidate = chainTable[candidate];
+          }
+
+          if (lazyBest > bestLength) {
+            // Skip this position, advance to next
+            ++pos;
+            continue;
+          }
+        }
+
+        // Emit sequence
+        var litLen = pos - anchor;
+        dstPos = Lz4BlockCompressor.EmitSequence(dst, dstPos, src, anchor, litLen, bestOffset, bestLength);
+
+        // Insert hash entries for all positions in the match
+        var end = pos + bestLength;
+        pos += 2; // Already inserted pos and pos+1
+        while (pos < end && pos + 3 < srcLen) {
+          var h = Hash4(src, pos);
+          var prev = hashTable[h];
+          hashTable[h] = pos;
+          if (prev >= 0)
+            chainTable[pos] = prev;
+          ++pos;
+        }
+        pos = end;
+        anchor = pos;
+      }
+
+      // Emit last literals
+      var lastLitLen = srcLen - anchor;
+      dstPos = Lz4BlockCompressor.EmitLastLiterals(dst, dstPos, src, anchor, lastLitLen);
+
+      return dstPos;
+    } finally {
+      ArrayPool<int>.Shared.Return(hashTable);
+      ArrayPool<int>.Shared.Return(chainTable);
+    }
+  }
+
+  private static int Hash4(ReadOnlySpan<byte> data, int pos) =>
+    (int)((BinaryPrimitives.ReadUInt32LittleEndian(data[pos..]) * 2654435761u)
+          >> (32 - Lz4Constants.HashTableBits));
+}

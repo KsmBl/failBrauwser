@@ -1,0 +1,348 @@
+using System.Buffers.Binary;
+using Compression.Core.DiskImage;
+using System.Text;
+
+namespace FileSystem.HfsPlus;
+
+/// <summary>
+/// Reads and extracts files from an HFS+ filesystem image.
+/// Supports both HFS+ (signature "H+") and HFSX (signature "HX") volumes.
+/// The volume header resides at byte offset 1024 within the image.
+/// </summary>
+public sealed class HfsPlusReader : IDisposable {
+  private readonly Stream _stream;
+  private readonly bool _leaveOpen;
+  /// <summary>
+  /// Random-access view over the volume. Copying it into a byte[] capped the
+  /// reader at the array limit, which HFS+'s 64-bit fork sizes do not.
+  /// </summary>
+  private readonly ImageAccessor _data;
+  private bool _disposed;
+
+  // Volume header fields.
+  private readonly uint _blockSize;
+  private readonly uint _totalBlocks;
+
+  // Catalog file extent (first extent only for simplicity).
+  private readonly uint _catalogStartBlock;
+  private readonly uint _catalogBlockCount;
+
+  private const int VolumeHeaderOffset = 1024;
+  private const int VolumeHeaderSize = 512;
+  private const ushort HfsPlusSignature = 0x482B; // "H+"
+  private const ushort HfsxSignature = 0x4858;    // "HX"
+
+  // HFS+ epoch: 1904-01-01T00:00:00Z.
+  private static readonly DateTime HfsEpoch = new(1904, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+  /// <summary>Gets all file and directory entries found in the volume.</summary>
+  public IReadOnlyList<HfsPlusEntry> Entries { get; }
+
+  /// <summary>
+  /// Initializes a new <see cref="HfsPlusReader"/> and parses the HFS+ volume.
+  /// </summary>
+  /// <param name="stream">A stream containing the HFS+ image.</param>
+  /// <param name="leaveOpen">Whether to leave the stream open on dispose.</param>
+  public HfsPlusReader(Stream stream, bool leaveOpen = false) {
+    _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+    _leaveOpen = leaveOpen;
+
+    if (stream.CanSeek) stream.Position = 0;
+    _data = new ImageAccessor(stream, leaveOpen: true);
+
+    if (_data.Length < VolumeHeaderOffset + VolumeHeaderSize)
+      throw new InvalidDataException("Stream too small for an HFS+ volume header.");
+
+    var vh = _data.Read(VolumeHeaderOffset, VolumeHeaderSize).AsSpan();
+
+    // Validate signature.
+    var sig = BinaryPrimitives.ReadUInt16BigEndian(vh);
+    if (sig != HfsPlusSignature && sig != HfsxSignature)
+      throw new InvalidDataException($"Invalid HFS+ signature: 0x{sig:X4}");
+
+    // Parse volume header fields.
+    _blockSize = BinaryPrimitives.ReadUInt32BigEndian(vh[40..]);
+    _totalBlocks = BinaryPrimitives.ReadUInt32BigEndian(vh[44..]);
+
+    if (_blockSize == 0)
+      throw new InvalidDataException("HFS+ block size is zero.");
+
+    // Catalog file ForkData starts at offset 272 (TN1150 §3.2).
+    // Layout: logicalSize(u64) + clumpSize(u32) + totalBlocks(u32) + extents[8].
+    // First extent: startBlock at offset 272+16=288, blockCount at 272+20=292.
+    _catalogStartBlock = BinaryPrimitives.ReadUInt32BigEndian(vh[288..]);
+    _catalogBlockCount = BinaryPrimitives.ReadUInt32BigEndian(vh[292..]);
+
+    // Parse catalog B-tree.
+    var entries = new List<HfsPlusEntry>();
+    ParseCatalog(entries);
+    Entries = entries;
+  }
+
+  // ── Catalog B-tree parsing ──────────────────────────────────────────────
+
+  private void ParseCatalog(List<HfsPlusEntry> entries) {
+    if (_catalogBlockCount == 0 || _catalogStartBlock == 0)
+      return;
+
+    var catalogOffset = (long)_catalogStartBlock * _blockSize;
+    var catalogSize = (long)_catalogBlockCount * _blockSize;
+    if (catalogOffset + catalogSize > _data.Length)
+      catalogSize = _data.Length - catalogOffset;
+    if (catalogSize <= 0)
+      return;
+
+    // B-tree header node is at node 0 (start of catalog file).
+    // Node descriptor: 14 bytes.
+    // Header record starts at offset 14 within node 0.
+    var nodeBase = catalogOffset;
+    if (nodeBase + 14 + 30 > _data.Length) return;
+
+    var nodeSpan = _data.Read(nodeBase, (int)Math.Min(4096, _data.Length - nodeBase)).AsSpan();
+
+    // Node descriptor fields.
+    // var fLink = BinaryPrimitives.ReadUInt32BigEndian(nodeSpan);
+    // kind at offset 8 (int8): 1 = header node
+    var kind = (sbyte)nodeSpan[8];
+    if (kind != 1) return; // Not a header node.
+
+    // Header record at offset 14. BTHeaderRec layout per TN1150 §2.5.1:
+    //   +0  treeDepth      (u16)
+    //   +2  rootNode       (u32)
+    //   +6  leafRecords    (u32)
+    //   +10 firstLeafNode  (u32)
+    //   +14 lastLeafNode   (u32)
+    //   +18 nodeSize       (u16)
+    var hdr = nodeSpan[14..];
+    var firstLeafNode = BinaryPrimitives.ReadUInt32BigEndian(hdr[10..]);
+    var nodeSize = BinaryPrimitives.ReadUInt16BigEndian(hdr[18..]);
+
+    if (nodeSize == 0) return;
+
+    // Build a CNID-to-path map for directory resolution.
+    // Root folder CNID = 2.
+    var dirPaths = new Dictionary<uint, string> { [2] = "" };
+
+    // Walk the whole leaf chain. Catalogs that outgrow a single leaf node grow
+    // index nodes above several leaves, but every record still lives on a leaf
+    // and the leaves are doubly linked (fLink/bLink). Starting at firstLeafNode
+    // and following fLink therefore visits every record without descending the
+    // index level — the records arrive in catalog-key order, so a single
+    // forward pass resolves each folder before the files that live inside it.
+    var currentNode = firstLeafNode;
+    var visited = new HashSet<uint>();
+
+    while (currentNode != 0 && visited.Add(currentNode)) {
+      var nodeOffset = catalogOffset + (long)currentNode * nodeSize;
+      if (nodeOffset + nodeSize > _data.Length) break;
+
+      var nd = _data.Read(nodeOffset, (int)Math.Min(nodeSize, _data.Length - nodeOffset)).AsSpan();
+      var ndKind = (sbyte)nd[8];
+      if (ndKind != -1) {
+        // Not a leaf node; stop.
+        break;
+      }
+
+      var numRecords = BinaryPrimitives.ReadUInt16BigEndian(nd[10..]);
+
+      // Record offsets are stored at the end of the node, in reverse order (uint16 BE each).
+      // Offset[0] is at nodeSize - 2, Offset[1] at nodeSize - 4, etc.
+      for (var i = 0; i < numRecords; i++) {
+        var offsetPos = (int)nodeSize - 2 * (i + 1);
+        if (offsetPos < 12) break;
+        var recOffset = BinaryPrimitives.ReadUInt16BigEndian(nd[offsetPos..]);
+        if (recOffset + 6 > nodeSize) continue;
+
+        var rec = nd[recOffset..];
+
+        // Catalog key: keyLength (uint16 BE), parentCNID (uint32 BE), name length (uint16 BE), UTF-16BE chars.
+        var keyLength = BinaryPrimitives.ReadUInt16BigEndian(rec);
+        if (keyLength < 6) continue;
+        var parentCnid = BinaryPrimitives.ReadUInt32BigEndian(rec[2..]);
+        var nameLength = BinaryPrimitives.ReadUInt16BigEndian(rec[6..]);
+
+        // Name starts at offset 8 within the key, each char is 2 bytes (UTF-16BE).
+        var nameByteLen = nameLength * 2;
+        if (8 + nameByteLen > recOffset + 2 + keyLength + 100) {
+          // Sanity check: name too long.
+          nameLength = 0;
+        }
+
+        var name = "";
+        if (nameLength > 0 && recOffset + 8 + nameByteLen <= nodeSize) {
+          var nameBytes = _data.Read(nodeOffset + recOffset + 8, nameByteLen).AsSpan();
+          name = Encoding.BigEndianUnicode.GetString(nameBytes);
+        }
+
+        // Data record follows the key: aligned to 2-byte boundary.
+        var dataOffset = recOffset + 2 + keyLength;
+        if ((dataOffset & 1) != 0) dataOffset++; // Pad to even.
+        if (dataOffset + 2 > nodeSize) continue;
+
+        var recordType = BinaryPrimitives.ReadInt16BigEndian(nd[dataOffset..]);
+
+        switch (recordType) {
+          case 1: // Folder record.
+            ParseFolderRecord(nd, dataOffset, parentCnid, name, dirPaths, entries);
+            break;
+          case 2: // File record.
+            ParseFileRecord(nd, dataOffset, parentCnid, name, dirPaths, entries);
+            break;
+          // 3 = folder thread, 4 = file thread — skip.
+        }
+      }
+
+      // Advance to next leaf node via fLink.
+      currentNode = BinaryPrimitives.ReadUInt32BigEndian(nd);
+    }
+  }
+
+  private static void ParseFolderRecord(ReadOnlySpan<byte> nd, int dataOffset, uint parentCnid,
+      string name, Dictionary<uint, string> dirPaths, List<HfsPlusEntry> entries) {
+    // Folder record layout:
+    // offset 0: recordType (int16 BE) = 1
+    // offset 2: flags (uint16 BE)
+    // offset 4: valence (uint32 BE)
+    // offset 8: CNID (uint32 BE)
+    // offset 12: createDate (uint32 BE)
+    // offset 16: contentModDate (uint32 BE)
+    if (dataOffset + 20 > nd.Length) return;
+
+    var cnid = BinaryPrimitives.ReadUInt32BigEndian(nd[(dataOffset + 8)..]);
+    var modDateRaw = BinaryPrimitives.ReadUInt32BigEndian(nd[(dataOffset + 16)..]);
+    var modDate = modDateRaw > 0 ? HfsEpoch.AddSeconds(modDateRaw) : (DateTime?)null;
+
+    // The volume root folder (parent CNID 1) carries the VOLUME NAME as its
+    // catalog name, but it anchors paths at the empty root — its children must
+    // resolve to bare paths ("docs/guide.txt"), not "<volume>/docs/guide.txt".
+    if (parentCnid == 1) {
+      dirPaths[cnid] = "";
+      return;
+    }
+
+    var parentPath = dirPaths.GetValueOrDefault(parentCnid, "");
+    var fullPath = parentPath.Length > 0 ? parentPath + "/" + name : name;
+
+    dirPaths[cnid] = fullPath;
+
+    entries.Add(new HfsPlusEntry {
+      Name = name,
+      FullPath = fullPath,
+      Size = 0,
+      IsDirectory = true,
+      Cnid = cnid,
+      LastModified = modDate,
+    });
+  }
+
+  // Finder fdType for a HFS+ symbolic link: 'slnk' (the link's target path lives
+  // in its data fork, exactly like a small regular file). References: Apple TN1150
+  // "HFS Plus Volume Format" (HFSPlusCatalogFile.userInfo/FInfo.fdType) and
+  // Darwin xnu bsd/hfs (SYMLINKFILETYPE / SYMLINKCREATOR).
+  private const uint SymlinkFileType = 0x736C6E6B; // 'slnk'
+
+  private void ParseFileRecord(ReadOnlySpan<byte> nd, int dataOffset, uint parentCnid,
+      string name, Dictionary<uint, string> dirPaths, List<HfsPlusEntry> entries) {
+    // TN1150 HFSPlusCatalogFile (248 bytes):
+    //   offset 0:   recordType (int16 BE) = 2 (kHFSPlusFileRecord)
+    //   offset 2:   flags (uint16 BE)
+    //   offset 4:   reserved1 (uint32 BE)
+    //   offset 8:   fileID (uint32 BE)
+    //   offset 12:  createDate (uint32 BE)
+    //   offset 16:  contentModDate (uint32 BE)
+    //   offset 20:  attributeModDate (uint32 BE)
+    //   offset 24:  accessDate (uint32 BE)
+    //   offset 28:  backupDate (uint32 BE)
+    //   offset 32:  permissions[16]
+    //   offset 48:  userInfo[16] (FileInfo)
+    //   offset 64:  finderInfo[16] (ExtendedFileInfo)
+    //   offset 80:  textEncoding (uint32 BE)
+    //   offset 84:  reserved2 (uint32 BE)
+    //   offset 88:  dataFork HFSPlusForkData (80 bytes)
+    //                 +0  logicalSize (uint64 BE)
+    //                 +8  clumpSize (uint32 BE)
+    //                 +12 totalBlocks (uint32 BE)
+    //                 +16 extents[8] (8 * (u32 startBlock + u32 blockCount))
+    //   offset 168: resourceFork HFSPlusForkData (80 bytes)
+    if (dataOffset + 248 > nd.Length) return;
+
+    var cnid = BinaryPrimitives.ReadUInt32BigEndian(nd[(dataOffset + 8)..]);
+    var modDateRaw = BinaryPrimitives.ReadUInt32BigEndian(nd[(dataOffset + 16)..]);
+    var modDate = modDateRaw > 0 ? HfsEpoch.AddSeconds(modDateRaw) : (DateTime?)null;
+
+    // userInfo (FInfo) sits at record offset 48: fdType (u32 BE) then fdCreator.
+    var fileType = BinaryPrimitives.ReadUInt32BigEndian(nd[(dataOffset + 48)..]);
+    var isSymlink = fileType == SymlinkFileType;
+
+    const int dataForkOffset = 88;
+    var logicalSize = (long)BinaryPrimitives.ReadUInt64BigEndian(nd[(dataOffset + dataForkOffset)..]);
+    // extents[0] starts 16 bytes into the ForkData struct (after logicalSize+clumpSize+totalBlocks).
+    var startBlock = BinaryPrimitives.ReadUInt32BigEndian(nd[(dataOffset + dataForkOffset + 16)..]);
+    var blockCount = BinaryPrimitives.ReadUInt32BigEndian(nd[(dataOffset + dataForkOffset + 20)..]);
+
+    var parentPath = dirPaths.GetValueOrDefault(parentCnid, "");
+    var fullPath = parentPath.Length > 0 ? parentPath + "/" + name : name;
+
+    string? linkTarget = null;
+    if (isSymlink)
+      linkTarget = ReadForkText(startBlock, logicalSize);
+
+    entries.Add(new HfsPlusEntry {
+      Name = name,
+      FullPath = fullPath,
+      Size = logicalSize,
+      IsDirectory = false,
+      IsSymlink = isSymlink,
+      LinkTarget = linkTarget,
+      Cnid = cnid,
+      LastModified = modDate,
+      FirstBlock = startBlock,
+      BlockCount = blockCount,
+    });
+  }
+
+  // Reads a small data fork (a symlink target) as UTF-8 text from its first extent.
+  private string? ReadForkText(uint startBlock, long logicalSize) {
+    if (logicalSize <= 0 || logicalSize > 4096) return logicalSize == 0 ? "" : null;
+    var offset = (long)startBlock * _blockSize;
+    var length = (int)logicalSize;
+    if (offset < 0 || offset + length > _data.Length)
+      length = (int)Math.Max(0, _data.Length - offset);
+    if (length <= 0) return "";
+    return Encoding.UTF8.GetString(_data.Read(offset, length));
+  }
+
+  // ── File extraction ─────────────────────────────────────────────────────
+
+  /// <summary>
+  /// Extracts the data fork content of the specified file entry.
+  /// </summary>
+  /// <param name="entry">The file entry to extract.</param>
+  /// <returns>The file data as a byte array.</returns>
+  public byte[] Extract(HfsPlusEntry entry) {
+    ArgumentNullException.ThrowIfNull(entry);
+    if (entry.IsDirectory || entry.Size == 0) return [];
+
+    var offset = (long)entry.FirstBlock * _blockSize;
+    var length = (int)Math.Min(entry.Size, (long)entry.BlockCount * _blockSize);
+    length = (int)Math.Min(length, entry.Size);
+
+    if (offset + length > _data.Length)
+      length = (int)Math.Max(0, _data.Length - offset);
+    if (length <= 0) return [];
+
+    var result = new byte[entry.Size];
+    var toCopy = (int)Math.Min(length, entry.Size);
+    _data.Read(offset, toCopy).CopyTo(result, 0);
+    return result;
+  }
+
+  /// <inheritdoc />
+  public void Dispose() {
+    if (!_disposed) {
+      _disposed = true;
+      if (!_leaveOpen)
+        _stream.Dispose();
+    }
+  }
+}

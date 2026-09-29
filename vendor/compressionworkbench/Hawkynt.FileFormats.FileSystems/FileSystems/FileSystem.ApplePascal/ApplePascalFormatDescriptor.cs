@@ -1,0 +1,302 @@
+#pragma warning disable CS1591
+using Compression.Registry;
+using static Compression.Registry.FormatHelpers;
+
+namespace FileSystem.ApplePascal;
+
+/// <summary>
+/// Descriptor for Apple UCSD Pascal disk volumes (Apple II, Apple III, Lisa
+/// Pascal — late 1970s / early 1980s). Volume directory header is at fixed
+/// disk block 2 (file offset 0x400); files are stored as contiguous block
+/// extents with at most 77 directory entries.
+///
+/// <para><b>Flat-only by spec.</b> Apple Pascal does not support
+/// subdirectories — its 26-byte directory entry has no parent-pointer or
+/// nested-volume indirection. Writer / reader treat all inputs as living at
+/// the volume root; a leaf-name-only round trip is the maximum possible. This
+/// is honest and documented in the writer's xmldoc.</para>
+///
+/// <para><b>Spec.</b> Apple Pascal Operating System Reference Manual (1980).</para>
+///
+/// References:
+/// <list type="bullet">
+///   <item><description>Apple Pascal Operating System Reference Manual (Apple Computer, 1980) — the original vendor spec for the UCSD-Pascal volume layout</description></item>
+///   <item><description><c>https://github.com/fadden/CiderPress2</c> — CiderPress II, maintained implementation covering Apple Pascal volumes</description></item>
+///   <item><description><c>https://en.wikipedia.org/wiki/UCSD_Pascal</c> — Wikipedia overview of the UCSD p-System family</description></item>
+/// </list>
+/// </summary>
+public sealed class ApplePascalFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations,
+    IArchiveCreatable, IArchiveShrinkable, IArchiveModifiable, IArchiveDefragmentable, IFilesystemExtentMap, IWipeEmpty, IFormatOptionsSchema, ILayoutOptimizable {
+
+  /// <summary>
+  /// Gets the id.
+  /// </summary>
+  public string Id => "ApplePascal";
+  /// <summary>
+  /// Gets the display name.
+  /// </summary>
+  public string DisplayName => "Apple UCSD Pascal";
+  /// <summary>
+  /// Gets the category.
+  /// </summary>
+  public FormatCategory Category => FormatCategory.Archive;
+  /// <summary>
+  /// Gets the capabilities.
+  /// </summary>
+  public FormatCapabilities Capabilities =>
+    FormatCapabilities.CanList | FormatCapabilities.CanExtract | FormatCapabilities.CanCreate |
+    FormatCapabilities.CanModify |
+    FormatCapabilities.CanTest | FormatCapabilities.SupportsMultipleEntries;
+  /// <summary>
+  /// Gets the default extension.
+  /// </summary>
+  public string DefaultExtension => ".pvol";
+  /// <summary>
+  /// Gets the extensions.
+  /// </summary>
+  public IReadOnlyList<string> Extensions => [".pvol", ".pdv", ".pas"];
+  /// <summary>
+  /// Gets the compound extensions.
+  /// </summary>
+  public IReadOnlyList<string> CompoundExtensions => [];
+  // Apple Pascal volumes have no fixed magic in the boot sector; detection
+  // is by extension. The reader's Parse() validates volume-header invariants
+  // (type=0, first=0, 6 <= next <= 18, valid name length, plausible block counts).
+  /// <summary>
+  /// Gets the magic signatures.
+  /// </summary>
+  public IReadOnlyList<MagicSignature> MagicSignatures => [];
+  /// <summary>
+  /// Gets the methods.
+  /// </summary>
+  public IReadOnlyList<FormatMethodInfo> Methods => [new("stored", "Stored")];
+  /// <summary>
+  /// Gets the tar compression format id.
+  /// </summary>
+  public string? TarCompressionFormatId => null;
+  /// <summary>
+  /// Gets the family.
+  /// </summary>
+  public AlgorithmFamily Family => AlgorithmFamily.Archive;
+  /// <summary>
+  /// Gets the description.
+  /// </summary>
+  public string Description =>
+    "Apple UCSD Pascal disk volume (Apple II/III/Lisa); 512-byte blocks, contiguous extents, max 77 entries; flat (no subdirs).";
+
+  /// <summary>
+  /// Gets the options schema.
+  /// </summary>
+  public IReadOnlyList<FormatOptionDescriptor> OptionsSchema { get; } = [
+    new FormatOptionDescriptor(
+      Key: "BlockSize",
+      DisplayName: "Block size",
+      Kind: FormatOptionKind.Enum,
+      Default: "512",
+      AllowedValues: ["512"],
+      Description: "Apple Pascal volumes always use 512-byte blocks — fixed by spec."),
+    new FormatOptionDescriptor(
+      Key: "VolumeSize",
+      DisplayName: "Volume size (blocks)",
+      Kind: FormatOptionKind.Enum,
+      Default: "Auto",
+      AllowedValues: ["Auto", "280", "560", "1024", "1600", "2048"],
+      Description: "Total volume size in 512-byte blocks. Pascal convention: multiples of 8 (8-block allocation tiles). 280 = 140 KB SS floppy, 560 = 280 KB DS floppy."),
+    new FormatOptionDescriptor(
+      Key: "VolumeName",
+      DisplayName: "Volume name",
+      Kind: FormatOptionKind.String,
+      Default: "PASCAL",
+      Description: "Volume name (1..7 ASCII chars, uppercased on disk)."),
+  ];
+
+  /// <summary>
+  /// Lists the entries in the supplied container.
+  /// </summary>
+  public List<ArchiveEntryInfo> List(Stream stream, string? password) {
+    using var r = new ApplePascalReader(stream);
+    return r.Entries.Select((e, i) => new ArchiveEntryInfo(
+      i, e.Name, e.Size, e.Size, "Stored", e.IsDirectory, false, null)).ToList();
+  }
+
+  /// <summary>
+  /// Decodes the supplied input.
+  /// </summary>
+  public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
+    using var r = new ApplePascalReader(stream);
+    foreach (var e in r.Entries) {
+      if (e.IsDirectory) continue;
+      if (files != null && files.Length > 0 && !MatchesFilter(e.Name, files)) continue;
+      WriteFile(outputDir, e.Name, r.Extract(e));
+    }
+  }
+
+  /// <summary>
+  /// Performs the create operation.
+  /// </summary>
+  public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
+    ArgumentNullException.ThrowIfNull(output);
+    ArgumentNullException.ThrowIfNull(inputs);
+    options ??= new FormatCreateOptions();
+
+    var vsizeLabel = options.GetOption("VolumeSize", "Auto");
+    int volumeBlocks;
+    if (vsizeLabel.Equals("Auto", StringComparison.OrdinalIgnoreCase)) {
+      // Auto: optimizer picks size from the actual file payload.
+      var sizes = inputs.Where(i => !i.IsDirectory).Select(i => (long)i.ReadContent().Length).ToList();
+      volumeBlocks = ApplePascalOptimizer.Find(sizes).VolumeBlocks;
+    } else {
+      volumeBlocks = int.TryParse(vsizeLabel, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 280;
+    }
+    var volName = options.GetOption("VolumeName", "PASCAL");
+
+    var w = new ApplePascalWriter();
+    foreach (var (name, data) in FormatHelpers.FlatFiles(inputs))
+      w.AddFile(name, data);
+    output.Write(w.Build(volumeBlocks, volName));
+  }
+
+  // ── IArchiveModifiable ──────────────────────────────────────────────────
+
+  /// <summary>
+  /// Adds (or replaces by name) files inside an existing Apple Pascal image.
+  /// Routed through <see cref="ApplePascalInPlaceModifier.AddFile"/>: the
+  /// volume directory at blocks 2-5 is mutated in place, the new file's
+  /// contiguous extent is allocated from the gap between existing entries'
+  /// extents, and the new 26-byte entry lands at the tail of the live region.
+  /// </summary>
+  /// <exception cref="NotSupportedException">Directory full (77 entries).</exception>
+  /// <exception cref="IOException">Volume full (no contiguous free run of the
+  /// required size at or after block 6).</exception>
+  public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
+    ArgumentNullException.ThrowIfNull(archive);
+    ArgumentNullException.ThrowIfNull(inputs);
+    foreach (var (name, data) in FormatHelpers.FlatFiles(inputs))
+      ApplePascalInPlaceModifier.AddFile(archive, name, data);
+  }
+
+  /// <summary>
+  /// Removes the named entries from an existing Apple Pascal image. Routed
+  /// through <see cref="ApplePascalInPlaceModifier.RemoveFile"/>: the dirent
+  /// is located in the volume directory, the data extent is zero-wiped, the
+  /// trailing dirents are shifted up to keep the live region packed, and the
+  /// volume header's file count is decremented.
+  /// </summary>
+  public void Remove(Stream archive, string[] entryNames) {
+    ArgumentNullException.ThrowIfNull(archive);
+    ArgumentNullException.ThrowIfNull(entryNames);
+    foreach (var name in entryNames)
+      ApplePascalInPlaceModifier.RemoveFile(archive, name, wipeData: true);
+  }
+
+  /// <summary>
+  /// Enumerates the extents.
+  /// </summary>
+  public IEnumerable<DefragBlockInfo> EnumerateExtents(Stream image)
+    => ApplePascalExtentMap.Enumerate(image);
+
+  /// <summary>
+  /// Performs the defragment operation.
+  /// </summary>
+  public void Defragment(Stream archive)
+    => this.Defragment(archive, new DefragOptions { Mode = DefragMode.ConsolidateAtStart });
+
+  /// <summary>
+  /// Performs the defragment operation.
+  /// </summary>
+  public void Defragment(Stream archive, DefragOptions options) {
+    ArgumentNullException.ThrowIfNull(archive);
+    ArgumentNullException.ThrowIfNull(options);
+
+    // The rebuild lays the volume down again from the files it read out, and on
+    // a ApplePascal volume that came back with the files listed at their right
+    // lengths holding the wrong bytes. Counting entries says nothing about
+    // that, so the pass is kept only if every payload still reads back.
+    DefragContentGuard.RunOrRebuild(archive,
+      readContents: stream => {
+        using var reader = new ApplePascalReader(stream);
+        return reader.Entries.Where(e => !e.IsDirectory).Select(reader.Extract).ToList();
+      },
+      inPlace: () => this.DefragmentWithPlanner(archive, options),
+      rebuild: () => RebuildVia(archive, options));
+  }
+
+  /// <summary>Plans the moves the layout needs, commits them, and re-sorts.</summary>
+  private void DefragmentWithPlanner(Stream archive, DefragOptions options) {
+    archive.Position = 0;
+    var mover = new ApplePascalBlockMover();
+    mover.Init(archive);
+
+    var extents = ApplePascalExtentMap.Enumerate(archive).ToList();
+    options.OnProgress?.Invoke(new DefragProgressEvent(
+      "scanning", 0, 0, -1, archive.Length, extents, "Analysing layout"));
+
+    var moves = Compression.Core.Layout.DefragPlanner.Plan(
+      extents, mover.FirstDataByte, archive.Length, mover.BlockSize,
+      options.Profile, options.Mode, holeSize: options.HoleSize, holeAt: options.HoleAt,
+      metadataZone: options.MetadataZonePlacement);
+    if (moves.Count == 0) {
+      options.OnProgress?.Invoke(new DefragProgressEvent(
+        "complete", 1, -1, -1, archive.Length, extents, "Already defragmented"));
+      return;
+    }
+
+    Compression.Core.Layout.DefragPlannerExecutor.Execute(archive, options, mover, moves,
+      archive.Length, reinitAfterMove: null);
+
+    // The p-System measures free space by the gaps between consecutive entries,
+    // so the directory has to end up in block order or the volume reads as full
+    // of overlapping files.
+    mover.SortDirectory(archive);
+
+    archive.Position = 0;
+    var postExtents = ApplePascalExtentMap.Enumerate(archive).ToList();
+    options.OnProgress?.Invoke(new DefragProgressEvent(
+      "complete", 1, -1, -1, archive.Length, postExtents, "Defragmentation complete"));
+  }
+
+  private void RebuildVia(Stream archive, DefragOptions options) {
+    DefragRebuilder.Rebuild(archive, options,
+      readEntries: stream => {
+        using var r = new ApplePascalReader(stream);
+        var live = r.Entries.Where(e => !e.IsDirectory).Select(e => (e.Name, r.Extract(e))).ToList();
+        return live;
+      },
+      buildImage: files => {
+        var w = new ApplePascalWriter();
+        foreach (var (n, d) in files) w.AddFile(n, d);
+        // Preserve the image's original block count if known.
+        var blocks = (int)(archive.Length / ApplePascalReader.BlockSize);
+        if (blocks < 8) blocks = 280;
+        return w.Build(blocks);
+      });
+  }
+
+  /// <summary>
+  /// Performs the wipe unused space operation.
+  /// </summary>
+  public long WipeUnusedSpace(Stream image, bool wipeClusterTips = true, bool wipeDeletedEntries = true) {
+    ArgumentNullException.ThrowIfNull(image);
+    image.Position = 0;
+    var imageSize = image.Length;
+
+    // File-size lookup so cluster-tip wiping zeros the trailing bytes of each
+    // contiguous extent beyond the recorded file size.
+    Func<string, long>? lookup = null;
+    if (wipeClusterTips) {
+      try {
+        image.Position = 0;
+        using var r = new ApplePascalReader(image);
+        var map = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in r.Entries)
+          if (!e.IsDirectory)
+            map[e.Name] = e.Size;
+        lookup = n => map.TryGetValue(n, out var s) ? s : -1;
+      } catch { lookup = null; }
+    }
+
+    image.Position = 0;
+    var extents = ApplePascalExtentMap.Enumerate(image);
+    return UnusedSpaceWiper.Wipe(image, extents, imageSize, wipeClusterTips, lookup);
+  }
+}

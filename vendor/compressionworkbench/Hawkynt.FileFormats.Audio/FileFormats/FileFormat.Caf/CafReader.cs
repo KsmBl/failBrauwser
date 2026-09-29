@@ -1,0 +1,187 @@
+#pragma warning disable CS1591
+using System.Buffers.Binary;
+using System.Text;
+using Codec.ImaAdpcm;
+
+namespace FileFormat.Caf;
+
+/// <summary>
+/// Apple Core Audio Format (<c>.caf</c>) parser. All container integers are big-endian, and so are
+/// LPCM samples unless the ASBD little-endian flag says otherwise; either way callers get canonical
+/// little-endian PCM back.
+/// G.711 and QuickTime IMA4 are decoded to canonical PCM16.
+/// </summary>
+public sealed class CafReader {
+  /// <summary>
+  /// Represents a parsed caf.
+  /// </summary>
+  public sealed record ParsedCaf(
+    int NumChannels,
+    int SampleRate,
+    int BitsPerSample,
+    uint FormatFlags,
+    bool IsFloat,
+    string FormatId,
+    byte[] InterleavedPcm,
+    IReadOnlyList<(string Type, byte[] Data)> OtherChunks,
+    uint? ChannelMask = null,
+    long? ValidFrames = null);
+
+  private const uint FlagIsFloat = 0x1;
+
+  // Core Audio states sample byte order by its absence: bit 1 marks little-endian samples, so a
+  // cleared bit is CAF's canonical big-endian layout - the inverse polarity of every other flag.
+  private const uint FlagIsLittleEndian = 0x2;
+  private const int Ima4PacketBytesPerChannel = 34;
+  private const int Ima4FramesPerPacket = 64;
+
+  /// <summary>
+  /// Reads the value from the supplied input.
+  /// </summary>
+  public ParsedCaf Read(ReadOnlySpan<byte> data) {
+    if (data.Length < 8)
+      throw new InvalidDataException("CAF too short for file header.");
+    if (!data[..4].SequenceEqual("caff"u8))
+      throw new InvalidDataException("Missing 'caff' magic.");
+
+    var pos = 8;
+    uint? channelMask = null;
+    long? validFrames = null;
+    var descParsed = false;
+    int channels = 0, sampleRate = 0, bitsPerChannel = 0;
+    uint formatFlags = 0;
+    var formatId = "";
+    byte[]? rawData = null;
+    var other = new List<(string, byte[])>();
+
+    while (pos + 12 <= data.Length) {
+      var type = Encoding.ASCII.GetString(data.Slice(pos, 4));
+      var size = BinaryPrimitives.ReadInt64BigEndian(data[(pos + 4)..]);
+      var bodyStart = pos + 12;
+
+      long effective;
+      if (size < 0) {
+        if (type != "data")
+          throw new InvalidDataException($"CAF chunk '{type}' uses an indefinite size outside the data chunk.");
+        effective = data.Length - bodyStart;
+      } else {
+        effective = size;
+        if (effective > int.MaxValue || bodyStart + effective > data.Length)
+          throw new InvalidDataException($"CAF chunk '{type}' truncated or too large.");
+      }
+
+      var body = data.Slice(bodyStart, checked((int)effective));
+      switch (type) {
+        case "desc":
+          if (body.Length < 32)
+            throw new InvalidDataException("CAF 'desc' chunk shorter than 32 bytes.");
+          sampleRate = checked((int)BinaryPrimitives.ReadDoubleBigEndian(body));
+          formatId = Encoding.ASCII.GetString(body.Slice(8, 4));
+          formatFlags = BinaryPrimitives.ReadUInt32BigEndian(body[12..]);
+          channels = checked((int)BinaryPrimitives.ReadUInt32BigEndian(body[24..]));
+          bitsPerChannel = checked((int)BinaryPrimitives.ReadUInt32BigEndian(body[28..]));
+          descParsed = true;
+          break;
+        case "data":
+          rawData = body.Length >= 4 ? body[4..].ToArray() : [];
+          break;
+        case "pakt":
+          if (body.Length < 24)
+            throw new InvalidDataException("CAF 'pakt' chunk shorter than 24 bytes.");
+          var packetCount = BinaryPrimitives.ReadInt64BigEndian(body);
+          validFrames = BinaryPrimitives.ReadInt64BigEndian(body[8..]);
+          if (packetCount < 0 || validFrames < 0)
+            throw new InvalidDataException("CAF 'pakt' contains a negative packet or valid-frame count.");
+          other.Add((type, body.ToArray()));
+          break;
+        case "chan":
+          if (body.Length >= 8 && BinaryPrimitives.ReadUInt32BigEndian(body) == 0x10000)
+            channelMask = BinaryPrimitives.ReadUInt32BigEndian(body[4..]);
+          other.Add((type, body.ToArray()));
+          break;
+        default:
+          other.Add((type, body.ToArray()));
+          break;
+      }
+
+      pos = checked(bodyStart + (int)effective);
+    }
+
+    if (!descParsed) throw new InvalidDataException("CAF missing 'desc' chunk.");
+    if (channels < 1) throw new InvalidDataException("CAF channel count must be positive.");
+    if (sampleRate < 1) throw new InvalidDataException("CAF sample rate must be positive.");
+
+    var isFloat = (formatFlags & FlagIsFloat) != 0;
+    var littleEndian = (formatFlags & FlagIsLittleEndian) != 0;
+    var payload = rawData ?? [];
+
+    switch (formatId) {
+      case "ulaw":
+        return new ParsedCaf(channels, sampleRate, 16, formatFlags, false, "lpcm",
+          ShortsToLePcm(Codec.MuLaw.MuLawCodec.Decode(payload)), other, channelMask, validFrames);
+      case "alaw":
+        return new ParsedCaf(channels, sampleRate, 16, formatFlags, false, "lpcm",
+          ShortsToLePcm(Codec.ALaw.ALawCodec.Decode(payload)), other, channelMask, validFrames);
+      case "ima4":
+        return DecodeIma4(channels, sampleRate, formatFlags, payload, other, channelMask, validFrames);
+    }
+
+    var canonical = payload;
+    if (formatId == "lpcm" && !littleEndian && bitsPerChannel > 8)
+      canonical = ConvertBeToLe(payload, bitsPerChannel / 8);
+
+    return new ParsedCaf(channels, sampleRate, bitsPerChannel, formatFlags, isFloat, formatId,
+      canonical, other, channelMask, validFrames);
+  }
+
+  private static ParsedCaf DecodeIma4(
+    int channels,
+    int sampleRate,
+    uint formatFlags,
+    ReadOnlySpan<byte> payload,
+    IReadOnlyList<(string Type, byte[] Data)> other,
+    uint? channelMask,
+    long? validFrames) {
+    var packetBytes = checked(Ima4PacketBytesPerChannel * channels);
+    if (payload.Length % packetBytes != 0)
+      throw new InvalidDataException("CAF ima4 payload does not contain whole interleaved channel packets.");
+
+    var decoded = ImaAdpcmCodec.DecodeQuickTime(payload, channels);
+    var availableFrames = decoded.Length == 0 ? 0 : decoded.Min(static channel => channel.Length);
+    var frameCount = availableFrames;
+    if (validFrames is { } count) {
+      if (count > availableFrames)
+        throw new InvalidDataException($"CAF pakt declares {count} valid frames but ima4 payload contains only {availableFrames}.");
+      frameCount = checked((int)count);
+    }
+
+    var pcm = new byte[checked(frameCount * channels * 2)];
+    var offset = 0;
+    for (var frame = 0; frame < frameCount; ++frame)
+      for (var channel = 0; channel < channels; ++channel) {
+        BinaryPrimitives.WriteInt16LittleEndian(pcm.AsSpan(offset, 2), decoded[channel][frame]);
+        offset += 2;
+      }
+
+    return new ParsedCaf(channels, sampleRate, 16, formatFlags, false, "lpcm",
+      pcm, other, channelMask, validFrames ?? (long)(payload.Length / packetBytes) * Ima4FramesPerPacket);
+  }
+
+  private static byte[] ShortsToLePcm(ReadOnlySpan<short> samples) {
+    var pcm = new byte[samples.Length * 2];
+    for (var i = 0; i < samples.Length; ++i)
+      BinaryPrimitives.WriteInt16LittleEndian(pcm.AsSpan(i * 2, 2), samples[i]);
+    return pcm;
+  }
+
+  private static byte[] ConvertBeToLe(ReadOnlySpan<byte> bigEndian, int bytesPerSample) {
+    if (bytesPerSample <= 1) return bigEndian.ToArray();
+    if (bigEndian.Length % bytesPerSample != 0)
+      throw new InvalidDataException("CAF LPCM payload is not aligned to its sample width.");
+    var littleEndian = new byte[bigEndian.Length];
+    for (var offset = 0; offset < bigEndian.Length; offset += bytesPerSample)
+      for (var i = 0; i < bytesPerSample; ++i)
+        littleEndian[offset + i] = bigEndian[offset + bytesPerSample - 1 - i];
+    return littleEndian;
+  }
+}
