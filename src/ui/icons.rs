@@ -37,8 +37,11 @@ pub fn pixbuf_for(icon: &gio::Icon, size: i32) -> Option<Pixbuf> {
     pixbuf
 }
 
-/// What a row shows: its icon at `size`.
+/// What a row shows: its thumbnail if there is one, else its icon at `size`.
 pub fn row_image(model: &gtk::TreeModel, iter: &gtk::TreeIter, size: i32) -> Option<Pixbuf> {
+    if let Ok(Some(thumb)) = model.value(iter, model::COL_THUMB as i32).get::<Option<Pixbuf>>() {
+        return Some(super::thumbnails::fit(&thumb, size));
+    }
     let icon = model.value(iter, model::COL_ICON as i32).get::<Option<gio::Icon>>().ok().flatten()?;
     pixbuf_for(&icon, size)
 }

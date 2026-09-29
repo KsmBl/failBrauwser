@@ -178,6 +178,7 @@ pub fn menubar_model() -> gio::Menu {
     section(&view, |s| {
         item(s, "Show _Hidden Files", "win.show-hidden");
         item(s, "_Folders Before Files", "win.folders-first");
+        item(s, "Show _Thumbnails", "win.show-thumbnails");
         item(s, "Side _Panel", "win.show-sidebar");
     });
     section(&view, |s| {

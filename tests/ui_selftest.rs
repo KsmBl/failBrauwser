@@ -9,6 +9,11 @@ fn have(tool: &str) -> bool {
 }
 
 fn run(script: &str, setup: impl FnOnce(&Path)) {
+    run_checked(script, &[], setup, |_| {});
+}
+
+/// Like `run`, with extra environment and a check of the folder afterwards.
+fn run_checked(script: &str, env: &[(&str, &str)], setup: impl FnOnce(&Path), check: impl FnOnce(&Path)) {
     if !["sway", "grim", "dbus-run-session"].iter().all(|t| have(t)) {
         eprintln!("headless UI tools missing, skipping {script}");
         return;
@@ -17,6 +22,7 @@ fn run(script: &str, setup: impl FnOnce(&Path)) {
     setup(dir.path());
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = Command::new(root.join("tests/ui/harness.sh"))
+        .envs(env.iter().copied())
         .arg(env!("CARGO_BIN_EXE_failbrauwser"))
         .arg(root.join("tests/ui").join(script))
         .arg(dir.path())
@@ -24,6 +30,7 @@ fn run(script: &str, setup: impl FnOnce(&Path)) {
         .unwrap();
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success() && log.contains("SELFTEST OK"), "{script} failed:\n{log}");
+    check(dir.path());
 }
 
 #[test]
@@ -148,4 +155,33 @@ fn zoom() {
         std::fs::create_dir_all(t.join("d/sub")).unwrap();
         std::fs::write(t.join("d/file.txt"), "x").unwrap();
     });
+}
+
+fn make_pictures(t: &Path) {
+    std::fs::create_dir_all(t.join("pics")).unwrap();
+    let script = format!(
+        "from PIL import Image\nfor i in range(12):\n    Image.new('RGB', (640, 480), (i * 20, 80, 160)).save('{}/pics/p%02d.png' % i)\nopen('{}/pics/notes.txt', 'w').write('x')\n",
+        t.display(),
+        t.display()
+    );
+    assert!(Command::new("python3").arg("-c").arg(script).status().unwrap().success());
+}
+
+fn cached_thumbnails(t: &Path) -> usize {
+    std::fs::read_dir(t.join("cache/thumbnails/normal")).map(|d| d.count()).unwrap_or(0)
+}
+
+#[test]
+fn thumbnails_through_the_thumbnailer_service() {
+    let have_tumbler = Path::new("/usr/share/dbus-1/services/org.xfce.Tumbler.Thumbnailer1.service").exists();
+    if !have_tumbler {
+        eprintln!("tumbler not installed, skipping");
+        return;
+    }
+    run_checked("thumbnails.fbt", &[], make_pictures, |t| assert_eq!(cached_thumbnails(t), 12));
+}
+
+#[test]
+fn thumbnails_without_a_service() {
+    run_checked("thumbnails.fbt", &[("FB_NO_TUMBLER", "1")], make_pictures, |t| assert_eq!(cached_thumbnails(t), 12));
 }

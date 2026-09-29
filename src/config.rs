@@ -62,6 +62,8 @@ pub struct Settings {
     pub sidebar_width: i32,
     /// Position of the divider between shortcuts and folder tree.
     pub sidebar_split: i32,
+    /// Show thumbnails for images, videos, PDFs, … (from the shared thumbnail cache).
+    pub show_thumbnails: bool,
     /// Index into [`LIST_ZOOM`] / [`ICON_ZOOM`].
     pub zoom_list: usize,
     pub zoom_icons: usize,
@@ -85,6 +87,7 @@ impl Default for Settings {
             window_height: 650,
             sidebar_width: 220,
             sidebar_split: 260,
+            show_thumbnails: true,
             zoom_list: 1,
             zoom_icons: 1,
             smooth_writes: true,
@@ -122,6 +125,7 @@ impl Settings {
         b("show_tree", &mut s.show_tree);
         b("daemon", &mut s.daemon);
         b("smooth_writes", &mut s.smooth_writes);
+        b("show_thumbnails", &mut s.show_thumbnails);
         i("window_width", &mut s.window_width, 300);
         i("window_height", &mut s.window_height, 200);
         i("sidebar_width", &mut s.sidebar_width, 0);
@@ -177,6 +181,7 @@ impl Settings {
         kf.set_boolean(GROUP, "show_tree", self.show_tree);
         kf.set_boolean(GROUP, "daemon", self.daemon);
         kf.set_boolean(GROUP, "smooth_writes", self.smooth_writes);
+        kf.set_boolean(GROUP, "show_thumbnails", self.show_thumbnails);
         kf.set_integer(GROUP, "window_width", self.window_width);
         kf.set_integer(GROUP, "window_height", self.window_height);
         kf.set_integer(GROUP, "sidebar_width", self.sidebar_width);

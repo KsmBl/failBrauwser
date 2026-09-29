@@ -23,9 +23,10 @@ cat > "$CONF" <<SWAY
 output HEADLESS-1 resolution 1280x800 bg #2e3440 solid_color
 default_border normal
 SWAY
+# Before the private bus starts: services it activates (Tumbler, …) use the test folders too.
+export XDG_CONFIG_HOME="$T/config" XDG_DATA_HOME="$T/data" XDG_CACHE_HOME="$T/cache" GTK_A11Y=none NO_AT_BRIDGE=1
 exec dbus-run-session -- bash -c '
   unset DISPLAY
-  export XDG_CONFIG_HOME="'"$T"'/config" XDG_DATA_HOME="'"$T"'/data" XDG_CACHE_HOME="'"$T"'/cache" GTK_A11Y=none NO_AT_BRIDGE=1
   before=$(ls "$XDG_RUNTIME_DIR" | grep -E "^wayland-[0-9]+$" | sort)
   WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman sway -c "'"$CONF"'" >"'"$T"'/sway.log" 2>&1 &
   SP=$!

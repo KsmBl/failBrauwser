@@ -234,6 +234,7 @@ impl Window {
                 }
                 PaneEvent::OpenFiles(items) => w.open_items(items),
                 PaneEvent::Zoom(step) => w.zoom(*step),
+                PaneEvent::Scrolled => super::extensions::pane_scrolled(&w, &p),
                 PaneEvent::PasswordNeeded(loc) => super::extensions::ask_archive_password(&w, &p, loc),
             }
             if matches!(ev, PaneEvent::Contents) {
@@ -446,6 +447,20 @@ impl Window {
         }));
 
         let app = Rc::downgrade(&self.app);
+        self.win.add_action(&toggle_action("show-thumbnails", s.borrow().show_thumbnails, move |on| {
+            let Some(app) = app.upgrade() else { return };
+            app.settings.borrow_mut().show_thumbnails = on;
+            app.save_settings_soon();
+            app.for_each_window(|w| {
+                w.sync_action_state("show-thumbnails", on.to_variant());
+                for p in w.panes() {
+                    // Off: drop them; on: ask anew.
+                    p.refilter();
+                }
+            });
+        }));
+
+        let app = Rc::downgrade(&self.app);
         self.win.add_action(&toggle_action("folders-first", s.borrow().folders_first, move |on| {
             let Some(app) = app.upgrade() else { return };
             app.settings.borrow_mut().folders_first = on;
@@ -467,6 +482,7 @@ impl Window {
             app.save_settings_soon();
             for p in w.panes() {
                 p.apply_view_mode();
+                super::extensions::pane_scrolled(&w, &p);
             }
         }));
 
@@ -544,6 +560,7 @@ impl Window {
         self.app.for_each_window(|w| {
             for p in w.panes() {
                 p.apply_zoom();
+                super::extensions::pane_scrolled(w, &p);
             }
         });
     }

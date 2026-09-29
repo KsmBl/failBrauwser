@@ -47,8 +47,20 @@ pub fn pane_location_changed(_w: &Window, p: &Rc<Pane>) {
     super::trash::update_bar(p);
 }
 
+/// Other rows scrolled into view.
+pub fn pane_scrolled(w: &Window, p: &Rc<Pane>) {
+    super::thumbnails::update(w, p);
+}
+
 pub fn pane_contents_changed(w: &Window, p: &Rc<Pane>) {
     super::dirsize::update(w, p);
+    // After the rows are laid out, so the visible range is known.
+    let (ww, pw) = (Rc::downgrade(&w.me()), Rc::downgrade(p));
+    gtk::glib::idle_add_local_once(move || {
+        if let (Some(w), Some(p)) = (ww.upgrade(), pw.upgrade()) {
+            super::thumbnails::update(&w, &p);
+        }
+    });
     super::trash::update_bar(p);
     // "Empty Trash" and friends depend on what is there now.
     if Rc::ptr_eq(p, &w.current_pane()) {

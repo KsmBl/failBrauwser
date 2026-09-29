@@ -203,6 +203,18 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("{view} icons are {got} px"));
             }
         }
+        "wait-thumbnails" => {
+            // At least this many rows show a thumbnail.
+            let n: usize = arg.parse().map_err(|_| "bad number")?;
+            wait(r, move |r| Ok(r.window.current_pane().thumbnail_count() >= n));
+        }
+        "expect-thumbnails" => {
+            let n: usize = arg.parse().map_err(|_| "bad number")?;
+            let got = w.current_pane().thumbnail_count();
+            if got != n {
+                return Err(format!("{got} thumbnails"));
+            }
+        }
         "crumb-click" => {
             if !w.pathbar.click(arg) {
                 return Err(format!("no button {arg:?}, have {:?}", w.pathbar.labels()));
