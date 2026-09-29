@@ -13,7 +13,11 @@ public sealed class IsoEntry {
   public bool IsDirectory { get; init; }
   /// <summary>Last modification timestamp.</summary>
   public DateTime? LastModified { get; init; }
+  /// <summary>Unix mode bits from Rock Ridge (PX), when the image has them.</summary>
+  public int? UnixMode { get; init; }
   internal long DataOffset { get; init; }
+  /// <summary>First sector of the entry's data (to match El Torito load addresses).</summary>
+  public long FirstSector => this.DataOffset / 2048;
   internal IReadOnlyList<IsoDataSegment> DataSegments { get; init; } = [];
   internal string? MountLimitation { get; init; }
 }

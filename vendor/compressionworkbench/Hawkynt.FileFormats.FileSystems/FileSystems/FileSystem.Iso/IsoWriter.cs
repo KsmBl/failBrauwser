@@ -82,6 +82,55 @@ public sealed class IsoWriter {
   /// </summary>
   public void AddFile(string name, byte[] data) => _files.Add((name, data, null, null));
 
+  // ── Rock Ridge and El Torito (added for failBrauwser) ─────────────────────
+
+  /// <summary>
+  /// Adds Rock Ridge (RRIP 1.10 / IEEE P1282) to the primary tree: full POSIX names (NM),
+  /// modes (PX) and modification times (TF), marked by SUSP "SP"/"ER" in the root. Off by
+  /// default, so images stay byte-identical to before unless asked for.
+  /// </summary>
+  public bool EnableRockRidge { get; set; }
+
+  private readonly Dictionary<string, (int? Mode, DateTime? Modified)> _meta = new(StringComparer.Ordinal);
+  private readonly List<string> _explicitDirs = [];
+
+  /// <summary>Adds a directory, also an empty one.</summary>
+  public void AddDirectory(string name, int? mode = null, DateTime? modified = null) {
+    var key = Key(name);
+    if (key.Length == 0) return;
+    _explicitDirs.Add(key);
+    _meta[key] = (mode, modified);
+  }
+
+  /// <summary>Mode and modification time of a file or directory (for Rock Ridge and records).</summary>
+  public void SetMetadata(string name, int? mode, DateTime? modified) => _meta[Key(name)] = (mode, modified);
+
+  private static string Key(string name) => string.Join('/', name.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries));
+
+  /// <summary>An El Torito boot entry (the first one is the default entry).</summary>
+  public sealed class BootEntry {
+    /// <summary>0 = x86 BIOS, 0xEF = UEFI.</summary>
+    public byte Platform;
+    /// <summary>0 = no emulation.</summary>
+    public byte MediaType;
+    public ushort LoadSegment;
+    public byte SystemType;
+    /// <summary>Virtual 512-byte sectors loaded at boot.</summary>
+    public ushort SectorCount;
+    /// <summary>The boot image as a file of the image (its extent is where the entry points).</summary>
+    public string? ImagePath;
+    /// <summary>A boot image that is not a visible file.</summary>
+    public byte[]? ImageData;
+    /// <summary>Patch an isolinux-style boot info table (bytes 8–63) into the image.</summary>
+    public bool PatchBootInfoTable;
+  }
+
+  /// <summary>El Torito entries; none means an image that does not boot.</summary>
+  public List<BootEntry> BootEntries { get; } = [];
+
+  /// <summary>A file of the image that is the boot catalog (e.g. "isolinux/boot.cat").</summary>
+  public string? BootCatalogPath { get; set; }
+
   /// <summary>
   /// Adds a streaming file: <paramref name="size"/> drives extent + path-table
   /// + directory-record sizing in pass 1; bytes are pulled from
@@ -97,7 +146,7 @@ public sealed class IsoWriter {
   // ── Directory tree ───────────────────────────────────────────────────────
 
   private sealed class DirNode {
-    public required string Name;            // ISO directory identifier (uppercase), "" for root
+    public required string Name;            // ISO directory identifier (uppercase, made unique), "" for root
     public string JolietName = "";          // original (long, mixed-case) directory name, "" for root
     public DirNode? Parent;
     public readonly SortedDictionary<string, DirNode> Children =
@@ -113,15 +162,26 @@ public sealed class IsoWriter {
     public int JolietSize;                  // Joliet-tree extent size in bytes
     public int JolietPathTableIndex;        // identical ordering, kept explicit for clarity
     public int JolietParentPathTableIndex;
+
+    public string RrName = "";              // Rock Ridge name (the real one)
+    public string Path = "";
+    public int? Mode;
+    public DateTime? Modified;
   }
 
   private sealed class FileNode {
-    public required string Identifier;      // ECMA-119 identifier, includes ";1" version suffix
+    public required string Identifier;      // ECMA-119 identifier, includes ";1" version suffix (made unique)
     public required string JolietName;      // original (long, mixed-case) file name (truncated per spec)
     public required byte[] Data;
     public long? StreamingSize;             // when set, data is streamed (Data is empty)
     public Func<Stream>? StreamOpener;      // streaming entries only
     public int Lba;
+    public string RrName = "";
+    public string Path = "";
+    public int? Mode;
+    public DateTime? Modified;
+    /// <summary>Not written as data: its extent is the boot catalog.</summary>
+    public bool IsBootCatalog;
 
     /// <summary>Logical file length, whether in-memory or streamed.</summary>
     public long Length => this.StreamingSize ?? this.Data.Length;
@@ -151,16 +211,18 @@ public sealed class IsoWriter {
 
     // Compute each directory's extent size for both trees.
     foreach (var dir in dirs) {
-      dir.Size = CalculateDirectorySize(dir, joliet: false);
+      dir.Size = this.CalculateDirectorySize(dir, joliet: false);
       if (this.EnableJoliet)
-        dir.JolietSize = CalculateDirectorySize(dir, joliet: true);
+        dir.JolietSize = this.CalculateDirectorySize(dir, joliet: true);
     }
 
     // Reserved sectors 0-15 (system area), then the volume-descriptor set:
     //   16 PVD, [17 Joliet SVD,] then the terminator.
     var joliet = this.EnableJoliet;
-    var svdLba = joliet ? 17 : -1;
-    var terminatorLba = joliet ? 18 : 17;
+    var boot = this.BootEntries.Count > 0;
+    var bootRecordLba = boot ? 17 : -1;
+    var svdLba = joliet ? (boot ? 18 : 17) : -1;
+    var terminatorLba = 17 + (boot ? 1 : 0) + (joliet ? 1 : 0);
 
     // Primary path tables follow the descriptor set.
     var pathTableSize = CalculatePathTableSize(dirs, joliet: false);
@@ -180,6 +242,11 @@ public sealed class IsoWriter {
       jolietMPathLba = jolietLPathLba + jolietPathTableSectors;
       cursor = jolietMPathLba + jolietPathTableSectors;
     }
+
+    // The boot catalog gets a sector of its own unless it is a file of the image.
+    var catalogFile = dirs.SelectMany(d => d.Files).FirstOrDefault(f => f.IsBootCatalog);
+    var catalogLba = -1;
+    if (boot && catalogFile == null) catalogLba = cursor++;
 
     // Primary directory extents (breadth-first, parents first).
     foreach (var dir in dirs) {
@@ -203,8 +270,22 @@ public sealed class IsoWriter {
       foreach (var file in dir.Files) {
         file.Lba = cursor;
         var sectors = file.Length == 0 ? 1 : (int)((file.Length + SectorSize - 1) / SectorSize);
+        if (file.IsBootCatalog) sectors = Math.Max(sectors, 1);
         cursor += sectors;
       }
+    if (catalogFile != null) catalogLba = catalogFile.Lba;
+
+    // Boot images: a file of the image, or hidden data after the files.
+    var bootImages = new List<(BootEntry Entry, int Lba, byte[]? Data, FileNode? File)>();
+    foreach (var e in this.BootEntries) {
+      var file = e.ImagePath == null ? null : dirs.SelectMany(d => d.Files).FirstOrDefault(f => f.Path == Key(e.ImagePath));
+      if (file != null) {
+        bootImages.Add((e, file.Lba, null, file));
+      } else if (e.ImageData != null) {
+        bootImages.Add((e, cursor, e.ImageData, null));
+        cursor += Math.Max(1, (e.ImageData.Length + SectorSize - 1) / SectorSize);
+      }
+    }
 
     // Append the conventional trailing post-gap so the recorded Volume Space Size
     // (and the backing file) clear the minimum size real readers such as cdrtools
@@ -222,6 +303,33 @@ public sealed class IsoWriter {
     // Primary Volume Descriptor (sector 16).
     this.WriteVolumeDescriptor(image, 16, type: 1, totalSectors, root,
       pathTableSize, lPathLba, mPathLba, rootLba: root.Lba, rootSize: root.Size, joliet: false);
+
+    // El Torito Boot Record (sector 17) and the boot catalog.
+    if (boot) {
+      var br = bootRecordLba * SectorSize;
+      image[br] = 0;
+      "CD001"u8.CopyTo(image.AsSpan(br + 1));
+      image[br + 6] = 1;
+      "EL TORITO SPECIFICATION"u8.CopyTo(image.AsSpan(br + 7));
+      BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(br + 0x47), (uint)catalogLba);
+      var catalog = BuildBootCatalog(bootImages.Select(b => (b.Entry, b.Lba)).ToList());
+      if (catalogFile != null) {
+        catalogFile.Data = catalog;
+        catalogFile.StreamingSize = null;
+        catalogFile.StreamOpener = null;
+      } else if ((long)catalogLba * SectorSize + catalog.Length <= image.Length) {
+        catalog.CopyTo(image, (long)catalogLba * SectorSize);
+      }
+      foreach (var (entry, lba, data, file) in bootImages) {
+        if (file != null && entry.PatchBootInfoTable && file.StreamOpener == null) {
+          file.Data = PatchBootInfoTable(file.Data, lba);
+        } else if (data != null) {
+          var bytes = entry.PatchBootInfoTable ? PatchBootInfoTable(data, lba) : data;
+          if (this._streamingSink != null) this._streamingSink.Add(((long)lba * SectorSize, bytes.Length, () => new MemoryStream(bytes, writable: false)));
+          else bytes.CopyTo(image, (long)lba * SectorSize);
+        }
+      }
+    }
 
     // Joliet Supplementary Volume Descriptor (sector 17), if enabled.
     if (joliet)
@@ -331,34 +439,79 @@ public sealed class IsoWriter {
 
   private DirNode BuildTree() {
     var root = new DirNode { Name = "" };
-    foreach (var (rawName, data, streamingSize, opener) in _files) {
-      var segments = rawName.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
-      if (segments.Length == 0) continue;
+    if (_meta.TryGetValue("", out var rootMeta)) (root.Mode, root.Modified) = rootMeta;
 
+    DirNode Descend(string[] segments, int count) {
       var dir = root;
-      for (var i = 0; i < segments.Length - 1; i++) {
-        var dirName = NormalizeDirectoryName(segments[i]);
-        if (!dir.Children.TryGetValue(dirName, out var child)) {
+      for (var i = 0; i < count; i++) {
+        var key = this.EnableRockRidge ? segments[i] : NormalizeDirectoryName(segments[i]);
+        if (!dir.Children.TryGetValue(key, out var child)) {
+          var path = string.Join('/', segments.Take(i + 1));
           child = new DirNode {
-            Name = dirName,
+            Name = NormalizeDirectoryName(segments[i]),
             JolietName = TruncateJolietName(segments[i]),
+            RrName = segments[i],
+            Path = path,
             Parent = dir,
           };
-          dir.Children.Add(dirName, child);
+          if (_meta.TryGetValue(path, out var m)) (child.Mode, child.Modified) = m;
+          dir.Children.Add(key, child);
         }
         dir = child;
       }
+      return dir;
+    }
 
-      var identifier = NormalizeFileName(segments[^1]) + ";1";
-      dir.Files.Add(new FileNode {
-        Identifier = identifier,
+    foreach (var d in _explicitDirs) {
+      var segments = d.Split('/');
+      Descend(segments, segments.Length);
+    }
+
+    foreach (var (rawName, data, streamingSize, opener) in _files) {
+      var segments = rawName.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+      if (segments.Length == 0) continue;
+      var dir = Descend(segments, segments.Length - 1);
+      var path = string.Join('/', segments);
+      var node = new FileNode {
+        Identifier = NormalizeFileName(segments[^1]) + ";1",
         JolietName = TruncateJolietName(segments[^1]),
+        RrName = segments[^1],
+        Path = path,
         Data = data,
         StreamingSize = streamingSize,
         StreamOpener = opener,
-      });
+        IsBootCatalog = this.BootCatalogPath != null && Key(this.BootCatalogPath) == path,
+      };
+      if (_meta.TryGetValue(path, out var m)) (node.Mode, node.Modified) = m;
+      dir.Files.Add(node);
     }
+    MakeIdentifiersUnique(root);
     return root;
+  }
+
+  /// <summary>
+  /// Primary-tree identifiers must be unique within a directory; upper-casing (and, with
+  /// Rock Ridge, sanitising) can make two names equal. Later ones get a "~N" suffix.
+  /// </summary>
+  private void MakeIdentifiersUnique(DirNode dir) {
+    var taken = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var child in dir.Children.Values) {
+      var name = child.Name;
+      for (var n = 1; !taken.Add(name); n++) name = Suffix(child.Name, n);
+      child.Name = name;
+      MakeIdentifiersUnique(child);
+    }
+    foreach (var file in dir.Files) {
+      var bare = file.Identifier[..^2];
+      var id = file.Identifier;
+      for (var n = 1; !taken.Add(id); n++) id = Suffix(bare, n) + ";1";
+      file.Identifier = id;
+    }
+
+    static string Suffix(string name, int n) {
+      var dot = name.LastIndexOf('.');
+      return dot > 0 ? $"{name[..dot]}~{n}{name[dot..]}" : $"{name}~{n}";
+    }
   }
 
   private static List<DirNode> OrderDirectoriesBreadthFirst(DirNode root) {
@@ -383,14 +536,22 @@ public sealed class IsoWriter {
 
   // ── Sizing ─────────────────────────────────────────────────────────────
 
-  private static int CalculateDirectorySize(DirNode dir, bool joliet) {
-    var size = 34 + 34; // "." and ".." records (single-byte identifier, 33 -> padded to 34)
+  private int CalculateDirectorySize(DirNode dir, bool joliet) {
+    var rr = this.EnableRockRidge && !joliet;
+    var parent = dir.Parent ?? dir;
+    var size = 0;
+    size = AppendRecord(size, 1, rr ? SelfSystemUse(dir).Length : 0);
+    size = AppendRecord(size, 1, rr ? RockRidgeFields(parent.Mode, parent.Modified, isDir: true, null, 0).Length : 0);
 
-    foreach (var child in dir.Children.Values)
-      size = AppendRecord(size, IdentifierLength(joliet ? child.JolietName : child.Name, isFile: false, joliet));
+    foreach (var child in dir.Children.Values) {
+      var idLen = IdentifierLength(joliet ? child.JolietName : child.Name, isFile: false, joliet);
+      size = AppendRecord(size, idLen, rr ? RockRidgeFields(child.Mode, child.Modified, isDir: true, child.RrName, idLen).Length : 0);
+    }
 
-    foreach (var file in dir.Files)
-      size = AppendRecord(size, IdentifierLength(joliet ? file.JolietName : file.Identifier, isFile: true, joliet));
+    foreach (var file in dir.Files) {
+      var idLen = IdentifierLength(joliet ? file.JolietName : file.Identifier, isFile: true, joliet);
+      size = AppendRecord(size, idLen, rr ? RockRidgeFields(file.Mode, file.Modified, isDir: false, file.RrName, idLen).Length : 0);
+    }
 
     if (size % SectorSize != 0)
       size += SectorSize - (size % SectorSize);
@@ -398,13 +559,77 @@ public sealed class IsoWriter {
     return size;
   }
 
-  private static int AppendRecord(int size, int idLen) {
+  private static int RecordLength(int idLen, int suLen) {
     var recLen = 33 + idLen;
     if ((recLen & 1) != 0) recLen++;
+    recLen += suLen;
+    if ((recLen & 1) != 0) recLen++;
+    return recLen;
+  }
+
+  private static int AppendRecord(int size, int idLen, int suLen = 0) {
+    var recLen = RecordLength(idLen, suLen);
     var used = size % SectorSize;
     if (used + recLen > SectorSize)
       size += SectorSize - used; // a record may not span a sector boundary
     return size + recLen;
+  }
+
+  // ── Rock Ridge system use fields ───────────────────────────────────────
+
+  /// <summary>
+  /// PX (mode, links, owner), TF (modification time) and, for named entries, NM. A name
+  /// too long for the 255-byte record is shortened to fit (continuation areas are not
+  /// written).
+  /// </summary>
+  private static byte[] RockRidgeFields(int? mode, DateTime? modified, bool isDir, string? name, int idLen) {
+    var su = new List<byte>(96);
+    var m = (uint)(mode ?? (isDir ? 0x1ED : 0x1A4)) & 0xFFF; // 0755 / 0644
+    m |= isDir ? 0x4000u : 0x8000u;
+    su.AddRange("PX"u8.ToArray());
+    su.Add(36);
+    su.Add(1);
+    AddBoth(su, m);
+    AddBoth(su, isDir ? 2u : 1u);
+    AddBoth(su, 0);
+    AddBoth(su, 0);
+    var t = (modified ?? DateTime.UtcNow).ToUniversalTime();
+    su.AddRange("TF"u8.ToArray());
+    su.Add(12);
+    su.Add(1);
+    su.Add(0x02); // modification time, 7-byte form
+    su.AddRange([(byte)(t.Year - 1900), (byte)t.Month, (byte)t.Day, (byte)t.Hour, (byte)t.Minute, (byte)t.Second, 0]);
+    if (name != null) {
+      var bytes = Encoding.UTF8.GetBytes(name);
+      var room = 255 - RecordLength(idLen, su.Count + 5);
+      if (bytes.Length > room) {
+        var cut = room;
+        while (cut > 0 && (bytes[cut] & 0xC0) == 0x80) cut--; // not inside a UTF-8 sequence
+        bytes = bytes[..cut];
+      }
+      su.AddRange("NM"u8.ToArray());
+      su.Add((byte)(5 + bytes.Length));
+      su.Add(1);
+      su.Add(0);
+      su.AddRange(bytes);
+    }
+    return su.ToArray();
+
+    static void AddBoth(List<byte> l, uint v) {
+      Span<byte> b = stackalloc byte[8];
+      BinaryPrimitives.WriteUInt32LittleEndian(b, v);
+      BinaryPrimitives.WriteUInt32BigEndian(b[4..], v);
+      l.AddRange(b.ToArray());
+    }
+  }
+
+  /// <summary>The "." record: in the root it also marks the image as using SUSP and RRIP.</summary>
+  private static byte[] SelfSystemUse(DirNode dir) {
+    var rr = RockRidgeFields(dir.Mode, dir.Modified, isDir: true, null, 1);
+    if (dir.Parent != null) return rr;
+    byte[] sp = [(byte)'S', (byte)'P', 7, 1, 0xBE, 0xEF, 0];
+    byte[] er = [(byte)'E', (byte)'R', 18, 1, 10, 0, 0, 1, .. "RRIP_1991A"u8];
+    return [.. sp, .. er, .. rr];
   }
 
   // Byte length of a directory-record identifier. Joliet identifiers are UCS-2BE
@@ -534,18 +759,19 @@ public sealed class IsoWriter {
 
   // ── Directory record / extent writers ─────────────────────────────────────
 
-  private static void WriteDirectoryRecord(byte[] image, int off, int lba, int size, byte flags, byte[] identifier) {
+  private static void WriteDirectoryRecord(byte[] image, int off, int lba, int size, byte flags, byte[] identifier, byte[]? systemUse = null, DateTime? modified = null) {
     var idLen = identifier.Length;
-    var recLen = 33 + idLen;
-    if ((recLen & 1) != 0) recLen++;
+    var suStart = 33 + idLen + ((idLen & 1) == 0 ? 1 : 0);
+    var recLen = RecordLength(idLen, systemUse?.Length ?? 0);
 
     image[off] = (byte)recLen;
+    systemUse?.CopyTo(image, off + suStart);
     BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(off + 2), (uint)lba);
     BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(off + 6), (uint)lba);
     BinaryPrimitives.WriteUInt32LittleEndian(image.AsSpan(off + 10), (uint)size);
     BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(off + 14), (uint)size);
 
-    var now = DateTime.UtcNow;
+    var now = (modified ?? DateTime.UtcNow).ToUniversalTime();
     image[off + 18] = (byte)(now.Year - 1900);
     image[off + 19] = (byte)now.Month;
     image[off + 20] = (byte)now.Day;
@@ -562,7 +788,8 @@ public sealed class IsoWriter {
     identifier.CopyTo(image, off + 33);
   }
 
-  private static void WriteDirectoryExtent(byte[] image, DirNode dir, bool joliet) {
+  private void WriteDirectoryExtent(byte[] image, DirNode dir, bool joliet) {
+    var rr = this.EnableRockRidge && !joliet;
     var lba = joliet ? dir.JolietLba : dir.Lba;
     var selfSize = joliet ? dir.JolietSize : dir.Size;
     var baseOff = lba * SectorSize;
@@ -572,9 +799,9 @@ public sealed class IsoWriter {
     var parent = dir.Parent ?? dir;
     var parentLba = joliet ? parent.JolietLba : parent.Lba;
     var parentSize = joliet ? parent.JolietSize : parent.Size;
-    WriteDirectoryRecord(image, pos, lba, selfSize, 0x02, [0]);
+    WriteDirectoryRecord(image, pos, lba, selfSize, 0x02, [0], rr ? SelfSystemUse(dir) : null, dir.Modified);
     pos += image[pos];
-    WriteDirectoryRecord(image, pos, parentLba, parentSize, 0x02, [1]);
+    WriteDirectoryRecord(image, pos, parentLba, parentSize, 0x02, [1], rr ? RockRidgeFields(parent.Mode, parent.Modified, true, null, 1) : null, parent.Modified);
     pos += image[pos];
 
     // Child directory records.
@@ -582,16 +809,19 @@ public sealed class IsoWriter {
       var identifier = DirectoryIdentifierBytes(child, joliet);
       var childLba = joliet ? child.JolietLba : child.Lba;
       var childSize = joliet ? child.JolietSize : child.Size;
-      pos = AdvancePastSectorBoundary(baseOff, pos, identifier.Length);
-      WriteDirectoryRecord(image, pos, childLba, childSize, 0x02, identifier);
+      var su = rr ? RockRidgeFields(child.Mode, child.Modified, true, child.RrName, identifier.Length) : null;
+      pos = AdvancePastSectorBoundary(baseOff, pos, identifier.Length, su?.Length ?? 0);
+      WriteDirectoryRecord(image, pos, childLba, childSize, 0x02, identifier, su, child.Modified);
       pos += image[pos];
     }
 
     // File records (both trees reference the same shared data extent).
     foreach (var file in dir.Files) {
       var identifier = FileIdentifierBytes(file, joliet);
-      pos = AdvancePastSectorBoundary(baseOff, pos, identifier.Length);
-      WriteDirectoryRecord(image, pos, file.Lba, (int)file.Length, 0x00, identifier);
+      var su = rr ? RockRidgeFields(file.Mode, file.Modified, false, file.RrName, identifier.Length) : null;
+      pos = AdvancePastSectorBoundary(baseOff, pos, identifier.Length, su?.Length ?? 0);
+      var length = file.IsBootCatalog ? SectorSize : (int)file.Length;
+      WriteDirectoryRecord(image, pos, file.Lba, length, 0x00, identifier, su, file.Modified);
       pos += image[pos];
     }
   }
@@ -604,9 +834,8 @@ public sealed class IsoWriter {
     joliet ? Encoding.BigEndianUnicode.GetBytes(file.JolietName)
            : Encoding.ASCII.GetBytes(file.Identifier);
 
-  private static int AdvancePastSectorBoundary(int baseOff, int pos, int idLen) {
-    var recLen = 33 + idLen;
-    if ((recLen & 1) != 0) recLen++;
+  private static int AdvancePastSectorBoundary(int baseOff, int pos, int idLen, int suLen = 0) {
+    var recLen = RecordLength(idLen, suLen);
     var sectorOffset = (pos - baseOff) % SectorSize;
     if (sectorOffset + recLen > SectorSize)
       pos += SectorSize - sectorOffset;
@@ -647,9 +876,78 @@ public sealed class IsoWriter {
 
   // ── Name normalization ─────────────────────────────────────────────────
 
-  private static string NormalizeFileName(string name) => name.ToUpperInvariant();
+  private string NormalizeFileName(string name) => this.EnableRockRidge ? DChars(name, keepDot: true) : name.ToUpperInvariant();
 
-  private static string NormalizeDirectoryName(string name) => name.ToUpperInvariant();
+  private string NormalizeDirectoryName(string name) => this.EnableRockRidge ? DChars(name, keepDot: false) : name.ToUpperInvariant();
+
+  /// <summary>
+  /// With Rock Ridge the primary names are only a fallback: they are made valid ISO 9660
+  /// (level 2) identifiers — A–Z, 0–9, "_", one ".", at most 30 characters.
+  /// </summary>
+  private static string DChars(string name, bool keepDot) {
+    var upper = name.ToUpperInvariant();
+    var dot = keepDot ? upper.LastIndexOf('.') : -1;
+    string Clean(string x) => new(x.Select(c => c is >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' ? c : '_').ToArray());
+    var stem = Clean(dot > 0 ? upper[..dot] : upper);
+    var ext = dot > 0 ? Clean(upper[(dot + 1)..]) : "";
+    if (ext.Length > 8) ext = ext[..8];
+    var max = 30 - (ext.Length > 0 ? ext.Length + 1 : 0);
+    if (stem.Length > max) stem = stem[..max];
+    if (stem.Length == 0) stem = "_";
+    return ext.Length > 0 ? $"{stem}.{ext}" : stem;
+  }
+
+  // ── El Torito ──────────────────────────────────────────────────────────
+
+  private static byte[] BuildBootCatalog(List<(BootEntry Entry, int Lba)> entries) {
+    var cat = new byte[SectorSize];
+    if (entries.Count == 0) return cat;
+    // Validation entry: header 1, platform, checksum making the 16-bit word sum zero, 55 AA.
+    cat[0] = 1;
+    cat[1] = entries[0].Entry.Platform;
+    cat[30] = 0x55;
+    cat[31] = 0xAA;
+    ushort sum = 0;
+    for (var i = 0; i < 32; i += 2) sum += BinaryPrimitives.ReadUInt16LittleEndian(cat.AsSpan(i));
+    BinaryPrimitives.WriteUInt16LittleEndian(cat.AsSpan(28), (ushort)(0x10000 - sum));
+    WriteBootEntry(cat, 32, entries[0].Entry, entries[0].Lba);
+    // Further entries: one section each (header 0x90, the last 0x91).
+    var off = 64;
+    for (var i = 1; i < entries.Count && off + 64 <= SectorSize; i++) {
+      cat[off] = (byte)(i == entries.Count - 1 ? 0x91 : 0x90);
+      cat[off + 1] = entries[i].Entry.Platform;
+      BinaryPrimitives.WriteUInt16LittleEndian(cat.AsSpan(off + 2), 1);
+      WriteBootEntry(cat, off + 32, entries[i].Entry, entries[i].Lba);
+      off += 64;
+    }
+    return cat;
+  }
+
+  private static void WriteBootEntry(byte[] cat, int off, BootEntry e, int lba) {
+    cat[off] = 0x88; // bootable
+    cat[off + 1] = e.MediaType;
+    BinaryPrimitives.WriteUInt16LittleEndian(cat.AsSpan(off + 2), e.LoadSegment);
+    cat[off + 4] = e.SystemType;
+    BinaryPrimitives.WriteUInt16LittleEndian(cat.AsSpan(off + 6), e.SectorCount);
+    BinaryPrimitives.WriteUInt32LittleEndian(cat.AsSpan(off + 8), (uint)lba);
+  }
+
+  /// <summary>
+  /// The isolinux boot info table: where the PVD and the image itself are, the image's
+  /// length and a checksum of its bytes from offset 64 (bytes 8–63).
+  /// </summary>
+  private static byte[] PatchBootInfoTable(byte[] data, int lba) {
+    if (data.Length < 64) return data;
+    var d = (byte[])data.Clone();
+    Array.Clear(d, 8, 56);
+    BinaryPrimitives.WriteUInt32LittleEndian(d.AsSpan(8), 16);
+    BinaryPrimitives.WriteUInt32LittleEndian(d.AsSpan(12), (uint)lba);
+    BinaryPrimitives.WriteUInt32LittleEndian(d.AsSpan(16), (uint)d.Length);
+    uint sum = 0;
+    for (var i = 64; i + 4 <= d.Length; i += 4) sum += BinaryPrimitives.ReadUInt32LittleEndian(d.AsSpan(i));
+    BinaryPrimitives.WriteUInt32LittleEndian(d.AsSpan(20), sum);
+    return d;
+  }
 
   // Joliet caps identifiers at 64 UCS-2 characters (128 bytes). Longer names are
   // truncated to the limit while preserving the extension where possible.

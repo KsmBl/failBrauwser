@@ -29,6 +29,8 @@ pub struct ArchiveEntry {
 pub struct Listing {
     pub format: String,
     pub writable: bool,
+    /// Why a normally editable format is read-only here (hybrid ISO images).
+    pub readonly_reason: Option<String>,
     pub entries: Vec<ArchiveEntry>,
 }
 
@@ -65,6 +67,7 @@ fn parse_listing(v: &Value) -> Listing {
     Listing {
         format: v["format"].as_str().unwrap_or("Unknown").to_string(),
         writable: v["writable"].as_bool().unwrap_or(false),
+        readonly_reason: v["readonly_reason"].as_str().map(str::to_string),
         entries,
     }
 }

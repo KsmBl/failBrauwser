@@ -30,6 +30,7 @@ fn stamp(p: &Path) -> Result<Stamp> {
 pub struct Archive {
     pub format: String,
     pub writable: bool,
+    pub readonly_reason: Option<String>,
     pub tree: ArchiveTree,
 }
 
@@ -134,7 +135,7 @@ impl Vfs {
             }
         }
         let listing = self.helper.list(&backing, self.password_for(loc).as_deref())?;
-        let archive = Arc::new(Archive { tree: ArchiveTree::build(&listing.entries), format: listing.format, writable: listing.writable });
+        let archive = Arc::new(Archive { tree: ArchiveTree::build(&listing.entries), format: listing.format, writable: listing.writable, readonly_reason: listing.readonly_reason });
         self.state.lock().unwrap().listings.insert(backing, (st, archive.clone()));
         Ok(archive)
     }

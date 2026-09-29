@@ -12,10 +12,24 @@ action win.copy
 open $T/w/out
 action win.paste
 wait-exists $T/w/out/a.txt
-# Images are read-only: editing would lose boot records and Rock Ridge data.
+# ISO images can be edited: paste, new folder, rename, delete.
+open $T/w
+select new.txt
+action win.copy
 open $T/w/disc.iso
+action win.paste
+wait-row new.txt
+text Fresh
+action win.new-folder
+wait-row Fresh
+select readme.txt
+text README-renamed.txt
+action win.rename
+wait-row README-renamed.txt
+select new.txt
+action win.delete
+wait-no-row new.txt
+# Hybrid images (USB-bootable) stay read-only.
+open $T/w/hybrid.iso
 expect-disabled win.paste
 expect-disabled win.new-folder
-select readme.txt
-expect-disabled win.delete
-expect-disabled win.rename
