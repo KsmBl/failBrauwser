@@ -16,6 +16,7 @@ pub mod model;
 pub mod pane;
 pub mod pathbar;
 pub mod properties;
+pub mod searchbar;
 pub mod selftest;
 pub mod sidebar;
 pub mod style;

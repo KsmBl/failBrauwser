@@ -28,6 +28,7 @@ pub const ACCELS: &[(&str, &[&str])] = &[
     ("win.zoom-normal", &["<Control>0", "<Control>KP_0"]),
     ("win.show-sidebar", &["F9"]),
     ("win.select-all", &["<Control>a"]),
+    ("win.find", &["<Control>f"]),
     ("win.next-tab", &["<Control>Page_Down"]),
     ("win.prev-tab", &["<Control>Page_Up"]),
     ("win.open", &["<Control>o"]),
@@ -164,6 +165,7 @@ pub fn menubar_model() -> gio::Menu {
     });
     section(&edit, |s| {
         item(s, "Select _All", "win.select-all");
+        item(s, "_Find…", "win.find");
     });
     section(&edit, |s| {
         item(s, "Keep Running in _Background", "app.daemon");
