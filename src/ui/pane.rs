@@ -23,6 +23,8 @@ pub enum PaneEvent {
     ContextMenu(Option<gdk::EventButton>),
     HeaderMenu(gdk::EventButton),
     OpenInNewTab(Location),
+    /// A click into empty space (ends typing in the path bar).
+    ClickedEmpty,
     /// Other rows came into view (thumbnails for them).
     Scrolled,
     /// Ctrl+scroll: zoom in (positive) or out.
@@ -1242,6 +1244,12 @@ impl Pane {
         }
         self.cancel_pending_selection();
         match ev.button() {
+            // A plain click into empty space: nothing selected any more. The press still
+            // goes on to the view, so dragging from there draws a selection rectangle.
+            1 if hit.is_none() && (ev.state() & gtk::accelerator_get_default_mod_mask()).is_empty() => {
+                self.clicked_empty();
+                glib::Propagation::Proceed
+            }
             3 => {
                 match &hit {
                     Some(path) if !is_selected(path) => select_only(path),
@@ -1273,6 +1281,14 @@ impl Pane {
             }
             _ => glib::Propagation::Proceed,
         }
+    }
+
+    /// Clearing the selection by clicking where there is no file or folder; the keyboard
+    /// focus comes to the list (which also ends typing in the path bar).
+    pub fn clicked_empty(&self) {
+        self.unselect_all();
+        self.focus_view();
+        self.emit(PaneEvent::ClickedEmpty);
     }
 
     fn item_at(&self, path: &gtk::TreePath) -> Option<Item> {
