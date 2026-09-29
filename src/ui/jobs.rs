@@ -37,12 +37,26 @@ struct Job {
     /// For the speed estimate: (time, bytes) a moment ago.
     last_sample: (Instant, u64),
     speed: f64,
+    /// Operations with the same key (the target drive) run one after another.
+    queue_key: Option<u64>,
+    /// Not started yet: waiting for the operation ahead on the same drive.
+    waiting: Option<Work>,
 }
 
 struct JobRow {
     widget: gtk::Box,
     bar: gtk::ProgressBar,
     detail: gtk::Label,
+    pause: gtk::ToggleButton,
+}
+
+thread_local! {
+    /// Self-test: new operations start paused.
+    static START_PAUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_start_paused(on: bool) {
+    START_PAUSED.with(|s| s.set(on));
 }
 
 pub struct Jobs {
@@ -66,6 +80,19 @@ impl Jobs {
         !self.jobs.borrow().is_empty()
     }
 
+    /// (running, waiting) operations (tests).
+    pub fn counts(&self) -> (usize, usize) {
+        let jobs = self.jobs.borrow();
+        let waiting = jobs.iter().filter(|j| j.waiting.is_some()).count();
+        (jobs.len() - waiting, waiting)
+    }
+
+    pub fn pause_all(&self, on: bool) {
+        for j in self.jobs.borrow().iter() {
+            if on { j.ctx.pause() } else { j.ctx.resume() }
+        }
+    }
+
     /// Starts `work` on a new thread. `on_done` runs on the UI thread afterwards.
     pub fn start(
         &self,
@@ -74,18 +101,32 @@ impl Jobs {
         work: impl FnOnce(&JobCtx) -> std::io::Result<Vec<PathBuf>> + Send + 'static,
         on_done: impl FnOnce(&Outcome) + 'static,
     ) {
+        self.start_queued(parent, title, None, work, on_done);
+    }
+
+    /// Like [`Jobs::start`], but waits while another operation with the same key runs —
+    /// two copies to one USB stick at once only make both slower.
+    pub fn start_queued(
+        &self,
+        parent: &gtk::Window,
+        title: impl Into<String>,
+        queue_key: Option<u64>,
+        work: impl FnOnce(&JobCtx) -> std::io::Result<Vec<PathBuf>> + Send + 'static,
+        on_done: impl FnOnce(&Outcome) + 'static,
+    ) {
         let ctx = JobCtx::new();
+        if START_PAUSED.with(|s| s.get()) {
+            ctx.pause();
+        }
         let result = Arc::new(Mutex::new(None));
-        let (c2, r2) = (ctx.clone(), result.clone());
         let work: Work = Box::new(work);
-        std::thread::Builder::new()
-            .name("fb-job".into())
-            .spawn(move || {
-                let r = work(&c2);
-                c2.set_phase(Phase::Done);
-                *r2.lock().unwrap() = Some(r);
-            })
-            .expect("spawn job thread");
+        let busy = queue_key.is_some() && self.jobs.borrow().iter().any(|j| j.queue_key == queue_key);
+        let waiting = if busy {
+            Some(work)
+        } else {
+            Self::spawn(&ctx, &result, work);
+            None
+        };
         self.jobs.borrow_mut().push(Job {
             ctx,
             title: title.into(),
@@ -97,8 +138,46 @@ impl Jobs {
             asking: false,
             last_sample: (Instant::now(), 0),
             speed: 0.0,
+            queue_key,
+            waiting,
         });
         self.ensure_ticking();
+    }
+
+    fn spawn(ctx: &Arc<JobCtx>, result: &Arc<Mutex<Option<std::io::Result<Vec<PathBuf>>>>>, work: Work) {
+        let (c2, r2) = (ctx.clone(), result.clone());
+        std::thread::Builder::new()
+            .name("fb-job".into())
+            .spawn(move || {
+                let r = work(&c2);
+                c2.set_phase(Phase::Done);
+                *r2.lock().unwrap() = Some(r);
+            })
+            .expect("spawn job thread");
+    }
+
+    /// Starts waiting operations whose drive became free; cancelled waiting ones end.
+    fn start_waiting(&self) {
+        let mut jobs = self.jobs.borrow_mut();
+        let running: Vec<Option<u64>> = jobs.iter().filter(|j| j.waiting.is_none()).map(|j| j.queue_key).collect();
+        let mut started: Vec<Option<u64>> = Vec::new();
+        for j in jobs.iter_mut() {
+            if j.waiting.is_none() {
+                continue;
+            }
+            if j.ctx.is_cancelled() {
+                j.waiting = None;
+                *j.result.lock().unwrap() = Some(Err(failbrauwser::ops::fastcopy::cancelled()));
+                continue;
+            }
+            if running.contains(&j.queue_key) || started.contains(&j.queue_key) {
+                continue;
+            }
+            let work = j.waiting.take().unwrap();
+            j.started = Instant::now();
+            Self::spawn(&j.ctx, &j.result, work);
+            started.push(j.queue_key);
+        }
     }
 
     fn ensure_ticking(&self) {
@@ -120,6 +199,7 @@ impl Jobs {
 
     /// One timer step; false when nothing is left to watch.
     fn tick(&self) -> bool {
+        self.start_waiting();
         let mut finished = Vec::new();
         let mut questions = Vec::new();
         {
@@ -251,11 +331,27 @@ impl Jobs {
             ctx.cancel();
             b.set_sensitive(false);
         });
+        let pause = gtk::ToggleButton::new();
+        pause.set_image(Some(&gtk::Image::from_icon_name(Some("media-playback-pause"), gtk::IconSize::Button)));
+        pause.set_tooltip_text(Some("Pause"));
+        pause.set_valign(gtk::Align::Center);
+        pause.set_active(job.ctx.is_paused());
+        let ctx = job.ctx.clone();
+        pause.connect_toggled(move |b| {
+            if b.is_active() {
+                ctx.pause();
+                b.set_tooltip_text(Some("Continue"));
+            } else {
+                ctx.resume();
+                b.set_tooltip_text(Some("Pause"));
+            }
+        });
         row.pack_start(&texts, true, true, 0);
+        row.pack_start(&pause, false, false, 0);
         row.pack_start(&cancel, false, false, 0);
         list.pack_start(&row, false, false, 0);
         row.show_all();
-        JobRow { widget: row, bar, detail }
+        JobRow { widget: row, bar, detail, pause }
     }
 
     fn update_row(job: &mut Job, now: Instant) {
@@ -266,6 +362,18 @@ impl Jobs {
             let inst = s.bytes_done.saturating_sub(job.last_sample.1) as f64 / dt;
             job.speed = if job.speed == 0.0 { inst } else { job.speed * 0.7 + inst * 0.3 };
             job.last_sample = (now, s.bytes_done);
+        }
+        if job.waiting.is_some() {
+            row.bar.set_fraction(0.0);
+            row.bar.set_text(Some("Waiting for the operation before it on this drive"));
+            row.pause.set_sensitive(false);
+            return;
+        }
+        row.pause.set_sensitive(true);
+        if job.ctx.is_paused() {
+            row.bar.set_text(Some("Paused"));
+            row.pause.set_active(true);
+            return;
         }
         match job.ctx.phase() {
             Phase::Preparing => {
