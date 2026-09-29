@@ -30,6 +30,10 @@ fn row(grid: &gtk::Grid, y: i32, label: &str, value: &str) -> gtk::Label {
 
 pub fn show(w: &Window) {
     let pane = w.current_pane();
+    if pane.location() == Location::Drives {
+        super::drives::show_selected_properties(&pane);
+        return;
+    }
     let items = pane.selected_items();
     let loc = pane.location();
     let now = glib::real_time() / 1_000_000;
