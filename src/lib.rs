@@ -8,4 +8,5 @@ pub mod config;
 pub mod drives;
 pub mod location;
 pub mod ops;
+pub mod thumbs;
 pub mod trash;
