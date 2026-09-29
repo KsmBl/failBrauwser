@@ -185,3 +185,18 @@ fn thumbnails_through_the_thumbnailer_service() {
 fn thumbnails_without_a_service() {
     run_checked("thumbnails.fbt", &[("FB_NO_TUMBLER", "1")], make_pictures, |t| assert_eq!(cached_thumbnails(t), 12));
 }
+
+#[test]
+fn status_bar_summary() {
+    run("summary.fbt", |t| {
+        let s = t.join("s");
+        std::fs::create_dir_all(s.join("sub1")).unwrap();
+        std::fs::create_dir_all(s.join("sub2/deep")).unwrap();
+        std::fs::write(s.join("a.bin"), vec![0u8; 1000]).unwrap();
+        std::fs::write(s.join("b.bin"), vec![0u8; 500]).unwrap();
+        std::fs::write(s.join("sub2/deep/c.bin"), vec![0u8; 2000]).unwrap();
+        // A symlink to something big must not count.
+        std::fs::write(t.join("huge"), vec![0u8; 50_000]).unwrap();
+        std::os::unix::fs::symlink(t.join("huge"), s.join("sub1/link")).unwrap();
+    });
+}

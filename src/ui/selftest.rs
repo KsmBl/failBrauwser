@@ -215,6 +215,11 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("{got} thumbnails"));
             }
         }
+        "wait-summary" => {
+            // The status bar summary contains this text.
+            let want = arg.to_string();
+            wait(r, move |r| Ok(super::summary::text(&r.window).contains(&want)));
+        }
         "crumb-click" => {
             if !w.pathbar.click(arg) {
                 return Err(format!("no button {arg:?}, have {:?}", w.pathbar.labels()));
