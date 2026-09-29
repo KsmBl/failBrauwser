@@ -29,6 +29,21 @@ pub struct Volume {
     pub mountable: bool,
     /// A system volume (root, boot, …) as UDisks2 sees it.
     pub system: bool,
+    pub uuid: String,
+    /// File system version ("1.0" for ext4, "FAT32", …).
+    pub fs_version: String,
+    pub read_only: bool,
+    pub partition_number: u32,
+    pub partition_name: String,
+    /// Partition type (GPT GUID or MBR code).
+    pub partition_type: String,
+    pub serial: String,
+    pub revision: String,
+    /// Connection: "usb", "sdio", "ieee1394", or empty for internal (SATA/NVMe).
+    pub bus: String,
+    /// -1 unknown, 0 solid state, otherwise spindle speed.
+    pub rotation_rate: i32,
+    pub drive_size: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -125,6 +140,14 @@ fn u(p: &Props, k: &str) -> u64 {
     p.get(k).and_then(|v| v.get::<u64>()).unwrap_or(0)
 }
 
+fn i(p: &Props, k: &str) -> i32 {
+    p.get(k).and_then(|v| v.get::<i32>()).unwrap_or(-1)
+}
+
+fn n(p: &Props, k: &str) -> u32 {
+    p.get(k).and_then(|v| v.get::<u32>()).unwrap_or(0)
+}
+
 fn o(p: &Props, k: &str) -> String {
     p.get(k).and_then(|v| v.str().map(str::to_string)).unwrap_or_default()
 }
@@ -164,6 +187,9 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
         }
         let drive_object = o(block, "Drive");
         let drive = all.get(&drive_object).and_then(|d| d.get("org.freedesktop.UDisks2.Drive"));
+        let empty = Props::new();
+        let d = drive.unwrap_or(&empty);
+        let part = ifaces.get("org.freedesktop.UDisks2.Partition").unwrap_or(&empty);
         let (drive_name, removable, usb, optical, ejectable) = match drive {
             Some(d) => {
                 let name = [s(d, "Vendor"), s(d, "Model")].iter().filter(|x| !x.is_empty()).cloned().collect::<Vec<_>>().join(" ");
@@ -192,6 +218,17 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
             drive_object,
             mountable: fs.is_some(),
             system: b(block, "HintSystem"),
+            uuid: s(block, "IdUUID"),
+            fs_version: s(block, "IdVersion"),
+            read_only: b(block, "ReadOnly"),
+            partition_number: n(part, "Number"),
+            partition_name: s(part, "Name"),
+            partition_type: s(part, "Type"),
+            serial: s(d, "Serial"),
+            revision: s(d, "Revision"),
+            bus: s(d, "ConnectionBus"),
+            rotation_rate: if drive.is_some() { i(d, "RotationRate") } else { -1 },
+            drive_size: u(d, "Size"),
         });
     }
     sort_volumes(&mut out);
@@ -241,6 +278,7 @@ pub fn parse_mountinfo(text: &str) -> Vec<Volume> {
             device: source.clone(),
             fs_type: fs_type.to_string(),
             mountable: true,
+            rotation_rate: -1,
             ..Default::default()
         });
         v.mount_points.push(PathBuf::from(mount));
@@ -251,6 +289,49 @@ pub fn parse_mountinfo(text: &str) -> Vec<Volume> {
     }
     sort_volumes(&mut v);
     v
+}
+
+/// Mount options of a mount point, as the kernel reports them ("rw,relatime,…").
+pub fn mount_options_in(text: &str, mount_point: &Path) -> Option<String> {
+    for line in text.lines() {
+        let Some((left, right)) = line.split_once(" - ") else { continue };
+        let l: Vec<&str> = left.split(' ').collect();
+        let r: Vec<&str> = right.split(' ').collect();
+        if l.len() < 6 || r.len() < 3 || Path::new(&unescape_mount(l[4])) != mount_point {
+            continue;
+        }
+        let mut opts: Vec<&str> = l[5].split(',').collect();
+        for o in r[2].split(',') {
+            if !opts.contains(&o) {
+                opts.push(o);
+            }
+        }
+        return Some(opts.join(","));
+    }
+    None
+}
+
+pub fn mount_options(mount_point: &Path) -> Option<String> {
+    std::fs::read_to_string("/proc/self/mountinfo").ok().and_then(|t| mount_options_in(&t, mount_point))
+}
+
+/// What kind of drive, in words: "USB drive", "SSD", "Hard disk (7200 rpm)", …
+pub fn drive_kind(v: &Volume) -> String {
+    if v.optical {
+        "Optical drive".into()
+    } else if v.usb {
+        "USB drive".into()
+    } else if v.bus == "sdio" {
+        "Memory card".into()
+    } else if v.removable {
+        "Removable drive".into()
+    } else if v.rotation_rate == 0 || v.device.starts_with("/dev/nvme") {
+        "Solid state drive".into()
+    } else if v.rotation_rate > 0 {
+        format!("Hard disk ({} rpm)", v.rotation_rate)
+    } else {
+        String::new()
+    }
 }
 
 pub fn read_mountinfo() -> Vec<Volume> {
@@ -291,6 +372,29 @@ mod tests {
         assert!(s.usb && s.removable && s.ejectable && s.mountable);
         assert_eq!(s.drive_name, "SanDisk Ultra");
         assert_eq!(s.icon_names()[0], "drive-removable-media-usb");
+        assert_eq!(drive_kind(s), "USB drive");
+    }
+
+    #[test]
+    fn udisks_details_are_read() {
+        let text = "({objectpath '/o/b/nvme0n1p2': {'org.freedesktop.UDisks2.Block': {'Device': <b'/dev/nvme0n1p2'>, 'IdUsage': <'filesystem'>, 'IdType': <'ext4'>, 'IdVersion': <'1.0'>, 'IdUUID': <'abcd-1234'>, 'ReadOnly': <false>, 'HintIgnore': <false>, 'Drive': <objectpath '/o/d/ssd'>}, 'org.freedesktop.UDisks2.Filesystem': {'MountPoints': <[b'/']>}, 'org.freedesktop.UDisks2.Partition': {'Number': <uint32 2>, 'Name': <'root'>, 'Type': <'0fc63daf-8483-4772-8e79-3d69d8477de4'>}}, objectpath '/o/d/ssd': {'org.freedesktop.UDisks2.Drive': {'Model': <'Samsung SSD'>, 'Serial': <'S4GV'>, 'Revision': <'1B4Q'>, 'ConnectionBus': <''>, 'RotationRate': <0>, 'Size': <uint64 256060514304>}}},)";
+        let v = glib::Variant::parse(Some(glib::VariantTy::new("(a{oa{sa{sv}}})").unwrap()), text).unwrap();
+        let vol = &parse_udisks(&v)[0];
+        assert_eq!((vol.uuid.as_str(), vol.fs_version.as_str()), ("abcd-1234", "1.0"));
+        assert_eq!((vol.partition_number, vol.partition_name.as_str()), (2, "root"));
+        assert_eq!((vol.serial.as_str(), vol.revision.as_str()), ("S4GV", "1B4Q"));
+        assert_eq!(vol.drive_size, 256060514304);
+        assert_eq!(drive_kind(vol), "Solid state drive");
+    }
+
+    #[test]
+    fn mount_options_merge_both_lists() {
+        let text = "22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro\n25 22 8:17 / /run/media/me/My\\040Stick rw,nosuid,nodev - exfat /dev/sdb1 rw,uid=1000\n".replace("\\n", "\n");
+        assert_eq!(mount_options_in(&text, Path::new("/")).as_deref(), Some("rw,relatime,errors=remount-ro"));
+        assert_eq!(mount_options_in(&text, Path::new("/run/media/me/My Stick")).as_deref(), Some("rw,nosuid,nodev,uid=1000"));
+        assert!(mount_options_in(&text, Path::new("/nope")).is_none());
+        let hdd = Volume { rotation_rate: 7200, ..Default::default() };
+        assert_eq!(drive_kind(&hdd), "Hard disk (7200 rpm)");
     }
 
     #[test]
