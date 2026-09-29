@@ -23,6 +23,8 @@ pub enum PaneEvent {
     ContextMenu(Option<gdk::EventButton>),
     HeaderMenu(gdk::EventButton),
     OpenInNewTab(Location),
+    /// Other rows came into view (thumbnails for them).
+    Scrolled,
     /// Ctrl+scroll: zoom in (positive) or out.
     Zoom(i32),
     /// Files were activated that the pane does not open itself.
@@ -75,7 +77,14 @@ pub struct Pane {
     grid_px: Rc<Cell<i32>>,
     grid_pix: gtk::CellRendererPixbuf,
     grid_text: gtk::CellRendererText,
+    /// Rows holding a thumbnail, oldest first (at most [`MAX_THUMBS`]).
+    thumbs: RefCell<std::collections::VecDeque<OsString>>,
+    scroll_pending: Cell<bool>,
 }
+
+/// Thumbnails kept in memory per tab; older ones are dropped (and come back from the disk
+/// cache when scrolled into view again).
+const MAX_THUMBS: usize = 400;
 
 impl Pane {
     pub fn new(settings: Rc<RefCell<Settings>>, location: Location) -> Rc<Pane> {
@@ -167,6 +176,8 @@ impl Pane {
             grid_px,
             grid_pix: pix,
             grid_text: txt,
+            thumbs: RefCell::new(std::collections::VecDeque::new()),
+            scroll_pending: Cell::new(false),
         });
         *pane.weak.borrow_mut() = Rc::downgrade(&pane);
         pane.apply_zoom_sizes();
@@ -459,6 +470,8 @@ impl Pane {
     }
 
     fn rebuild_rows_inner(&self, select: &[OsString], fresh: bool) {
+        // New rows have no thumbnails yet: ask again for what comes into view.
+        super::thumbnails::reset(&self.me());
         let show_hidden = self.settings.borrow().show_hidden;
         let scroll = if fresh { None } else { self.tree.vadjustment().map(|a| a.value()) };
         // Detached views do not react to every single insert.
@@ -480,6 +493,7 @@ impl Pane {
                 st.rows.insert(key, (item, iter));
             }
         }
+        self.thumbs.borrow_mut().clear();
         self.tree.set_model(Some(&self.store));
         self.icons.set_model(Some(&self.store));
         self.select_names(select);
@@ -733,6 +747,62 @@ impl Pane {
         self.icons.queue_resize();
     }
 
+    /// Shows a thumbnail for the row `name`.
+    pub fn set_thumbnail(&self, name: &OsString, pb: gtk::gdk_pixbuf::Pixbuf) {
+        let st = self.st.borrow();
+        let Some((_, iter)) = st.by_name.get(name).and_then(|k| st.rows.get(k)) else { return };
+        self.store.set_value(iter, model::COL_THUMB, &Some(pb).to_value());
+        let mut thumbs = self.thumbs.borrow_mut();
+        thumbs.retain(|n| n != name);
+        thumbs.push_back(name.clone());
+        while thumbs.len() > MAX_THUMBS {
+            if let Some(old) = thumbs.pop_front() {
+                if let Some((_, it)) = st.by_name.get(&old).and_then(|k| st.rows.get(k)) {
+                    self.store.set_value(it, model::COL_THUMB, &None::<gtk::gdk_pixbuf::Pixbuf>.to_value());
+                }
+            }
+        }
+    }
+
+    /// Rows showing a thumbnail right now (tests).
+    pub fn thumbnail_count(&self) -> usize {
+        let mut n = 0;
+        self.store.foreach(|m, _, it| {
+            if m.value(it, model::COL_THUMB as i32).get::<Option<gtk::gdk_pixbuf::Pixbuf>>().ok().flatten().is_some() {
+                n += 1;
+            }
+            false
+        });
+        n
+    }
+
+    /// Files in view that might get a thumbnail: (name, path, mtime, MIME type).
+    pub fn visible_thumbnail_candidates(&self) -> Vec<(OsString, std::path::PathBuf, i64, String)> {
+        let range = if self.view_is_icons() { self.icons.visible_range() } else { self.tree.visible_range() };
+        let Some((start, end)) = range else { return Vec::new() };
+        let st = self.st.borrow();
+        let mut out = Vec::new();
+        let Some(iter) = self.store.iter(&start) else { return out };
+        // A few rows beyond the edge, so short scrolls find thumbnails ready.
+        let last = end.indices().first().copied().unwrap_or(0) + 8;
+        loop {
+            let key: u64 = self.store.value(&iter, model::COL_KEY as i32).get().unwrap_or_default();
+            let has: bool = self.store.value(&iter, model::COL_THUMB as i32).get::<Option<gtk::gdk_pixbuf::Pixbuf>>().ok().flatten().is_some();
+            if let Some((item, _)) = st.rows.get(&key) {
+                if let (false, Item::Fs(e) | Item::Trash(_, e)) = (has, item) {
+                    if !e.is_dir_like() {
+                        out.push((item.os_name(), e.path.clone(), e.mtime, e.content_type.clone()));
+                    }
+                }
+            }
+            let idx = self.store.path(&iter).and_then(|p| p.indices().first().copied()).unwrap_or(i32::MAX);
+            if idx >= last || !self.store.iter_next(&iter) {
+                break;
+            }
+        }
+        out
+    }
+
     /// Current icon size of the list, in pixels (tests).
     pub fn list_icon_size(&self) -> i32 {
         self.list_px.get()
@@ -911,6 +981,29 @@ impl Pane {
                 icons.set_cursor(path, None::<&gtk::CellRenderer>, false);
             })
         });
+        // Rows coming into view may want thumbnails: after scrolling, and after layout
+        // (the scroll range changes once rows are measured). Settles before asking.
+        for adj in [self.tree.vadjustment(), self.icons.vadjustment()].into_iter().flatten() {
+            let notify = {
+                let weak = self.weak.borrow().clone();
+                move || {
+                    let Some(p) = weak.upgrade() else { return };
+                    if p.scroll_pending.replace(true) {
+                        return;
+                    }
+                    let weak = Rc::downgrade(&p);
+                    glib::timeout_add_local_once(Duration::from_millis(120), move || {
+                        if let Some(p) = weak.upgrade() {
+                            p.scroll_pending.set(false);
+                            p.emit(PaneEvent::Scrolled);
+                        }
+                    });
+                }
+            };
+            let n2 = notify.clone();
+            adj.connect_value_changed(move |_| n2());
+            adj.connect_changed(move |_| notify());
+        }
         // Ctrl + mouse wheel zooms.
         for w in [self.tree.upcast_ref::<gtk::Widget>(), self.icons.upcast_ref()] {
             let weak = self.weak.borrow().clone();
