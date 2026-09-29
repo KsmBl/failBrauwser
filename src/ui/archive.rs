@@ -27,6 +27,45 @@ fn io(e: ArchiveError) -> std::io::Error {
     std::io::Error::other(e.message)
 }
 
+/// Marks a failure for want of a password (the progress window then does not report it as
+/// an error; the operation asks for the password and runs again).
+pub const PASSWORD_MARK: &str = "\u{1}password\u{1}";
+
+/// Like [`io`], but a missing or wrong password names the archive that needs it.
+fn io_at(loc: &ArchiveLoc) -> impl Fn(ArchiveError) -> std::io::Error + '_ {
+    move |e| {
+        if e.needs_password() {
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{PASSWORD_MARK}{}\n{}", Location::Archive(loc.with_inner("")).display(), e.message))
+        } else {
+            io(e)
+        }
+    }
+}
+
+/// The archive whose password is missing, if that is why the operation failed.
+fn password_failure(outcome: &Outcome) -> Option<ArchiveLoc> {
+    let Outcome::Failed(msg) = outcome else { return None };
+    let rest = msg.strip_prefix(PASSWORD_MARK)?;
+    let where_ = rest.lines().next()?;
+    match Location::parse(where_, is_browsable_name)? {
+        Location::Archive(a) => Some(a.with_inner("")),
+        _ => None,
+    }
+}
+
+/// Asks for the password of `loc`, then runs `retry` (nothing on cancel).
+fn ask_and_retry(w: &Window, loc: ArchiveLoc, wrong: bool, retry: impl Fn(&Window) + 'static) {
+    let weak = Rc::downgrade(&w.me());
+    let title = Location::Archive(loc.clone()).title();
+    let label = if wrong { format!("Wrong password for “{title}”. Try again:") } else { format!("Password for “{title}”:") };
+    util::ask_secret(&w.win, "Encrypted Archive", &label, move |pw| {
+        Vfs::global().set_password(&loc, &pw);
+        if let Some(w) = weak.upgrade() {
+            retry(&w);
+        }
+    });
+}
+
 /// Runs archive work with the helper's progress shown in the job.
 fn tracked<T>(ctx: &JobCtx, f: impl FnOnce() -> T) -> T {
     use std::sync::atomic::Ordering;
@@ -98,6 +137,7 @@ pub fn open_entry(w: &Window, item: &Item) {
     }
     let entry = node.path.clone();
     let watched_entry = entry.clone();
+    let retry_item = item.clone();
     let loc2 = loc.clone();
     let weak = Rc::downgrade(&w.me());
     let title = format!("Opening “{}”", node.name);
@@ -107,9 +147,14 @@ pub fn open_entry(w: &Window, item: &Item) {
         move |ctx| {
             let v = Vfs::global();
             let dir = v.scratch_dir("open").map_err(io)?;
-            tracked(ctx, || v.extract(&loc2, std::slice::from_ref(&entry), &dir)).map_err(io)
+            tracked(ctx, || v.extract(&loc2, std::slice::from_ref(&entry), &dir)).map_err(io_at(&loc2))
         },
         move |outcome| {
+            if let (Some(w), Some(pl)) = (weak.upgrade(), password_failure(outcome)) {
+                let (item, wrong) = (retry_item.clone(), Vfs::global().has_password(&pl));
+                ask_and_retry(&w, pl, wrong, move |w| open_entry(w, &item));
+                return;
+            }
             let (Some(w), Outcome::Done(paths)) = (weak.upgrade(), outcome) else { return };
             let Some(path) = paths.first().cloned() else { return };
             util::open_with_default(w.win.upcast_ref(), &path);
@@ -213,11 +258,23 @@ pub fn transfer(w: &Window, sources: Vec<ClipSource>, dest: Location, mode: Mode
         })
         .chain(archive_of(&dest).cloned())
         .collect();
+    let retry_sources = sources.clone();
     w.app.jobs.start(
         w.win.upcast_ref(),
         title,
         move |ctx| transfer_work(ctx, sources, &dest2, mode, &opts),
         move |outcome| {
+            if let (Some(w), Some(pl)) = (weak.upgrade(), password_failure(outcome)) {
+                let wrong = Vfs::global().has_password(&pl);
+                let (src, dst) = (retry_sources.clone(), dest.clone());
+                let after = std::cell::RefCell::new(Some(after));
+                ask_and_retry(&w, pl, wrong, move |w| {
+                    if let Some(a) = after.borrow_mut().take() {
+                        transfer(w, src.clone(), dst.clone(), mode, a);
+                    }
+                });
+                return;
+            }
             after();
             let Some(w) = weak.upgrade() else { return };
             for a in &touched {
@@ -273,7 +330,7 @@ fn transfer_work(ctx: &JobCtx, sources: Vec<ClipSource>, dest: &Location, mode: 
                 ClipSource::Local(p) => local.push(p.clone()),
                 ClipSource::Archive(a, e) => {
                     ctx.set_current(format!("Extracting {}", leaf(e)));
-                    let got = tracked(ctx, || v.extract(a, std::slice::from_ref(e), &staging)).map_err(io)?;
+                    let got = tracked(ctx, || v.extract(a, std::slice::from_ref(e), &staging)).map_err(io_at(a))?;
                     local.extend(got);
                     from_archives.push((a.clone(), e.clone()));
                 }
@@ -297,7 +354,7 @@ fn transfer_work(ctx: &JobCtx, sources: Vec<ClipSource>, dest: &Location, mode: 
                 let add: Vec<(PathBuf, String)> = items.iter().zip(&targets).filter_map(|((p, _), t)| t.clone().map(|t| (p.clone(), t))).collect();
                 if !add.is_empty() {
                     ctx.set_current(format!("Adding {} item{} to the archive", add.len(), if add.len() == 1 { "" } else { "s" }));
-                    tracked(ctx, || v.add(d, &add)).map_err(io)?;
+                    tracked(ctx, || v.add(d, &add)).map_err(io_at(d))?;
                 }
                 created.extend(add.iter().map(|(_, t)| PathBuf::from(leaf(t))));
                 if mode == Mode::Move {
@@ -430,9 +487,14 @@ pub fn extract_selected(w: &Window, dest: Option<PathBuf>) {
     let pane = w.current_pane();
     let archives = selected_archives(&pane);
     let Some(dest) = dest.or_else(|| pane.location().local_path().map(Path::to_path_buf)) else { return };
+    extract_archives(w, archives, dest);
+}
+
+fn extract_archives(w: &Window, archives: Vec<PathBuf>, dest: PathBuf) {
     if archives.is_empty() {
         return;
     }
+    let (retry_archives, retry_dest) = (archives.clone(), dest.clone());
     let weak = Rc::downgrade(&w.me());
     let dest_loc = Location::Dir(dest.clone());
     w.app.jobs.start(
@@ -442,11 +504,18 @@ pub fn extract_selected(w: &Window, dest: Option<PathBuf>) {
             let mut made = Vec::new();
             for a in &archives {
                 ctx.set_current(a.file_name().unwrap_or_default().to_string_lossy());
-                made.push(tracked(ctx, || Vfs::global().extract_all(&ArchiveLoc::root(a.clone()), &dest)).map_err(io)?);
+                let loc = ArchiveLoc::root(a.clone());
+                made.push(tracked(ctx, || Vfs::global().extract_all(&loc, &dest)).map_err(io_at(&loc))?);
             }
             Ok(made)
         },
         move |outcome| {
+            if let (Some(w), Some(pl)) = (weak.upgrade(), password_failure(outcome)) {
+                let wrong = Vfs::global().has_password(&pl);
+                let (a, d) = (retry_archives.clone(), retry_dest.clone());
+                ask_and_retry(&w, pl, wrong, move |w| extract_archives(w, a.clone(), d.clone()));
+                return;
+            }
             if let (Some(w), Outcome::Done(made)) = (weak.upgrade(), outcome) {
                 fileops::select_created(&w, &dest_loc, made);
             }
@@ -509,11 +578,35 @@ pub fn compress(w: &Window) {
     grid.attach(&entry, 1, 0, 1, 1);
     grid.attach(&fmt_label, 0, 1, 1, 1);
     grid.attach(&combo, 1, 1, 1, 1);
+    // Encryption: ZIP (AES-256) and 7-Zip.
+    let pw_label = gtk::Label::with_mnemonic("_Password:");
+    pw_label.set_xalign(1.0);
+    let pw = gtk::Entry::new();
+    pw.set_visibility(false);
+    pw.set_input_purpose(gtk::InputPurpose::Password);
+    pw.set_placeholder_text(Some("optional, encrypts the archive"));
+    pw_label.set_mnemonic_widget(Some(&pw));
+    let pw2_label = gtk::Label::with_mnemonic("Re_peat:");
+    pw2_label.set_xalign(1.0);
+    let pw2 = gtk::Entry::new();
+    pw2.set_visibility(false);
+    pw2.set_input_purpose(gtk::InputPurpose::Password);
+    pw2_label.set_mnemonic_widget(Some(&pw2));
+    grid.attach(&pw_label, 0, 2, 1, 1);
+    grid.attach(&pw, 1, 2, 1, 1);
+    grid.attach(&pw2_label, 0, 3, 1, 1);
+    grid.attach(&pw2, 1, 3, 1, 1);
+    let (p1, p2) = (pw.clone(), pw2.clone());
+    combo.connect_changed(move |c| {
+        let can = matches!(c.active_id().as_deref(), Some(".zip") | Some(".7z"));
+        p1.set_sensitive(can);
+        p2.set_sensitive(can);
+    });
     area.add(&grid);
     d.show_all();
     let weak = Rc::downgrade(&w.me());
     let reply = super::selftest::scripted_text();
-    let run = move |name: String, ext: String| {
+    let run = move |name: String, ext: String, password: Option<String>| {
         let Some(w) = weak.upgrade() else { return };
         if !util::valid_file_name(&name) {
             util::show_error(&w.win, "Invalid name", "A name cannot be empty or contain “/”.");
@@ -531,7 +624,7 @@ pub fn compress(w: &Window) {
         w.app.jobs.start(
             w.win.upcast_ref(),
             format!("Creating “{file}”"),
-            move |ctx| tracked(ctx, || Vfs::global().helper().add(&target, &items, None)).map(|_| vec![target.clone()]).map_err(io),
+            move |ctx| tracked(ctx, || Vfs::global().helper().add(&target, &items, password.as_deref())).map(|_| vec![target.clone()]).map_err(io),
             move |outcome| {
                 if let (Some(w), Outcome::Done(made)) = (w2.upgrade(), outcome) {
                     fileops::select_created(&w, &loc, made);
@@ -542,13 +635,22 @@ pub fn compress(w: &Window) {
     if let Some(r) = reply {
         // Self-test: "name.ext" picks the format by its extension.
         let ext = CREATE_FORMATS.iter().map(|(_, e)| *e).find(|e| r.ends_with(e)).unwrap_or(".zip");
-        run(r.trim_end_matches(ext).to_string(), ext.to_string());
+        // A second scripted reply is the password.
+        let password = super::selftest::scripted_text();
+        run(r.trim_end_matches(ext).to_string(), ext.to_string(), password);
         d.close();
         return;
     }
     d.connect_response(move |d, resp| {
         if resp == gtk::ResponseType::Ok {
-            run(entry.text().to_string(), combo.active_id().map(|s| s.to_string()).unwrap_or_else(|| ".zip".into()));
+            let ext = combo.active_id().map(|s| s.to_string()).unwrap_or_else(|| ".zip".into());
+            let (a, b) = (pw.text().to_string(), pw2.text().to_string());
+            if a != b {
+                util::show_error(d, "Passwords differ", "Type the same password twice.");
+                return;
+            }
+            let password = (!a.is_empty() && pw.is_sensitive()).then_some(a);
+            run(entry.text().to_string(), ext, password);
         }
         d.close();
     });
@@ -583,12 +685,30 @@ pub fn open_as_archive(w: &Window) {
     });
 }
 
+thread_local! {
+    static ASKED: std::cell::RefCell<std::collections::HashSet<(PathBuf, Vec<String>)>> = std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Entering an archive with encrypted entries asks for the password once.
+pub fn maybe_ask_password(w: &Window, pane: &Rc<Pane>) {
+    let loc = pane.location();
+    let Location::Archive(a) = &loc else { return };
+    let v = Vfs::global();
+    if v.has_password(a) || !v.cached(a).is_some_and(|x| x.tree.any_encrypted()) {
+        return;
+    }
+    if !ASKED.with(|s| s.borrow_mut().insert(a.archive_key())) {
+        return;
+    }
+    ask_password(w, pane, &loc);
+}
+
 pub fn ask_password(w: &Window, pane: &Rc<Pane>, loc: &Location) {
     let Location::Archive(a) = loc else { return };
-    let file = a.file.clone();
+    let key = a.clone();
     let p = Rc::downgrade(pane);
     util::ask_secret(&w.win, "Encrypted Archive", &format!("Password for “{}”:", loc.title()), move |pw| {
-        Vfs::global().set_password(&file, &pw);
+        Vfs::global().set_password(&key, &pw);
         if let Some(p) = p.upgrade() {
             p.reload();
         }
