@@ -55,9 +55,12 @@ pub enum Location {
     Dir(PathBuf),
     Archive(ArchiveLoc),
     Drives,
+    /// The trash (freedesktop.org spec; shared with other file managers).
+    Trash,
 }
 
 pub const DRIVES_URI: &str = "drives:///";
+pub const TRASH_URI: &str = "trash:///";
 
 impl Location {
     pub fn home() -> Location {
@@ -81,6 +84,7 @@ impl Location {
                 s
             }
             Location::Drives => DRIVES_URI.into(),
+            Location::Trash => TRASH_URI.into(),
         }
     }
 
@@ -101,6 +105,7 @@ impl Location {
                 }
             }
             Location::Drives => "Drives".into(),
+            Location::Trash => "Trash".into(),
         }
     }
 
@@ -118,7 +123,7 @@ impl Location {
                 }
                 a.file.parent().map(|p| Location::Dir(p.to_path_buf()))
             }
-            Location::Drives => None,
+            Location::Drives | Location::Trash => None,
         }
     }
 
@@ -127,7 +132,7 @@ impl Location {
         match self {
             Location::Dir(p) => Some(Location::Dir(p.join(name))),
             Location::Archive(a) => Some(Location::Archive(a.with_inner(&a.entry_path(name)))),
-            Location::Drives => None,
+            Location::Drives | Location::Trash => None,
         }
     }
 
@@ -143,7 +148,7 @@ impl Location {
         match self {
             Location::Dir(p) => Some(p.clone()),
             Location::Archive(a) => a.file.parent().map(Path::to_path_buf),
-            Location::Drives => None,
+            Location::Drives | Location::Trash => None,
         }
     }
 
@@ -157,6 +162,9 @@ impl Location {
         }
         if t == "drives:" || t.starts_with("drives:/") {
             return Some(Location::Drives);
+        }
+        if t == "trash:" || t.starts_with("trash:/") {
+            return Some(Location::Trash);
         }
         let path: PathBuf = if let Some(rest) = t.strip_prefix("file://") {
             gtk::glib::filename_from_uri(&format!("file://{rest}")).ok()?.0
@@ -259,6 +267,9 @@ mod tests {
         let p = |s: &str| Location::parse(s, is_browsable_name);
         assert_eq!(p(&d.join("sub/../sub").to_string_lossy()), Some(Location::Dir(d.join("sub"))));
         assert_eq!(p("drives:///"), Some(Location::Drives));
+        assert_eq!(p("trash:///"), Some(Location::Trash));
+        assert_eq!(Location::Trash.display(), "trash:///");
+        assert_eq!(Location::Trash.parent(), None);
         assert_eq!(p("relative/path"), None);
         assert_eq!(p("~"), Some(Location::home()));
 
