@@ -9,7 +9,7 @@ open trash:///
 expect-crumbs Trash
 wait-row a.txt
 select a.txt
-action win.restore
+trash-bar Restore
 wait-exists $T/w/a.txt
 wait-no-row a.txt
 # Restoring onto a name that is taken again: keep both.
@@ -38,7 +38,9 @@ select b.txt
 action win.delete
 wait-missing $T/data/Trash/files/b.txt
 wait-missing $T/data/Trash/info/b.txt.trashinfo
-action win.empty-trash
+trash-bar Empty Trash
 wait-missing $T/data/Trash/files/c.txt
 wait-no-row c.txt
 expect-rows 0
+expect-disabled win.restore
+expect-disabled win.empty-trash

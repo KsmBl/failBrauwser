@@ -113,7 +113,8 @@ records of bootable images.
 specification, exactly like Thunar, Nautilus and Dolphin: the file goes to
 `~/.local/share/Trash/files/` (or `.Trash-<uid>/` on other drives) and a
 `info/<name>.trashinfo` records its original path and the deletion time. Items trashed in
-any of these file managers show up in *Trash* on the left and can be restored there — to
+any of these file managers show up in *Trash* on the left. The bar above the list there has
+*Restore* (for the selection) and *Empty Trash*. Restoring puts items back — to
 where they came from, recreating missing folders and asking if the name is taken — or
 deleted for good. The status bar shows where a selected item was deleted from.
 
