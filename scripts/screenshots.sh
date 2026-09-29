@@ -68,4 +68,7 @@ shoot drives "action win.drives" "wait-drive File System" "sleep 800" "screensho
 shoot icons "action win.view-mode icons" "open $DEMO/Pictures/Vacation" "sleep 800" "screenshot $OUT/icons.png"
 shoot properties "open $DEMO" "select Music" "action win.properties" "sleep 1200" "screenshot $OUT/properties.png"
 shoot conflict "open $DEMO/Documents" "select notes.txt" "action win.copy" "open $DEMO/Desktop" "action win.paste" "sleep 800" "screenshot $OUT/copy-conflict.png"
+shoot trash "open $DEMO/Documents" "select Letter to landlord.odt | notes.txt" "action win.trash" "wait-missing $DEMO/Documents/notes.txt" \
+    "open trash:///" "wait-row notes.txt" "select notes.txt" "sleep 800" "screenshot $OUT/trash.png"
+shoot drive-properties "action win.drives" "wait-drive File System" "drive-properties File System" "sleep 1000" "screenshot $OUT/drive-properties.png"
 echo "screenshots written to $OUT"
