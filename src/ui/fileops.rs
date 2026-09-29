@@ -129,12 +129,15 @@ pub fn transfer(w: &Window, sources: Vec<ClipSource>, dest: Location, mode: Mode
                 .collect();
             let verb = if mode == Mode::Move { "Moving" } else { "Copying" };
             let title = format!("{verb} {} to “{}”", count_label(paths.len(), "item"), dest.title());
-            let opts = copy::Options { smooth_writes: w.app.settings.borrow().smooth_writes, workers: None };
+            let opts = copy::Options { smooth_writes: w.app.settings.borrow().smooth_writes, workers: None, verify: w.app.settings.borrow().verify_copies };
             let dir = dir.clone();
             let weak = Rc::downgrade(&w.me());
-            w.app.jobs.start(
+            // Copies to the same drive wait for each other.
+            let key = std::fs::metadata(&dir).ok().map(|m| std::os::unix::fs::MetadataExt::dev(&m));
+            w.app.jobs.start_queued(
                 w.win.upcast_ref(),
                 title,
+                key,
                 move |ctx| copy::transfer(ctx, &paths, &dir, mode, &opts),
                 move |outcome| {
                     after();
