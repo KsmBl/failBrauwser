@@ -315,6 +315,32 @@ pub fn mount_options(mount_point: &Path) -> Option<String> {
     std::fs::read_to_string("/proc/self/mountinfo").ok().and_then(|t| mount_options_in(&t, mount_point))
 }
 
+/// A readable name for a GPT type GUID or MBR type code, the raw value in brackets.
+pub fn partition_type_name(t: &str) -> String {
+    let name = match t.to_ascii_lowercase().as_str() {
+        "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" | "0xef" => "EFI system partition",
+        "0fc63daf-8483-4772-8e79-3d69d8477de4" | "0x83" => "Linux file system",
+        "4f68bce3-e8cd-4db1-96e7-fbcaf984b709" => "Linux root (x86-64)",
+        "b921b045-1df0-41c3-af44-4c6f280d3fae" => "Linux root (ARM64)",
+        "933ac7e1-2eb4-4f13-b844-0e14e2aef915" => "Linux home",
+        "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f" | "0x82" => "Linux swap",
+        "e6d6d379-f507-44c2-a23c-238f2a3df928" | "0x8e" => "Linux LVM",
+        "a19d880f-05fc-4d3b-a006-743f0f84911e" | "0xfd" => "Linux RAID",
+        "ca7d7ccb-63ed-4c53-861c-1742536059cc" => "Linux LUKS",
+        "bc13c2ff-59e6-4262-a352-b275fd6f7172" => "Linux extended boot",
+        "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7" => "Basic data (Windows)",
+        "e3c9e316-0b5c-4db8-817d-f92df00215ae" => "Microsoft reserved",
+        "de94bba4-06d1-4d40-a16a-bfd50179d6ac" => "Windows recovery",
+        "21686148-6449-6e6f-744e-656564454649" => "BIOS boot",
+        "0x07" => "NTFS / exFAT",
+        "0x0b" | "0x0c" => "FAT32",
+        "0x0e" | "0x06" => "FAT16",
+        "0x05" | "0x0f" => "Extended partition",
+        _ => return t.to_string(),
+    };
+    format!("{name} ({t})")
+}
+
 /// What kind of drive, in words: "USB drive", "SSD", "Hard disk (7200 rpm)", …
 pub fn drive_kind(v: &Volume) -> String {
     if v.optical {
@@ -393,6 +419,9 @@ mod tests {
         assert_eq!(mount_options_in(&text, Path::new("/")).as_deref(), Some("rw,relatime,errors=remount-ro"));
         assert_eq!(mount_options_in(&text, Path::new("/run/media/me/My Stick")).as_deref(), Some("rw,nosuid,nodev,uid=1000"));
         assert!(mount_options_in(&text, Path::new("/nope")).is_none());
+        assert_eq!(partition_type_name("C12A7328-F81F-11D2-BA4B-00A0C93EC93B"), "EFI system partition (C12A7328-F81F-11D2-BA4B-00A0C93EC93B)");
+        assert_eq!(partition_type_name("0x83"), "Linux file system (0x83)");
+        assert_eq!(partition_type_name("unknown"), "unknown");
         let hdd = Volume { rotation_rate: 7200, ..Default::default() };
         assert_eq!(drive_kind(&hdd), "Hard disk (7200 rpm)");
     }
