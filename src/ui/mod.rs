@@ -10,6 +10,7 @@ pub mod dnd;
 pub mod drives;
 pub mod extensions;
 pub mod fileops;
+pub mod icons;
 pub mod jobs;
 pub mod model;
 pub mod pane;
