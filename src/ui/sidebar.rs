@@ -77,7 +77,9 @@ pub fn attach(w: &Rc<Window>) {
     let drives = gtk::ListBox::new();
     drives.style_context().add_class("sidebar");
     drives.style_context().add_class("fb-shortcuts");
-    drives.set_selection_mode(gtk::SelectionMode::Single);
+    // Marked by hand while the drives page is shown: a selectable list would select its
+    // row as soon as it gets the keyboard focus.
+    drives.set_selection_mode(gtk::SelectionMode::None);
     drives.set_activate_on_single_click(true);
     let row = gtk::ListBoxRow::new();
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -133,7 +135,7 @@ impl Sidebar {
     }
 
     pub fn drives_selected(&self) -> bool {
-        self.drives.selected_row().is_some()
+        self.drives.row_at_index(0).is_some_and(|r| r.state_flags().contains(gtk::StateFlags::SELECTED))
     }
 
     /// The folder at the top of the tree.
@@ -339,12 +341,12 @@ impl Sidebar {
             (_, Some(p)) => self.places.set_location(Some(&gio::File::for_path(p))),
             _ => self.places.set_location(None::<&gio::File>),
         }
-        if loc == Location::Drives {
-            if let Some(r) = self.drives.row_at_index(0) {
-                self.drives.select_row(Some(&r));
+        if let Some(r) = self.drives.row_at_index(0) {
+            if loc == Location::Drives {
+                r.set_state_flags(gtk::StateFlags::SELECTED, false);
+            } else {
+                r.unset_state_flags(gtk::StateFlags::SELECTED);
             }
-        } else {
-            self.drives.unselect_all();
         }
         if !w.app.settings.borrow().show_tree {
             return;
