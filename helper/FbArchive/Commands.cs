@@ -61,6 +61,10 @@ public static class Commands {
   /// <summary>An archive is writable when its format can be modified in place or rebuilt.</summary>
   public static bool IsWritable(F format) {
     if (format is F.Unknown or F.Sfx) return false;
+    // ISO images: the in-place modifier only updates the plain ISO 9660 tree (8.3 names,
+    // flattened into the root), which Rock Ridge / Joliet readers never see, and a rebuild
+    // would drop Rock Ridge metadata and El Torito boot records. Browse and extract only.
+    if (format is F.Iso) return false;
     if (FormatDetector.IsStreamFormat(format)) return false;
     var ops = FormatRegistry.GetArchiveOps(format.ToString());
     return ops is IArchiveModifiable || ops is IArchiveCreatable;

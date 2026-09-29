@@ -121,6 +121,8 @@ const BROWSABLE_SUFFIXES: &[&str] = &[
     ".tbz2", ".txz", ".tzst", ".tlz", ".zip", ".7z", ".rar", ".tar", ".cpio", ".ar", ".deb", ".rpm", ".cab", ".lzh",
     ".lha", ".arj", ".cbz", ".cbr", ".cb7", ".cbt", ".xar", ".wim", ".zpaq", ".ace", ".zoo", ".arc", ".sit", ".sitx",
     ".gz", ".bz2", ".xz", ".zst", ".lz", ".lzma", ".lz4",
+    // Disc images (ISO 9660 with Rock Ridge / Joliet names).
+    ".iso",
 ];
 
 /// True when a file with this name opens as a folder on activation.
@@ -147,6 +149,7 @@ mod tests {
     fn browsable_names() {
         assert!(is_browsable_name("a.ZIP"));
         assert!(is_browsable_name("x.tar.gz"));
+        assert!(is_browsable_name("ubuntu-26.04-desktop-amd64.ISO"));
         assert!(!is_browsable_name(".zip"));
         assert!(!is_browsable_name("doc.odt"));
         assert!(!is_browsable_name("zip"));

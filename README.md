@@ -92,6 +92,10 @@ library understands (disk images, packages, …). *Extract Here*, *Extract To…
 *Compress…* are in the context menu. Encrypted archives ask for their password. Formats the
 library can only read are shown read-only.
 
+**ISO images** open like folders too (Rock Ridge and Joliet names), for browsing and copying
+out. They are read-only on purpose: changing them would drop Rock Ridge metadata and the boot
+records of bootable images.
+
 **Settings** live in `~/.config/failbrauwser/settings.ini` and are changed from the menus;
 *Edit → Keep Running in Background* and *Edit → Smooth Writes to Slow Drives* switch off the
 daemon and the write pacing.
