@@ -97,3 +97,28 @@ with zipfile.ZipFile("{w}/test.zip", "w", zipfile.ZIP_DEFLATED) as z:
         assert!(ok.success());
     });
 }
+
+#[test]
+fn iso_images() {
+    let have_xorriso = Command::new("sh").arg("-c").arg("command -v xorriso").output().is_ok_and(|o| o.status.success());
+    if !have_xorriso || !failbrauwser::archive::client::locate_helper().is_file() {
+        eprintln!("xorriso or archive helper missing, skipping");
+        return;
+    }
+    run("iso.fbt", |t| {
+        let w = t.join("w");
+        std::fs::create_dir_all(w.join("src/docs")).unwrap();
+        std::fs::create_dir_all(w.join("out")).unwrap();
+        std::fs::write(w.join("src/readme.txt"), "hello").unwrap();
+        std::fs::write(w.join("src/docs/a.txt"), "inside the disc").unwrap();
+        std::fs::write(w.join("new.txt"), "added").unwrap();
+        let ok = Command::new("xorriso")
+            .args(["-as", "mkisofs", "-R", "-J", "-V", "DISC", "-o"])
+            .arg(w.join("disc.iso"))
+            .arg(w.join("src"))
+            .output()
+            .unwrap();
+        assert!(ok.status.success());
+        std::fs::remove_dir_all(w.join("src")).unwrap();
+    });
+}

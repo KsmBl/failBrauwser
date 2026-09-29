@@ -9,7 +9,7 @@
 //! `size <w> <h>`, `expect-tree-root <path>`, `wait-tree-selected <path>`, `tree-click <path>`, `tree-expand <path>`, `wait-tree-expanded <path>`,
 //! `wait-cell <column> <row> = <text>`, `wait-drive <title>`,
 //! `wait-row <name>`, `wait-no-row <name>`, `activate` (open the selection),
-//! `wait-opened`, `edit-opened <new content>`, `quit`. Blank lines and `#` comments are ignored.
+//! `wait-opened`, `edit-opened <new content>`, `expect-disabled <win.action>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
 use super::window::Window;
@@ -173,6 +173,12 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err("action is disabled".into());
             }
             group.activate_action(short, variant.as_ref());
+        }
+        "expect-disabled" => {
+            let short = arg.strip_prefix("win.").ok_or("only win.* actions")?;
+            if w.win.is_action_enabled(short) {
+                return Err("action is enabled".into());
+            }
         }
         "answer" => {
             let a = match arg {

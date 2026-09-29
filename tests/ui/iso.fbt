@@ -1,0 +1,21 @@
+# ISO images open like folders.
+open $T/w
+select disc.iso
+activate
+expect-location $T/w/disc.iso
+expect-rows 2
+select docs
+activate
+expect-rows 1
+select a.txt
+action win.copy
+open $T/w/out
+action win.paste
+wait-exists $T/w/out/a.txt
+# Images are read-only: editing would lose boot records and Rock Ridge data.
+open $T/w/disc.iso
+expect-disabled win.paste
+expect-disabled win.new-folder
+select readme.txt
+expect-disabled win.delete
+expect-disabled win.rename
