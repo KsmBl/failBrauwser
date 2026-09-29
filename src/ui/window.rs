@@ -43,7 +43,11 @@ fn tool_button(icon: &str, label: &str, tooltip: &str, action: &str) -> gtk::Too
     let b = gtk::ToolButton::new(None::<&gtk::Widget>, Some(label));
     // In the "both horizontal" style only important items show their label.
     b.set_is_important(true);
-    b.set_icon_name(Some(icon));
+    // Symbolic first: drawn in the label's color, so icon and text read alike.
+    let symbolic = format!("{icon}-symbolic");
+    let image = themed(&[symbolic.as_str(), icon]);
+    image.show();
+    b.set_icon_widget(Some(&image));
     gtk::prelude::WidgetExt::set_tooltip_text(&b, Some(tooltip));
     b.set_action_name(Some(action));
     b

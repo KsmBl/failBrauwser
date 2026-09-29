@@ -71,6 +71,9 @@ fn fail(line: usize, msg: &str) -> ! {
 pub fn start(app: &Rc<AppCtx>, window: &Rc<Window>) {
     let Some(path) = script_path() else { return };
     ACTIVE.with(|a| a.set(true));
+    if !super::style::loaded() {
+        fail(0, "stylesheet did not load");
+    }
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         eprintln!("SELFTEST FAIL: cannot read {path}: {e}");
         std::process::exit(2);
