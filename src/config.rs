@@ -36,6 +36,11 @@ pub enum ViewMode {
     Icons,
 }
 
+/// Icon sizes (pixels) the list can be zoomed through.
+pub const LIST_ZOOM: &[i32] = &[16, 24, 32, 48, 64];
+/// Icon sizes (pixels) the icon view can be zoomed through.
+pub const ICON_ZOOM: &[i32] = &[32, 48, 64, 96, 128, 192, 256];
+
 /// Columns of the detailed list, in display order. `Name` is always shown.
 pub const COLUMN_IDS: &[&str] = &["name", "size", "dirsize", "type", "modified", "permissions", "owner", "group"];
 
@@ -57,6 +62,9 @@ pub struct Settings {
     pub sidebar_width: i32,
     /// Position of the divider between shortcuts and folder tree.
     pub sidebar_split: i32,
+    /// Index into [`LIST_ZOOM`] / [`ICON_ZOOM`].
+    pub zoom_list: usize,
+    pub zoom_icons: usize,
     /// Throttle writes to removable and rotational drives so the page cache never fills up.
     pub smooth_writes: bool,
 }
@@ -77,6 +85,8 @@ impl Default for Settings {
             window_height: 650,
             sidebar_width: 220,
             sidebar_split: 260,
+            zoom_list: 1,
+            zoom_icons: 1,
             smooth_writes: true,
         }
     }
@@ -116,6 +126,12 @@ impl Settings {
         i("window_height", &mut s.window_height, 200);
         i("sidebar_width", &mut s.sidebar_width, 0);
         i("sidebar_split", &mut s.sidebar_split, 0);
+        if let Ok(v) = kf.integer(GROUP, "zoom_list") {
+            s.zoom_list = (v.max(0) as usize).min(LIST_ZOOM.len() - 1);
+        }
+        if let Ok(v) = kf.integer(GROUP, "zoom_icons") {
+            s.zoom_icons = (v.max(0) as usize).min(ICON_ZOOM.len() - 1);
+        }
         if let Ok(v) = kf.string(GROUP, "view_mode") {
             s.view_mode = if v == "icons" { ViewMode::Icons } else { ViewMode::List };
         }
@@ -165,6 +181,8 @@ impl Settings {
         kf.set_integer(GROUP, "window_height", self.window_height);
         kf.set_integer(GROUP, "sidebar_width", self.sidebar_width);
         kf.set_integer(GROUP, "sidebar_split", self.sidebar_split);
+        kf.set_integer(GROUP, "zoom_list", self.zoom_list as i32);
+        kf.set_integer(GROUP, "zoom_icons", self.zoom_icons as i32);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -173,6 +191,34 @@ impl Settings {
 
     pub fn save(&self) -> std::io::Result<()> {
         self.save_to(&Self::default_path())
+    }
+
+    /// Icon size of the current view mode in pixels.
+    pub fn icon_size(&self) -> i32 {
+        match self.view_mode {
+            ViewMode::List => LIST_ZOOM[self.zoom_list],
+            ViewMode::Icons => ICON_ZOOM[self.zoom_icons],
+        }
+    }
+
+    /// Zooms the current view by `step` levels; false when already at the end.
+    pub fn zoom(&mut self, step: i32) -> bool {
+        let (idx, len) = match self.view_mode {
+            ViewMode::List => (&mut self.zoom_list, LIST_ZOOM.len()),
+            ViewMode::Icons => (&mut self.zoom_icons, ICON_ZOOM.len()),
+        };
+        let new = (*idx as i32 + step).clamp(0, len as i32 - 1) as usize;
+        let changed = new != *idx;
+        *idx = new;
+        changed
+    }
+
+    /// Back to the default size of the current view.
+    pub fn zoom_reset(&mut self) {
+        match self.view_mode {
+            ViewMode::List => self.zoom_list = 1,
+            ViewMode::Icons => self.zoom_icons = 1,
+        }
     }
 
     pub fn column_visible(&self, id: &str) -> bool {
@@ -210,6 +256,7 @@ mod tests {
         s.set_column_visible("dirsize", true);
         s.set_column_visible("type", false);
         s.window_width = 1234;
+        s.zoom_icons = 4;
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);
     }
@@ -224,6 +271,27 @@ mod tests {
         assert_eq!(s.columns, vec!["name", "size"]);
         assert_eq!(s.tree_root, TreeRoot::Home);
         assert_eq!(s.window_width, 300);
+    }
+
+    #[test]
+    fn zoom_steps_stay_in_range() {
+        let mut s = Settings::default();
+        assert_eq!(s.icon_size(), 24);
+        assert!(s.zoom(1));
+        assert_eq!(s.icon_size(), 32);
+        assert!(!s.zoom(100) || s.icon_size() == 64);
+        assert_eq!(s.icon_size(), 64);
+        s.view_mode = ViewMode::Icons;
+        assert_eq!(s.icon_size(), 48);
+        s.zoom(-10);
+        assert_eq!(s.icon_size(), 32);
+        s.zoom_reset();
+        assert_eq!(s.icon_size(), 48);
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("z.ini");
+        std::fs::write(&bad, "[General]\nzoom_list=99\nzoom_icons=-3\n").unwrap();
+        let l = Settings::load_from(&bad);
+        assert_eq!((l.zoom_list, l.zoom_icons), (LIST_ZOOM.len() - 1, 0));
     }
 
     #[test]

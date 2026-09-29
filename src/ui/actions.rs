@@ -23,6 +23,9 @@ pub const ACCELS: &[(&str, &[&str])] = &[
     ("win.show-hidden", &["<Control>h"]),
     ("win.view-mode::list", &["<Control>1"]),
     ("win.view-mode::icons", &["<Control>2"]),
+    ("win.zoom-in", &["<Control>plus", "<Control>equal", "<Control>KP_Add"]),
+    ("win.zoom-out", &["<Control>minus", "<Control>KP_Subtract"]),
+    ("win.zoom-normal", &["<Control>0", "<Control>KP_0"]),
     ("win.show-sidebar", &["F9"]),
     ("win.select-all", &["<Control>a"]),
     ("win.next-tab", &["<Control>Page_Down"]),
@@ -180,6 +183,11 @@ pub fn menubar_model() -> gio::Menu {
     section(&view, |s| {
         s.append(Some("as _Detailed List"), Some("win.view-mode::list"));
         s.append(Some("as _Icons"), Some("win.view-mode::icons"));
+    });
+    section(&view, |s| {
+        item(s, "Zoom _In", "win.zoom-in");
+        item(s, "Zoom _Out", "win.zoom-out");
+        item(s, "_Normal Size", "win.zoom-normal");
     });
     section(&view, |s| {
         s.append_submenu(Some("_Columns"), &columns_menu());

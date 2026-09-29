@@ -194,6 +194,15 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("trash bar button {arg:?} is not shown or not clickable"));
             }
         }
+        "expect-icon-size" => {
+            // expect-icon-size <list|icons> <pixels>
+            let (view, px) = arg.split_once(' ').ok_or("usage: expect-icon-size <list|icons> <px>")?;
+            let p = w.current_pane();
+            let got = if view == "list" { p.list_icon_size() } else { p.grid_icon_size() };
+            if got.to_string() != px {
+                return Err(format!("{view} icons are {got} px"));
+            }
+        }
         "crumb-click" => {
             if !w.pathbar.click(arg) {
                 return Err(format!("no button {arg:?}, have {:?}", w.pathbar.labels()));

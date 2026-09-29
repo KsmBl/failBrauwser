@@ -23,6 +23,8 @@ pub enum PaneEvent {
     ContextMenu(Option<gdk::EventButton>),
     HeaderMenu(gdk::EventButton),
     OpenInNewTab(Location),
+    /// Ctrl+scroll: zoom in (positive) or out.
+    Zoom(i32),
     /// Files were activated that the pane does not open itself.
     OpenFiles(Vec<Item>),
     /// The archive shown is encrypted; ask for the password, then reload.
@@ -68,6 +70,11 @@ pub struct Pane {
     /// While > 0 the model is being changed in bulk: events are held back.
     quiet: Cell<u32>,
     selection_dirty: Cell<bool>,
+    /// Icon sizes in pixels for the list and the icon view (zoom).
+    list_px: Rc<Cell<i32>>,
+    grid_px: Rc<Cell<i32>>,
+    grid_pix: gtk::CellRendererPixbuf,
+    grid_text: gtk::CellRendererText,
 }
 
 impl Pane {
@@ -91,10 +98,11 @@ impl Pane {
         icons.set_item_width(112);
         icons.set_column_spacing(4);
         icons.set_row_spacing(4);
+        let list_px = Rc::new(Cell::new(0));
+        let grid_px = Rc::new(Cell::new(0));
         let pix = gtk::CellRendererPixbuf::new();
-        pix.set_stock_size(gtk::IconSize::Dialog);
         icons.pack_start(&pix, false);
-        icons.add_attribute(&pix, "gicon", model::COL_ICON as i32);
+        super::icons::bind(&icons, &pix, grid_px.clone());
         let txt = gtk::CellRendererText::new();
         gtk::prelude::CellRendererExt::set_alignment(&txt, 0.5, 0.0);
         txt.set_wrap_mode(gtk::pango::WrapMode::WordChar);
@@ -155,8 +163,13 @@ impl Pane {
             applying_sort: Cell::new(false),
             quiet: Cell::new(0),
             selection_dirty: Cell::new(false),
+            list_px,
+            grid_px,
+            grid_pix: pix,
+            grid_text: txt,
         });
         *pane.weak.borrow_mut() = Rc::downgrade(&pane);
+        pane.apply_zoom_sizes();
         pane.build_columns();
         pane.apply_view_mode();
         pane.apply_sort();
@@ -698,6 +711,37 @@ impl Pane {
         }
     }
 
+    fn apply_zoom_sizes(&self) {
+        let (list, grid) = {
+            let s = self.settings.borrow();
+            (failbrauwser::config::LIST_ZOOM[s.zoom_list], failbrauwser::config::ICON_ZOOM[s.zoom_icons])
+        };
+        self.list_px.set(list);
+        self.grid_px.set(grid);
+        self.grid_pix.set_fixed_size(grid + 8, grid + 8);
+        // Room for the name under the icon grows with the icon.
+        let item = (grid + 40).max(112);
+        self.icons.set_item_width(item);
+        self.grid_text.set_wrap_width(item - 4);
+    }
+
+    /// Redraws both views at the zoom levels from the settings.
+    pub fn apply_zoom(&self) {
+        self.apply_zoom_sizes();
+        // Row heights are cached per column: new columns measure again.
+        self.build_columns();
+        self.icons.queue_resize();
+    }
+
+    /// Current icon size of the list, in pixels (tests).
+    pub fn list_icon_size(&self) -> i32 {
+        self.list_px.get()
+    }
+
+    pub fn grid_icon_size(&self) -> i32 {
+        self.grid_px.get()
+    }
+
     pub fn apply_folders_first(&self) {
         self.folders_first.set(self.settings.borrow().folders_first);
         // Re-sorting needs the sort id to change; flip through unsorted and back.
@@ -737,10 +781,10 @@ impl Pane {
                     col.set_expand(true);
                     col.set_min_width(200);
                     let pix = gtk::CellRendererPixbuf::new();
-                    pix.set_stock_size(gtk::IconSize::LargeToolbar);
-                    pix.set_padding(2, 1);
+                    let px = self.list_px.get();
+                    pix.set_fixed_size(px + 4, px + 2);
                     TreeViewColumnExt::pack_start(&col, &pix, false);
-                    TreeViewColumnExt::add_attribute(&col, &pix, "gicon", model::COL_ICON as i32);
+                    super::icons::bind(&col, &pix, self.list_px.clone());
                     text.set_ellipsize(gtk::pango::EllipsizeMode::End);
                     TreeViewColumnExt::pack_start(&col, &text, true);
                     TreeViewColumnExt::add_attribute(&col, &text, "text", model::COL_NAME as i32);
@@ -867,6 +911,30 @@ impl Pane {
                 icons.set_cursor(path, None::<&gtk::CellRenderer>, false);
             })
         });
+        // Ctrl + mouse wheel zooms.
+        for w in [self.tree.upcast_ref::<gtk::Widget>(), self.icons.upcast_ref()] {
+            let weak = self.weak.borrow().clone();
+            w.add_events(gdk::EventMask::SCROLL_MASK | gdk::EventMask::SMOOTH_SCROLL_MASK);
+            w.connect_scroll_event(move |_, ev| {
+                if !ev.state().contains(gdk::ModifierType::CONTROL_MASK) {
+                    return glib::Propagation::Proceed;
+                }
+                let Some(p) = weak.upgrade() else { return glib::Propagation::Proceed };
+                let step = match ev.direction() {
+                    gdk::ScrollDirection::Up => 1,
+                    gdk::ScrollDirection::Down => -1,
+                    gdk::ScrollDirection::Smooth => {
+                        let (_, dy) = ev.delta();
+                        if dy < 0.0 { 1 } else if dy > 0.0 { -1 } else { 0 }
+                    }
+                    _ => 0,
+                };
+                if step != 0 {
+                    p.emit(PaneEvent::Zoom(step));
+                }
+                glib::Propagation::Stop
+            });
+        }
         for w in [self.tree.upcast_ref::<gtk::Widget>(), self.icons.upcast_ref()] {
             let weak = self.weak.borrow().clone();
             w.connect_key_press_event(move |_, ev| {

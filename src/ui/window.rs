@@ -233,6 +233,7 @@ impl Window {
                     w.add_tab(loc.clone(), false);
                 }
                 PaneEvent::OpenFiles(items) => w.open_items(items),
+                PaneEvent::Zoom(step) => w.zoom(*step),
                 PaneEvent::PasswordNeeded(loc) => super::extensions::ask_archive_password(&w, &p, loc),
             }
             if matches!(ev, PaneEvent::Contents) {
@@ -393,6 +394,9 @@ impl Window {
         self.add_action("up", |w| w.current_pane().go_up());
         self.add_action("home", |w| w.navigate(Location::home()));
         self.add_action("drives", |w| w.navigate(Location::Drives));
+        self.add_action("zoom-in", |w| w.zoom(1));
+        self.add_action("zoom-out", |w| w.zoom(-1));
+        self.add_action("zoom-normal", |w| w.zoom(0));
         self.add_action("reload", |w| w.current_pane().reload());
         self.add_action("location", |w| {
             w.pathbar.edit();
@@ -524,6 +528,24 @@ impl Window {
                 });
             }));
         }
+    }
+
+    /// Zooms the current view mode by `step` levels (0 = normal size), in every window.
+    pub fn zoom(&self, step: i32) {
+        {
+            let mut s = self.app.settings.borrow_mut();
+            if step == 0 {
+                s.zoom_reset();
+            } else if !s.zoom(step) {
+                return;
+            }
+        }
+        self.app.save_settings_soon();
+        self.app.for_each_window(|w| {
+            for p in w.panes() {
+                p.apply_zoom();
+            }
+        });
     }
 
     /// Mirrors a global setting into this window's action without re-triggering it.

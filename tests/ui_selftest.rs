@@ -141,3 +141,11 @@ fn trash() {
         }
     });
 }
+
+#[test]
+fn zoom() {
+    run("zoom.fbt", |t| {
+        std::fs::create_dir_all(t.join("d/sub")).unwrap();
+        std::fs::write(t.join("d/file.txt"), "x").unwrap();
+    });
+}
