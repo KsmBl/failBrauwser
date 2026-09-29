@@ -132,6 +132,11 @@ impl ArchiveTree {
             .sum()
     }
 
+    /// Some entry is encrypted.
+    pub fn any_encrypted(&self) -> bool {
+        self.nodes.values().any(|n| n.encrypted)
+    }
+
     pub fn len(&self) -> usize {
         self.nodes.len()
     }

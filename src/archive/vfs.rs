@@ -40,7 +40,8 @@ struct State {
     listings: HashMap<PathBuf, (Stamp, Arc<Archive>)>,
     /// Nested archive → (its extracted copy, the container's stamp when extracted).
     nested: HashMap<NestedKey, (PathBuf, Stamp)>,
-    passwords: HashMap<PathBuf, String>,
+    /// Per archive (nested ones have their own), for this session only.
+    passwords: HashMap<NestedKey, String>,
 }
 
 pub struct Vfs {
@@ -78,19 +79,27 @@ impl Vfs {
         Ok(dir.keep())
     }
 
-    pub fn set_password(&self, file: &Path, password: &str) {
-        self.state.lock().unwrap().passwords.insert(file.to_path_buf(), password.to_string());
+    /// Remembers the password of the innermost archive of `loc` (until the program ends).
+    pub fn set_password(&self, loc: &ArchiveLoc, password: &str) {
+        self.state.lock().unwrap().passwords.insert(loc.archive_key(), password.to_string());
     }
 
-    fn password(&self, file: &Path) -> Option<String> {
-        self.state.lock().unwrap().passwords.get(file).cloned()
+    pub fn has_password(&self, loc: &ArchiveLoc) -> bool {
+        self.state.lock().unwrap().passwords.contains_key(&loc.archive_key())
+    }
+
+    /// The password of the innermost archive of `loc`: its own, else that of the file on disk.
+    fn password_for(&self, loc: &ArchiveLoc) -> Option<String> {
+        let st = self.state.lock().unwrap();
+        st.passwords.get(&loc.archive_key()).or_else(|| st.passwords.get(&(loc.file.clone(), Vec::new()))).cloned()
     }
 
     /// The file on disk holding the innermost archive of `loc` (extracting nested ones).
     pub fn backing(&self, loc: &ArchiveLoc) -> Result<PathBuf> {
-        let pw = self.password(&loc.file);
         let mut path = loc.file.clone();
         for depth in 1..=loc.nested.len() {
+            let container = ArchiveLoc { file: loc.file.clone(), nested: loc.nested[..depth - 1].to_vec(), inner: String::new() };
+            let pw = self.password_for(&container);
             let key: NestedKey = (loc.file.clone(), loc.nested[..depth].to_vec());
             let parent_stamp = stamp(&path)?;
             let known = self.state.lock().unwrap().nested.get(&key).cloned();
@@ -124,7 +133,7 @@ impl Vfs {
                 return Ok(a.clone());
             }
         }
-        let listing = self.helper.list(&backing, self.password(&loc.file).as_deref())?;
+        let listing = self.helper.list(&backing, self.password_for(loc).as_deref())?;
         let archive = Arc::new(Archive { tree: ArchiveTree::build(&listing.entries), format: listing.format, writable: listing.writable });
         self.state.lock().unwrap().listings.insert(backing, (st, archive.clone()));
         Ok(archive)
@@ -144,12 +153,12 @@ impl Vfs {
 
     /// After the innermost archive changed, puts it back into its containers, innermost first.
     fn write_back(&self, loc: &ArchiveLoc) -> Result<()> {
-        let pw = self.password(&loc.file);
         for depth in (1..=loc.nested.len()).rev() {
             let child_key: NestedKey = (loc.file.clone(), loc.nested[..depth].to_vec());
             let child = self.state.lock().unwrap().nested.get(&child_key).map(|x| x.0.clone()).ok_or_else(|| ArchiveError::new("error", "nested archive vanished"))?;
             let parent_loc = ArchiveLoc { file: loc.file.clone(), nested: loc.nested[..depth - 1].to_vec(), inner: String::new() };
             let parent = self.backing(&parent_loc)?;
+            let pw = self.password_for(&parent_loc);
             self.helper.add(&parent, &[(child, loc.nested[depth - 1].clone())], pw.as_deref())?;
             // Our copy is what the container now holds: no need to extract it again.
             let new_stamp = stamp(&parent)?;
@@ -166,7 +175,7 @@ impl Vfs {
         if !a.writable {
             return Err(ArchiveError::new("unsupported", format!("{} archives cannot be changed.", a.format)));
         }
-        f(&self.helper, &backing, self.password(&loc.file).as_deref())?;
+        f(&self.helper, &backing, self.password_for(loc).as_deref())?;
         self.write_back(loc)
     }
 
@@ -192,7 +201,7 @@ impl Vfs {
     /// Returns where each requested entry ended up.
     pub fn extract(&self, loc: &ArchiveLoc, entries: &[String], dest: &Path) -> Result<Vec<PathBuf>> {
         let backing = self.backing(loc)?;
-        self.helper.extract(&backing, Some(entries), dest, self.password(&loc.file).as_deref())?;
+        self.helper.extract(&backing, Some(entries), dest, self.password_for(loc).as_deref())?;
         Ok(entries.iter().map(|e| dest.join(e)).collect())
     }
 
@@ -204,10 +213,11 @@ impl Vfs {
         let name = loc.nested.last().map(|n| n.rsplit('/').next().unwrap_or(n).to_string()).unwrap_or_else(|| loc.file.file_name().unwrap_or_default().to_string_lossy().into_owned());
         let stem = strip_archive_extension(&name);
         let backing = self.backing(loc)?;
-        let pw = self.password(&loc.file);
-        let target = if tops.len() == 1 && tops[0].is_dir && !dest_dir.join(&tops[0].name).exists() {
-            self.helper.extract(&backing, None, dest_dir, pw.as_deref())?;
-            dest_dir.join(&tops[0].name)
+        let pw = self.password_for(loc);
+        // Everything goes into a folder that did not exist before; a failed extraction (a
+        // wrong password, say) removes it again, so a retry does not land in "name (2)".
+        let (target, extract_into) = if tops.len() == 1 && tops[0].is_dir && !dest_dir.join(&tops[0].name).exists() {
+            (dest_dir.join(&tops[0].name), dest_dir.to_path_buf())
         } else {
             let folder = if dest_dir.join(&stem).exists() {
                 dest_dir.join(crate::ops::names::free_name(dest_dir, stem.as_ref(), None))
@@ -215,9 +225,12 @@ impl Vfs {
                 dest_dir.join(&stem)
             };
             std::fs::create_dir_all(&folder).map_err(io_err)?;
-            self.helper.extract(&backing, None, &folder, pw.as_deref())?;
-            folder
+            (folder.clone(), folder)
         };
+        if let Err(e) = self.helper.extract(&backing, None, &extract_into, pw.as_deref()) {
+            let _ = std::fs::remove_dir_all(&target);
+            return Err(e);
+        }
         Ok(target)
     }
 
