@@ -31,6 +31,11 @@ is fetched at build time.
 - `0f702049` (feat) inputs carry source timestamp and mode; helper to restore entry times on extract
 - `9350e56f` (fix) rebuild-based add and remove no longer match entries by leaf name or drop empty folders
 - `7ad59278` (fix) shared rebuild staging: exact entry names, folders removed with their contents
+- (feat) `ArchiveInputInfo.ReadObserver` reports bytes read, for progress bars
+- (fix) ISO reader prefers Rock Ridge names and reads PX, TF, NM continuations and CE areas
+- (feat) ISO writer: Rock Ridge, folders, file metadata, unique ISO 9660 identifiers
+- (feat) `IsoBoot`: read El Torito entries, detect hybrid images; the writer writes boot
+  catalogs with BIOS and UEFI entries and patches the isolinux boot info table
 
 Later changes are in failBrauwser's git history (`git log -- vendor/compressionworkbench`);
 their tests are in `helper/FbArchive.Tests`. They are candidates for upstream pull requests.
