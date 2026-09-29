@@ -130,3 +130,14 @@ fn path_bar() {
         std::fs::create_dir_all(t.join("x")).unwrap();
     });
 }
+
+#[test]
+fn trash() {
+    run("trash.fbt", |t| {
+        let w = t.join("w");
+        std::fs::create_dir_all(&w).unwrap();
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(w.join(n), n).unwrap();
+        }
+    });
+}

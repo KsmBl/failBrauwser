@@ -1,0 +1,44 @@
+# Trash compatible with other file managers: files/ + info/*.trashinfo in the XDG data dir.
+open $T/w
+select a.txt
+action win.trash
+wait-missing $T/w/a.txt
+wait-exists $T/data/Trash/files/a.txt
+wait-exists $T/data/Trash/info/a.txt.trashinfo
+open trash:///
+expect-crumbs Trash
+wait-row a.txt
+select a.txt
+action win.restore
+wait-exists $T/w/a.txt
+wait-no-row a.txt
+# Restoring onto a name that is taken again: keep both.
+open $T/w
+select a.txt
+action win.trash
+wait-missing $T/w/a.txt
+write-file $T/w/a.txt = newer
+open trash:///
+wait-row a.txt
+select a.txt
+answer keepboth
+action win.restore
+wait-exists $T/w/a (2).txt
+# Delete permanently, then empty the trash.
+open $T/w
+select b.txt
+action win.trash
+wait-missing $T/w/b.txt
+select c.txt
+action win.trash
+wait-missing $T/w/c.txt
+open trash:///
+wait-row b.txt
+select b.txt
+action win.delete
+wait-missing $T/data/Trash/files/b.txt
+wait-missing $T/data/Trash/info/b.txt.trashinfo
+action win.empty-trash
+wait-missing $T/data/Trash/files/c.txt
+wait-no-row c.txt
+expect-rows 0

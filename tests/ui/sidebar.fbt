@@ -20,3 +20,12 @@ open $T/a
 wait-tree-selected $T/a
 tree-expand $T/a/other
 wait-tree-expanded $T/a/other
+# The tree follows changes: new and removed folders appear and disappear.
+open $T/a
+wait-tree-children $T/a = b, other
+text zeta
+action win.new-folder
+wait-tree-children $T/a = b, other, zeta
+select zeta
+action win.delete
+wait-tree-children $T/a = b, other
