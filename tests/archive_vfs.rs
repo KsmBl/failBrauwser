@@ -116,3 +116,19 @@ fn read_only_formats_refuse_edits() {
     let err = v.mkdir(&loc, "nope").unwrap_err();
     assert_eq!(err.code, "unsupported");
 }
+
+#[test]
+fn failed_extraction_leaves_nothing_behind() {
+    let d = tempfile::tempdir().unwrap();
+    let Some(v) = vfs(&d.path().join("cache")) else { return };
+    fs::write(d.path().join("f.txt"), "x").unwrap();
+    let zip = d.path().join("locked.zip");
+    v.helper().add(&zip, &[(d.path().join("f.txt"), "f.txt".into())], Some("pw")).unwrap();
+    let dest = d.path().join("dest");
+    fs::create_dir(&dest).unwrap();
+    let loc = ArchiveLoc::root(zip);
+    assert!(v.extract_all(&loc, &dest).unwrap_err().needs_password());
+    assert_eq!(fs::read_dir(&dest).unwrap().count(), 0);
+    v.set_password(&loc, "pw");
+    assert_eq!(v.extract_all(&loc, &dest).unwrap(), dest.join("locked"));
+}

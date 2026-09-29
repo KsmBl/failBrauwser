@@ -264,3 +264,17 @@ fn queued_paused_and_verified_copies() {
         }
     });
 }
+
+#[test]
+fn encrypted_archives() {
+    if !failbrauwser::archive::client::locate_helper().is_file() {
+        return;
+    }
+    run_checked("passwords.fbt", &[], |t| {
+        std::fs::create_dir_all(t.join("w")).unwrap();
+        std::fs::write(t.join("w/doc.txt"), "top secret").unwrap();
+        std::fs::write(t.join("w/plan.txt"), "the plan").unwrap();
+    }, |t| {
+        assert_eq!(std::fs::read_to_string(t.join("w/locked/plan.txt")).unwrap(), "the plan");
+    });
+}

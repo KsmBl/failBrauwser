@@ -142,3 +142,30 @@ fn long_operations_report_progress() {
         assert!(p.phase == "adding" || p.phase == "writing", "{p:?}");
     }
 }
+
+#[test]
+fn encrypted_archives_stay_encrypted_when_edited() {
+    let Some(h) = helper() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+    fs::write(&a, "secret a").unwrap();
+    fs::write(&b, "secret b").unwrap();
+    let zip = dir.path().join("e.zip");
+    h.add(&zip, &[(a.clone(), "a.txt".into())], Some("pw")).unwrap();
+    // Adding with the password must not add a plain entry.
+    h.add(&zip, &[(b.clone(), "sub/b.txt".into())], Some("pw")).unwrap();
+    let l = h.list(&zip, None).unwrap();
+    assert!(l.entries.iter().filter(|e| !e.is_dir).all(|e| e.encrypted), "{:?}", l.entries);
+    assert_eq!(l.entries.iter().filter(|e| !e.is_dir).count(), 2);
+    h.remove(&zip, &["a.txt".into()], Some("pw")).unwrap();
+    assert!(h.list(&zip, None).unwrap().entries.iter().filter(|e| !e.is_dir).all(|e| e.encrypted));
+    // Wrong or missing passwords are reported as such.
+    let out = dir.path().join("out");
+    assert!(h.extract(&zip, None, &out, None).unwrap_err().needs_password());
+    assert!(h.extract(&zip, None, &out, Some("nope")).unwrap_err().needs_password());
+    h.extract(&zip, None, &out, Some("pw")).unwrap();
+    assert_eq!(fs::read_to_string(out.join("sub/b.txt")).unwrap(), "secret b");
+    let sz = dir.path().join("e.7z");
+    h.add(&sz, &[(a, "a.txt".into())], Some("pw")).unwrap();
+    assert!(h.extract(&sz, None, &dir.path().join("o7"), None).unwrap_err().needs_password());
+}

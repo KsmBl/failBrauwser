@@ -263,6 +263,10 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             }
         }
         "wait-no-jobs" => wait(r, |r| Ok(!r.app.jobs.is_busy())),
+        "show-compress" => {
+            // Opens the real dialog (no scripted reply queued), for screenshots.
+            super::archive::compress(&w);
+        }
         "crumb-click" => {
             if !w.pathbar.click(arg) {
                 return Err(format!("no button {arg:?}, have {:?}", w.pathbar.labels()));
