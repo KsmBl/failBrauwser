@@ -2,7 +2,7 @@
 //! location. Clicking right of the last button (or Ctrl+L) switches to the text field;
 //! Enter, Escape or clicking elsewhere switches back to the buttons.
 //!
-//! Going up keeps the deeper buttons, so the way back down is one click too.
+//! The path always starts at `/`; the step you are in is shown pressed.
 
 use failbrauwser::location::Location;
 use gtk::prelude::*;
@@ -15,9 +15,9 @@ pub struct PathBar {
     pub entry: gtk::Entry,
     crumbs: gtk::Box,
     scroller: gtk::ScrolledWindow,
-    /// Current location, and the deepest location of the current path shown.
     current: RefCell<Option<Location>>,
-    tail: RefCell<Option<Location>>,
+    /// Set while the buttons are rebuilt, so toggling the current one does not navigate.
+    rebuilding: std::cell::Cell<bool>,
     navigate: RefCell<Option<Box<dyn Fn(Location)>>>,
     weak: RefCell<Weak<PathBar>>,
 }
@@ -30,48 +30,30 @@ pub struct Crumb {
     pub location: Location,
 }
 
-/// The steps from the top (the file system, or home for paths below it) down to `loc`.
+/// The steps from `/` down to `loc`.
 pub fn crumbs_for(loc: &Location) -> Vec<Crumb> {
     if *loc == Location::Drives {
         return vec![Crumb { label: "Drives".into(), icon: Some("drive-harddisk-symbolic"), location: Location::Drives }];
     }
-    let home = Location::home();
     let mut chain = vec![loc.clone()];
     let mut cur = loc.clone();
-    while cur != home {
-        match cur.parent() {
-            Some(p) => {
-                chain.push(p.clone());
-                cur = p;
-            }
-            None => break,
-        }
+    while let Some(p) = cur.parent() {
+        chain.push(p.clone());
+        cur = p;
     }
     chain.reverse();
     chain
         .into_iter()
         .map(|l| {
             let (label, icon) = match &l {
-                Location::Dir(p) if *p == glib::home_dir() => ("Home".to_string(), Some("user-home-symbolic")),
-                Location::Dir(p) if p.parent().is_none() => (String::new(), Some("drive-harddisk-symbolic")),
+                Location::Dir(p) if *p == glib::home_dir() => (l.title(), Some("user-home-symbolic")),
+                Location::Dir(p) if p.parent().is_none() => ("/".to_string(), None),
                 Location::Archive(a) if a.inner.is_empty() => (l.title(), Some("package-x-generic-symbolic")),
                 _ => (l.title(), None),
             };
             Crumb { label, icon, location: l }
         })
         .collect()
-}
-
-/// True when `a` is `b` or lies below it.
-fn is_at_or_below(a: &Location, b: &Location) -> bool {
-    let mut cur = Some(a.clone());
-    while let Some(c) = cur {
-        if &c == b {
-            return true;
-        }
-        cur = c.parent();
-    }
-    false
 }
 
 impl PathBar {
@@ -91,10 +73,20 @@ impl PathBar {
         // The empty space after the last button opens the text field.
         let filler = gtk::EventBox::new();
         filler.set_hexpand(true);
+        // Always some room to click, even when a long path fills the bar.
+        filler.set_size_request(40, -1);
         filler.set_tooltip_text(Some("Click to type a location"));
+        // Where typing starts shows the text cursor.
+        filler.connect_realize(|f| {
+            if let Some(win) = f.window() {
+                win.set_cursor(gtk::gdk::Cursor::from_name(&f.display(), "text").as_ref());
+            }
+        });
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         row.pack_start(&scroller, false, true, 0);
         row.pack_start(&filler, true, true, 0);
+        // Framed like a text field: buttons inside, room to click after them.
+        row.style_context().add_class("fb-pathbar");
 
         let root = gtk::Stack::new();
         root.set_hexpand(true);
@@ -109,7 +101,7 @@ impl PathBar {
             crumbs,
             scroller,
             current: RefCell::new(None),
-            tail: RefCell::new(None),
+            rebuilding: std::cell::Cell::new(false),
             navigate: RefCell::new(None),
             weak: RefCell::new(Weak::new()),
         });
@@ -131,11 +123,10 @@ impl PathBar {
             }
             glib::Propagation::Proceed
         });
-        // Keep the end of a long path in view when the bar is resized.
-        let sc = bar.scroller.clone();
-        bar.crumbs.connect_size_allocate(move |_, _| {
-            let adj = sc.hadjustment();
-            adj.set_value(adj.upper());
+        // The last step always stays in view: whenever the path or the room for it
+        // changes, scroll to the end.
+        bar.scroller.hadjustment().connect_changed(|adj| {
+            adj.set_value(adj.upper() - adj.page_size());
         });
         bar
     }
@@ -167,14 +158,23 @@ impl PathBar {
         self.crumbs
             .children()
             .iter()
-            .filter_map(|c| c.downcast_ref::<gtk::Button>().map(|b| b.widget_name().to_string()))
+            .filter(|c| c.is::<gtk::Button>())
+            .map(|c| c.widget_name().to_string())
             .collect()
+    }
+
+    /// The last button is fully inside the visible part of the bar (tests).
+    pub fn last_visible(&self) -> bool {
+        let Some(last) = self.crumbs.children().last().cloned() else { return false };
+        let adj = self.scroller.hadjustment();
+        let a = last.allocation();
+        a.x() as f64 >= adj.value() - 0.5 && (a.x() + a.width()) as f64 <= adj.value() + adj.page_size() + 0.5
     }
 
     /// Clicks the button with this label (tests).
     pub fn click(&self, label: &str) -> bool {
         for c in self.crumbs.children() {
-            if let Some(b) = c.downcast_ref::<gtk::Button>() {
+            if let Some(b) = c.downcast_ref::<gtk::ToggleButton>() {
                 if b.widget_name() == label {
                     b.clicked();
                     return true;
@@ -190,24 +190,21 @@ impl PathBar {
             self.show_crumbs();
         }
         *self.current.borrow_mut() = Some(loc.clone());
-        // Keep the deeper steps while moving up or down along the same path.
-        let keep = self.tail.borrow().as_ref().is_some_and(|t| is_at_or_below(t, loc));
-        if !keep {
-            *self.tail.borrow_mut() = Some(loc.clone());
-        }
-        let tail = self.tail.borrow().clone().unwrap_or_else(|| loc.clone());
-        self.rebuild(&crumbs_for(&tail), loc);
+        self.rebuild(&crumbs_for(loc), loc);
     }
 
     fn rebuild(&self, crumbs: &[Crumb], current: &Location) {
+        self.rebuilding.set(true);
         for c in self.crumbs.children() {
             self.crumbs.remove(&c);
         }
         for crumb in crumbs {
-            let b = gtk::Button::new();
+            // The step you are in is shown pressed.
+            let b = gtk::ToggleButton::new();
+            b.set_active(crumb.location == *current);
             b.set_focus_on_click(false);
-            // Names identify buttons in tests; the root button has only an icon.
-            b.set_widget_name(if crumb.label.is_empty() { "/" } else { &crumb.label });
+            // Names identify buttons in tests.
+            b.set_widget_name(&crumb.label);
             let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
             if let Some(icon) = crumb.icon {
                 content.pack_start(&gtk::Image::from_gicon(&gio::ThemedIcon::new(icon), gtk::IconSize::Menu), false, false, 0);
@@ -221,7 +218,11 @@ impl PathBar {
                 } else {
                     label.set_text(&crumb.label);
                 }
+                // Full names up to 24 characters: a long path scrolls instead of squeezing
+                // every step into "th…er".
+                let chars = crumb.label.chars().count().min(24) as i32;
                 label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+                label.set_width_chars(chars);
                 label.set_max_width_chars(24);
                 content.pack_start(&label, false, false, 0);
             }
@@ -229,16 +230,26 @@ impl PathBar {
             b.set_tooltip_text(Some(&crumb.location.display()));
             let target = crumb.location.clone();
             let weak = self.weak.borrow().clone();
-            b.connect_clicked(move |_| {
-                if let Some(bar) = weak.upgrade() {
-                    if let Some(f) = bar.navigate.borrow().as_ref() {
-                        f(target.clone());
-                    }
+            b.connect_toggled(move |b| {
+                let Some(bar) = weak.upgrade() else { return };
+                if bar.rebuilding.get() {
+                    return;
+                }
+                if bar.current.borrow().as_ref() == Some(&target) {
+                    // Clicking the current step keeps it pressed.
+                    bar.rebuilding.set(true);
+                    b.set_active(true);
+                    bar.rebuilding.set(false);
+                    return;
+                }
+                if let Some(f) = bar.navigate.borrow().as_ref() {
+                    f(target.clone());
                 }
             });
             self.crumbs.pack_start(&b, false, false, 0);
         }
         self.crumbs.show_all();
+        self.rebuilding.set(false);
     }
 }
 
@@ -249,19 +260,21 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn paths_below_home_start_at_home() {
+    fn paths_start_at_the_root_even_below_home() {
         let loc = Location::Dir(glib::home_dir().join("Music/Albums"));
         let c = crumbs_for(&loc);
-        let labels: Vec<_> = c.iter().map(|c| c.label.as_str()).collect();
-        assert_eq!(labels, vec!["Home", "Music", "Albums"]);
-        assert_eq!(c[0].location, Location::home());
+        assert_eq!(c[0].label, "/");
+        assert_eq!(c[0].location, Location::Dir(PathBuf::from("/")));
+        let home = c.iter().find(|x| x.location == Location::home()).unwrap();
+        assert_eq!(home.icon, Some("user-home-symbolic"));
+        assert_eq!(c.last().unwrap().label, "Albums");
     }
 
     #[test]
     fn other_paths_start_at_the_root() {
         let c = crumbs_for(&Location::Dir(PathBuf::from("/usr/share")));
         assert_eq!(c.len(), 3);
-        assert_eq!(c[0].icon, Some("drive-harddisk-symbolic"));
+        assert_eq!(c[0].label, "/");
         assert_eq!(c[2].label, "share");
     }
 
@@ -270,15 +283,8 @@ mod tests {
         let a = ArchiveLoc::root(PathBuf::from("/data/x.zip")).enter_nested("in/y.tar").with_inner("docs");
         let c = crumbs_for(&Location::Archive(a));
         let labels: Vec<_> = c.iter().map(|c| c.label.as_str()).collect();
-        assert_eq!(labels, vec!["", "data", "x.zip", "in", "y.tar", "docs"]);
+        assert_eq!(labels, vec!["/", "data", "x.zip", "in", "y.tar", "docs"]);
         assert_eq!(c[2].icon, Some("package-x-generic-symbolic"));
         assert_eq!(crumbs_for(&Location::Drives)[0].label, "Drives");
-    }
-
-    #[test]
-    fn ancestry() {
-        let deep = Location::Dir(PathBuf::from("/a/b/c"));
-        assert!(is_at_or_below(&deep, &Location::Dir(PathBuf::from("/a"))));
-        assert!(!is_at_or_below(&Location::Dir(PathBuf::from("/a")), &deep));
     }
 }
