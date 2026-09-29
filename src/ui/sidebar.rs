@@ -47,7 +47,7 @@ pub fn for_window(w: &Window) -> Option<Rc<Sidebar>> {
 pub fn attach(w: &Rc<Window>) {
     let places = gtk::PlacesSidebar::new();
     places.set_show_recent(false);
-    places.set_show_trash(false);
+    places.set_show_trash(true);
     places.set_show_other_locations(false);
     places.set_show_starred_location(false);
     places.set_show_enter_location(false);
@@ -159,6 +159,39 @@ impl Sidebar {
             false
         });
         found
+    }
+
+    /// Re-reads the subfolders of `dir` if the tree already shows them (after changes).
+    pub fn refresh_dir(&self, dir: &Path) {
+        let Some(p) = self.tree_path_of(dir) else { return };
+        let Some(iter) = self.store.iter(&p) else { return };
+        let loaded: bool = self.store.value(&iter, T_LOADED as i32).get().unwrap_or(false);
+        let has_children = self.store.iter_children(Some(&iter)).is_some();
+        if !loaded || !has_children && !self.tree.row_expanded(&p) {
+            // Never read, or known to be empty and closed: read when opened.
+            if !has_children {
+                self.add_placeholder(&iter);
+                self.store.set_value(&iter, T_LOADED, &false.to_value());
+            }
+            return;
+        }
+        self.store.set_value(&iter, T_LOADED, &false.to_value());
+        self.load_children(&iter, None);
+    }
+
+    /// The subfolder names the tree shows below `dir` (tests).
+    pub fn children_of(&self, dir: &Path) -> Vec<String> {
+        let Some(iter) = self.tree_path_of(dir).and_then(|p| self.store.iter(&p)) else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut child = self.store.iter_children(Some(&iter));
+        while let Some(c) = child {
+            let path: String = self.store.value(&c, T_PATH as i32).get().unwrap_or_default();
+            if !path.is_empty() {
+                out.push(self.store.value(&c, T_NAME as i32).get().unwrap_or_default());
+            }
+            child = if self.store.iter_next(&c) { Some(c) } else { None };
+        }
+        out
     }
 
     /// Expands a folder once, like a click on its triangle (it must be shown).
@@ -301,9 +334,10 @@ impl Sidebar {
         let Some(w) = self.window.upgrade() else { return };
         let loc = w.current_location();
         let dir = loc.nearest_dir();
-        match loc.local_path() {
-            Some(p) => self.places.set_location(Some(&gio::File::for_path(p))),
-            None => self.places.set_location(None::<&gio::File>),
+        match (&loc, loc.local_path()) {
+            (Location::Trash, _) => self.places.set_location(Some(&gio::File::for_uri(failbrauwser::location::TRASH_URI))),
+            (_, Some(p)) => self.places.set_location(Some(&gio::File::for_path(p))),
+            _ => self.places.set_location(None::<&gio::File>),
         }
         if loc == Location::Drives {
             if let Some(r) = self.drives.row_at_index(0) {
