@@ -1,0 +1,14 @@
+# Clicking where there is nothing deselects, in both views, and ends path editing.
+open $T/d
+select a.txt | b.txt
+click-empty
+expect-nothing-selected
+action win.view-mode icons
+select a.txt
+click-empty
+expect-nothing-selected
+action win.view-mode list
+path-edit
+expect-path-mode text
+click-empty
+expect-path-mode buttons
