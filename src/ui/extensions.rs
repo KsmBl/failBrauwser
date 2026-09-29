@@ -39,14 +39,21 @@ pub fn open_uri(w: &Window, uri: &str) {
 pub fn pane_created(w: &Window, p: &Rc<Pane>) {
     dnd::setup(w, p);
     super::drives::attach(w, p);
+    super::trash::attach(p);
 }
 
 pub fn pane_location_changed(_w: &Window, p: &Rc<Pane>) {
     super::drives::location_changed(p);
+    super::trash::update_bar(p);
 }
 
 pub fn pane_contents_changed(w: &Window, p: &Rc<Pane>) {
     super::dirsize::update(w, p);
+    super::trash::update_bar(p);
+    // "Empty Trash" and friends depend on what is there now.
+    if Rc::ptr_eq(p, &w.current_pane()) {
+        fileops::update_sensitivity(w);
+    }
     // Folders created or removed here must show up in the tree too.
     if let (Some(sb), Some(dir)) = (super::sidebar::for_window(w), p.location().local_path()) {
         sb.refresh_dir(dir);
