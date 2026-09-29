@@ -132,6 +132,11 @@ impl Summary {
         self.label.set_tooltip_text(None);
         match pane.location() {
             Location::Drives => self.label.set_text(""),
+            Location::Search(_) => {
+                let n = files + dirs;
+                let state = if pane.is_searching() { " · searching…" } else { "" };
+                self.label.set_text(&format!("{} found{state}", plural(n, "item", "items")));
+            }
             Location::Archive(a) => {
                 let total = failbrauwser::archive::vfs::Vfs::global().cached(&a).map(|x| x.tree.total_size(&a.inner));
                 match total {
