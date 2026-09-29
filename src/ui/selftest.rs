@@ -156,6 +156,7 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
         }
         "select" => {
             let names: Vec<OsString> = arg.split(" | ").map(OsString::from).collect();
+            let names = w.current_pane().keys_for_names(&names);
             w.current_pane().select_names(&names);
             let got = w.current_pane().selected_items().len();
             if got != names.len() {
@@ -219,6 +220,21 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             // The status bar summary contains this text.
             let want = arg.to_string();
             wait(r, move |r| Ok(super::summary::text(&r.window).contains(&want)));
+        }
+        "find" => {
+            super::searchbar::open(&w);
+            super::searchbar::type_text(&w, arg);
+            wait(r, |r| Ok(idle(r) && !r.window.current_pane().is_searching()));
+        }
+        "find-options" => {
+            // find-options <deep on|off> <archives on|off>
+            let mut it = arg.split_whitespace().map(|x| x == "on");
+            super::searchbar::set_options(&w, it.next(), it.next());
+            wait(r, |r| Ok(idle(r) && !r.window.current_pane().is_searching()));
+        }
+        "find-close" => {
+            super::searchbar::close(&w);
+            wait(r, |r| Ok(idle(r)));
         }
         "crumb-click" => {
             if !w.pathbar.click(arg) {
