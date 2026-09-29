@@ -1,0 +1,12 @@
+# The status bar always shows what the folder holds and its size with subfolders.
+open $T/s
+wait-summary 2 files, 2 folders
+wait-summary 3.5 kB with subfolders
+select a.bin
+wait-summary 3.5 kB with subfolders
+# Changes in the folder are measured again (F5 re-measures deeper changes).
+write-file $T/s/more.bin = 0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789
+wait-summary 3 files, 2 folders · 3.7 kB with subfolders
+# In sub1: just the link (0 bytes: its big target is not counted).
+open $T/s/sub1
+wait-summary 1 file, 0 folders · 0 bytes with subfolders
