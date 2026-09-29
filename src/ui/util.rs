@@ -22,6 +22,7 @@ pub fn clear_caches() {
     LINK_ICONS.with(|c| c.borrow_mut().clear());
     DESCRIPTIONS.with(|c| c.borrow_mut().clear());
     super::icons::clear_cache();
+    super::thumbnails::clear_cache();
 }
 
 fn special_dir_icon(path: &Path) -> Option<&'static str> {

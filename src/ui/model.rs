@@ -28,6 +28,8 @@ pub const COL_DIRSIZE: u32 = 13;
 pub const COL_DIRSIZE_TEXT: u32 = 14;
 /// False renders the row dimmed (hidden files, items cut to the clipboard).
 pub const COL_SENSITIVE: u32 = 15;
+/// Thumbnail image, if one was found (drawn instead of the icon).
+pub const COL_THUMB: u32 = 16;
 
 pub fn new_store() -> gtk::ListStore {
     gtk::ListStore::new(&[
@@ -47,6 +49,7 @@ pub fn new_store() -> gtk::ListStore {
         glib::Type::I64,
         glib::Type::STRING,
         glib::Type::BOOL,
+        gtk::gdk_pixbuf::Pixbuf::static_type(),
     ])
 }
 
@@ -178,6 +181,8 @@ pub fn fill_row(store: &gtk::ListStore, iter: &gtk::TreeIter, key: u64, item: &I
             (COL_DIRSIZE, &dirsize),
             (COL_DIRSIZE_TEXT, &dirsize_text),
             (COL_SENSITIVE, &!item.is_hidden()),
+            // A changed file needs a new thumbnail.
+            (COL_THUMB, &None::<gtk::gdk_pixbuf::Pixbuf>),
         ],
     );
 }
