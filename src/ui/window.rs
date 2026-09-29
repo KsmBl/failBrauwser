@@ -35,11 +35,14 @@ pub struct Window {
 /// icons come first where the theme's full-color ones may vanish on a dark toolbar:
 /// GTK paints symbolic icons in the theme's text color.
 fn themed(names: &[&str]) -> gtk::Image {
-    gtk::Image::from_gicon(&gio::ThemedIcon::from_names(names), gtk::IconSize::LargeToolbar)
+    gtk::Image::from_gicon(&gio::ThemedIcon::from_names(names), gtk::IconSize::SmallToolbar)
 }
 
-fn tool_button(icon: &str, tooltip: &str, action: &str) -> gtk::ToolButton {
-    let b = gtk::ToolButton::new(None::<&gtk::Widget>, None);
+/// A tool button with a small icon and its label next to it.
+fn tool_button(icon: &str, label: &str, tooltip: &str, action: &str) -> gtk::ToolButton {
+    let b = gtk::ToolButton::new(None::<&gtk::Widget>, Some(label));
+    // In the "both horizontal" style only important items show their label.
+    b.set_is_important(true);
     b.set_icon_name(Some(icon));
     gtk::prelude::WidgetExt::set_tooltip_text(&b, Some(tooltip));
     b.set_action_name(Some(action));
@@ -60,11 +63,13 @@ impl Window {
 
         let toolbar = gtk::Toolbar::new();
         toolbar.style_context().add_class("primary-toolbar");
-        let back_btn = tool_button("go-previous", "Back", "win.back");
-        let fwd_btn = tool_button("go-next", "Forward", "win.forward");
-        let up_btn = tool_button("go-up", "Open the parent folder", "win.up");
-        let home_btn = tool_button("go-home", "Home", "win.home");
-        let drives_btn = tool_button("drive-harddisk", "Drives", "win.drives");
+        toolbar.set_style(gtk::ToolbarStyle::BothHoriz);
+        toolbar.set_icon_size(gtk::IconSize::SmallToolbar);
+        let back_btn = tool_button("go-previous", "Back", "Back", "win.back");
+        let fwd_btn = tool_button("go-next", "Forward", "Forward", "win.forward");
+        let up_btn = tool_button("go-up", "Up", "Open the parent folder", "win.up");
+        let home_btn = tool_button("go-home", "Home", "Home folder", "win.home");
+        let drives_btn = tool_button("drive-harddisk", "Drives", "All drives", "win.drives");
         for b in [&back_btn, &fwd_btn, &up_btn, &home_btn, &drives_btn] {
             toolbar.insert(b, -1);
         }
@@ -77,14 +82,18 @@ impl Window {
         entry_item.set_margin_end(4);
         entry_item.add(&location_entry);
         toolbar.insert(&entry_item, -1);
-        let reload_btn = tool_button("view-refresh", "Reload", "win.reload");
+        let reload_btn = tool_button("view-refresh", "Reload", "Reload", "win.reload");
         toolbar.insert(&reload_btn, -1);
         let list_btn = gtk::ToggleToolButton::new();
+        list_btn.set_label(Some("List"));
+        list_btn.set_is_important(true);
         list_btn.set_icon_widget(Some(&themed(&["view-list-symbolic", "view-list", "view-list-details"])));
         gtk::prelude::WidgetExt::set_tooltip_text(&list_btn, Some("View as detailed list"));
         list_btn.set_action_name(Some("win.view-mode"));
         list_btn.set_action_target_value(Some(&"list".to_variant()));
         let icons_btn = gtk::ToggleToolButton::new();
+        icons_btn.set_label(Some("Icons"));
+        icons_btn.set_is_important(true);
         icons_btn.set_icon_widget(Some(&themed(&["view-grid-symbolic", "view-app-grid-symbolic", "view-grid", "view-list-icons"])));
         gtk::prelude::WidgetExt::set_tooltip_text(&icons_btn, Some("View as icons"));
         icons_btn.set_action_name(Some("win.view-mode"));
