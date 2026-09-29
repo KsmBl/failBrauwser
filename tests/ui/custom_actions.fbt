@@ -1,0 +1,14 @@
+# Custom actions from Thunar's uca.xml and our actions.xml.
+open $T/w
+select sub
+expect-custom-actions Open Terminal Here | Thunar Folder Action
+select pic.png
+expect-custom-actions Image Action
+action win.custom-action Image Action
+wait-exists $T/w/pic.png.done
+select sub
+action win.custom-action Thunar Folder Action
+wait-exists $T/w/sub/marker
+# Nothing selected: the actions work on the folder shown.
+click-empty
+expect-custom-actions Open Terminal Here | Thunar Folder Action
