@@ -126,7 +126,7 @@ fn iso_images() {
 #[test]
 fn path_bar() {
     run("pathbar.fbt", |t| {
-        std::fs::create_dir_all(t.join("a/b/c")).unwrap();
+        std::fs::create_dir_all(t.join("a/b/c/a-rather-long-folder-name/another-long-folder-name/and-the-last-one")).unwrap();
         std::fs::create_dir_all(t.join("x")).unwrap();
     });
 }

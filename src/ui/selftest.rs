@@ -195,6 +195,15 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             }
             wait(r, |r| Ok(idle(r)));
         }
+        "expect-last-crumb" => {
+            let got = w.pathbar.labels();
+            if got.last().map(String::as_str) != Some(arg) {
+                return Err(format!("buttons are {got:?}"));
+            }
+            if !w.pathbar.last_visible() {
+                return Err("the last button is scrolled out of view".into());
+            }
+        }
         "expect-crumbs" => {
             // Labels separated by " > ".
             let want: Vec<String> = arg.split(" > ").map(str::to_string).collect();
