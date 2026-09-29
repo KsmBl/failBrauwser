@@ -41,6 +41,27 @@ impl std::error::Error for ArchiveError {}
 
 pub type Result<T> = std::result::Result<T, ArchiveError>;
 
+thread_local! {
+    static SINK: std::cell::RefCell<Option<Box<dyn FnMut(&Progress)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with every helper request on this thread reporting its progress to `sink`.
+pub fn with_progress<T>(sink: impl FnMut(&Progress) + 'static, f: impl FnOnce() -> T) -> T {
+    SINK.with(|s| *s.borrow_mut() = Some(Box::new(sink)));
+    let r = f();
+    SINK.with(|s| *s.borrow_mut() = None);
+    r
+}
+
+/// How far the helper is with the current request.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Progress {
+    pub done: u64,
+    pub total: u64,
+    /// "extracting", "adding", "writing", "removing"
+    pub phase: String,
+}
+
 struct Proc {
     child: Child,
     stdin: ChildStdin,
@@ -99,7 +120,16 @@ impl Helper {
 
     /// Sends one request and waits for its answer. `req` must be a JSON object;
     /// the `id` field is filled in here.
-    pub fn request(&self, mut req: Value) -> Result<Value> {
+    pub fn request(&self, req: Value) -> Result<Value> {
+        // A job on this thread may be listening (see `with_progress`).
+        SINK.with(|s| match s.borrow_mut().as_mut() {
+            Some(sink) => self.request_with_progress(req, sink.as_mut()),
+            None => self.request_with_progress(req, &mut |_| {}),
+        })
+    }
+
+    /// Like [`Helper::request`], reporting the helper's progress lines on the way.
+    pub fn request_with_progress(&self, mut req: Value, progress: &mut dyn FnMut(&Progress)) -> Result<Value> {
         let (lock, cv) = &*self.shared;
         let mut st = lock.lock().unwrap();
         if st.proc.is_none() {
@@ -114,7 +144,7 @@ impl Helper {
             proc.next_id += 1;
             let id = proc.next_id;
             req["id"] = json!(id);
-            Self::roundtrip(proc, &req, id)
+            Self::roundtrip(proc, &req, id, progress)
         };
         if let Err(e) = &result {
             if e.code == "helper" {
@@ -127,18 +157,30 @@ impl Helper {
         result
     }
 
-    fn roundtrip(proc: &mut Proc, req: &Value, id: u64) -> Result<Value> {
+    fn roundtrip(proc: &mut Proc, req: &Value, id: u64, progress: &mut dyn FnMut(&Progress)) -> Result<Value> {
         let broken = |e: std::io::Error| ArchiveError::new("helper", format!("archive helper failed: {e}"));
         let mut line = serde_json::to_string(req).map_err(|e| ArchiveError::new("protocol", e.to_string()))?;
         line.push('\n');
         proc.stdin.write_all(line.as_bytes()).map_err(broken)?;
         proc.stdin.flush().map_err(broken)?;
-        let mut answer = String::new();
-        let n = proc.stdout.read_line(&mut answer).map_err(broken)?;
-        if n == 0 {
-            return Err(ArchiveError::new("helper", "archive helper exited unexpectedly"));
-        }
-        let v: Value = serde_json::from_str(&answer).map_err(|e| ArchiveError::new("helper", format!("bad answer from archive helper: {e}")))?;
+        let v: Value = loop {
+            let mut answer = String::new();
+            let n = proc.stdout.read_line(&mut answer).map_err(broken)?;
+            if n == 0 {
+                return Err(ArchiveError::new("helper", "archive helper exited unexpectedly"));
+            }
+            let v: Value = serde_json::from_str(&answer).map_err(|e| ArchiveError::new("helper", format!("bad answer from archive helper: {e}")))?;
+            // Progress lines come before the answer.
+            if let Some(p) = v.get("progress") {
+                progress(&Progress {
+                    done: p["done"].as_u64().unwrap_or(0),
+                    total: p["total"].as_u64().unwrap_or(0),
+                    phase: p["phase"].as_str().unwrap_or_default().to_string(),
+                });
+                continue;
+            }
+            break v;
+        };
         if v["id"].as_u64() != Some(id) {
             return Err(ArchiveError::new("helper", "archive helper answered out of order"));
         }
