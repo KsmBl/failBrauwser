@@ -1,0 +1,21 @@
+# Zoom: list and icon view keep their own size; Ctrl+0 resets; settings survive.
+open $T/d
+expect-icon-size list 24
+action win.zoom-in
+expect-icon-size list 32
+action win.zoom-in
+action win.zoom-in
+action win.zoom-in
+expect-icon-size list 64
+action win.view-mode icons
+expect-icon-size icons 48
+action win.zoom-in
+action win.zoom-in
+expect-icon-size icons 96
+expect-icon-size list 64
+action win.zoom-normal
+expect-icon-size icons 48
+action win.view-mode list
+action win.zoom-out
+action win.zoom-out
+expect-icon-size list 32
