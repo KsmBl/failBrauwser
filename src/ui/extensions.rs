@@ -20,6 +20,7 @@ pub fn window_created(w: &Rc<Window>) {
     w.add_action("open-as-archive", archive::open_as_archive);
     w.add_action("properties", super::properties::show);
     w.add_action("find", super::searchbar::open);
+    super::customactions::install_actions(w);
     super::trash::install_actions(w);
     super::sidebar::attach(w);
 }
@@ -145,7 +146,7 @@ fn section(menu: &gio::Menu, items: &[(&str, &str)]) {
 }
 
 /// The right-click menu for the current selection (or the folder background).
-pub fn context_menu_model(_w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::Menu {
+pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::Menu {
     let menu = gio::Menu::new();
     if pane.location() == Location::Trash {
         if items.is_empty() {
@@ -163,6 +164,11 @@ pub fn context_menu_model(_w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::
         section(&menu, &[("Create _Folder…", "win.new-folder"), ("Create _Document…", "win.new-file")]);
         section(&menu, &[("_Paste", "win.paste")]);
         section(&menu, &[("Select _All", "win.select-all"), ("Show _Hidden Files", "win.show-hidden"), ("_Reload", "win.reload")]);
+        if local {
+            if let Some(s) = super::customactions::menu_section(w) {
+                menu.append_section(None, &s);
+            }
+        }
         section(&menu, &[("_Properties…", "win.properties")]);
         return menu;
     }
@@ -199,6 +205,11 @@ pub fn context_menu_model(_w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::
         arch.push(("C_ompress…", "win.compress"));
     }
     section(&menu, &arch);
+    if local || matches!(pane.location(), Location::Search(_)) {
+        if let Some(s) = super::customactions::menu_section(w) {
+            menu.append_section(None, &s);
+        }
+    }
     section(&menu, &[("_Properties…", "win.properties")]);
     menu
 }
