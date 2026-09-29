@@ -9,7 +9,7 @@ use failbrauwser::drives::{self, Usage, Volume};
 use failbrauwser::fs::format::human_size;
 use failbrauwser::location::Location;
 use gtk::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -93,10 +93,14 @@ pub fn attach(w: &Window, pane: &Rc<Pane>) {
     });
     let weak = Rc::downgrade(&page);
     page.list.connect_button_press_event(move |list, ev| {
+        let Some(p) = weak.upgrade() else { return glib::Propagation::Proceed };
+        // A plain click below the drives clears the selection, like in a folder.
+        if ev.button() == 1 && ev.event_type() == gdk::EventType::ButtonPress && p.press_left(ev.position().1 as i32) {
+            return glib::Propagation::Stop;
+        }
         if ev.button() != 3 {
             return glib::Propagation::Proceed;
         }
-        let Some(p) = weak.upgrade() else { return glib::Propagation::Proceed };
         if let Some(row) = list.row_at_y(ev.position().1 as i32) {
             list.select_row(Some(&row));
             p.context_menu(row.index() as usize, ev);
@@ -153,7 +157,46 @@ pub fn shown_volumes(pane: &Rc<Pane>) -> Vec<Volume> {
     page_for(pane).map(|p| p.volumes.borrow().clone()).unwrap_or_default()
 }
 
+/// Clicks below the last drive of this pane's page (tests); false without a page.
+pub fn click_empty(pane: &Rc<Pane>) -> bool {
+    let Some(page) = page_for(pane) else { return false };
+    let bottom = page.list.children().last().map(|r| r.allocation().y() + r.allocation().height()).unwrap_or(0);
+    page.press_left(bottom + 5)
+}
+
+/// Selects the drive with this title (tests).
+pub fn select(pane: &Rc<Pane>, title: &str) -> bool {
+    let Some(page) = page_for(pane) else { return false };
+    let Some(i) = page.volumes.borrow().iter().position(|v| v.title() == title) else { return false };
+    page.list.select_row(page.list.row_at_index(i as i32).as_ref());
+    true
+}
+
+/// The title of the selected drive, if one is (tests).
+pub fn selected(pane: &Rc<Pane>) -> Option<String> {
+    let page = page_for(pane)?;
+    let i = page.list.selected_row()?.index() as usize;
+    page.volumes.borrow().get(i).map(Volume::title)
+}
+
 impl DrivesPage {
+    /// A left click at `y` in the list; true when it hit no drive and was handled.
+    fn press_left(&self, y: i32) -> bool {
+        if self.list.row_at_y(y).is_some() {
+            return false;
+        }
+        self.clicked_empty();
+        true
+    }
+
+    fn clicked_empty(&self) {
+        self.list.unselect_all();
+        self.list.grab_focus();
+        if let Some(pane) = self.pane.upgrade() {
+            pane.emit(super::pane::PaneEvent::ClickedEmpty);
+        }
+    }
+
     fn me(&self) -> Rc<DrivesPage> {
         self.weak.borrow().upgrade().expect("page alive")
     }
