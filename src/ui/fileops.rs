@@ -61,6 +61,14 @@ pub fn update_sensitivity(w: &Window) {
     super::trash::update_sensitivity(w, |name, on| set_enabled(w, name, on));
     set_enabled(w, "new-folder", writable && browsable);
     set_enabled(w, "new-file", writable && browsable);
+    if matches!(loc, Location::Search(_)) {
+        // Results on disk can be handled like files anywhere; nothing is created here.
+        let on_disk = n > 0 && pane.selected_items().iter().all(|i| matches!(i, Item::Found(..)));
+        set_enabled(w, "cut", on_disk);
+        set_enabled(w, "trash", on_disk);
+        set_enabled(w, "delete", on_disk);
+        set_enabled(w, "rename", on_disk && n == 1);
+    }
 }
 
 /// The selection as clipboard sources.
@@ -69,7 +77,8 @@ pub fn selection_sources(pane: &Pane) -> Vec<ClipSource> {
     pane.selected_items()
         .iter()
         .filter_map(|i| match (i, &loc) {
-            (Item::Fs(e), _) => Some(ClipSource::Local(e.path.clone())),
+            (Item::Fs(e) | Item::Found(e, _), _) => Some(ClipSource::Local(e.path.clone())),
+            (Item::FoundInArchive(a, n, _), _) => Some(ClipSource::Archive(a.clone(), n.path.clone())),
             (Item::Archive(n), Location::Archive(a)) => Some(ClipSource::Archive(a.clone(), n.path.clone())),
             _ => None,
         })
@@ -153,9 +162,21 @@ fn selected_local(pane: &Pane) -> Vec<PathBuf> {
     pane.selected_items().iter().filter_map(|i| i.path().cloned()).collect()
 }
 
+/// Search results are not watched: after removing some, search again.
+fn refresh_search_after(w: &Window) -> impl FnOnce(&Outcome) + 'static {
+    let pane = Rc::downgrade(&w.current_pane());
+    move |_| {
+        if let Some(p) = pane.upgrade() {
+            if matches!(p.location(), Location::Search(_)) {
+                p.reload();
+            }
+        }
+    }
+}
+
 fn trash_selection(w: &Window) {
     let pane = w.current_pane();
-    if !matches!(pane.location(), Location::Dir(_)) {
+    if !matches!(pane.location(), Location::Dir(_) | Location::Search(_)) {
         // Archives have no trash: deleting from them is permanent.
         delete_selection(w);
         return;
@@ -165,7 +186,8 @@ fn trash_selection(w: &Window) {
         return;
     }
     let title = format!("Moving {} to the trash", count_label(paths.len(), "item"));
-    w.app.jobs.start(w.win.upcast_ref(), title, move |ctx| delete::trash(ctx, &paths).map(|_| Vec::new()), |_| {});
+    let done = refresh_search_after(w);
+    w.app.jobs.start(w.win.upcast_ref(), title, move |ctx| delete::trash(ctx, &paths).map(|_| Vec::new()), done);
 }
 
 fn delete_selection(w: &Window) {
@@ -189,7 +211,8 @@ fn delete_selection(w: &Window) {
         }
         let paths = selected_local(&pane);
         let title = format!("Deleting {}", count_label(paths.len(), "item"));
-        w.app.jobs.start(w.win.upcast_ref(), title, move |ctx| delete::delete_permanently(ctx, &paths).map(|_| Vec::new()), |_| {});
+        let done = refresh_search_after(&w);
+        w.app.jobs.start(w.win.upcast_ref(), title, move |ctx| delete::delete_permanently(ctx, &paths).map(|_| Vec::new()), done);
     });
 }
 
@@ -211,7 +234,7 @@ fn rename_selection(w: &Window) {
         }
         let pane = w.current_pane();
         match &item {
-            Item::Fs(e) => {
+            Item::Fs(e) | Item::Found(e, _) => {
                 let target = e.path.with_file_name(&new);
                 match copy::rename_noreplace(&e.path, &target) {
                     Ok(()) => pane.select_when_present(vec![OsString::from(&new)]),
@@ -222,7 +245,7 @@ fn rename_selection(w: &Window) {
                 }
             }
             Item::Archive(_) => super::extensions::rename_non_local(&w, &pane, &item, &new),
-            Item::Trash(..) => {}
+            Item::Trash(..) | Item::FoundInArchive(..) => {}
         }
     });
 }

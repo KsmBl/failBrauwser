@@ -30,6 +30,8 @@ pub const COL_DIRSIZE_TEXT: u32 = 14;
 pub const COL_SENSITIVE: u32 = 15;
 /// Thumbnail image, if one was found (drawn instead of the icon).
 pub const COL_THUMB: u32 = 16;
+/// For search results: the folder a result is in.
+pub const COL_FOLDER: u32 = 17;
 
 pub fn new_store() -> gtk::ListStore {
     gtk::ListStore::new(&[
@@ -50,6 +52,7 @@ pub fn new_store() -> gtk::ListStore {
         glib::Type::STRING,
         glib::Type::BOOL,
         gtk::gdk_pixbuf::Pixbuf::static_type(),
+        glib::Type::STRING,
     ])
 }
 
@@ -60,6 +63,11 @@ pub enum Item {
     Archive(ArchiveNode),
     /// A trashed file: where it came from, and the file as it sits in the trash.
     Trash(failbrauwser::trash::TrashItem, FileEntry),
+    /// A search result on disk, with the folder it is in (relative to the search root).
+    Found(FileEntry, String),
+    /// A search result inside an archive: the archive folder holding it, the entry, and
+    /// where that is (for the Folder column).
+    FoundInArchive(failbrauwser::location::ArchiveLoc, ArchiveNode, String),
 }
 
 impl Item {
@@ -68,6 +76,8 @@ impl Item {
             Item::Fs(e) => e.display_name(),
             Item::Archive(n) => n.name.clone(),
             Item::Trash(t, _) => t.original_name(),
+            Item::Found(e, _) => e.display_name(),
+            Item::FoundInArchive(_, n, _) => n.name.clone(),
         }
     }
     pub fn os_name(&self) -> OsString {
@@ -76,40 +86,44 @@ impl Item {
             Item::Archive(n) => OsString::from(&n.name),
             // Unique within the trash, unlike original names.
             Item::Trash(t, _) => OsString::from(&t.name),
+            // Names repeat across folders: results are keyed by their full path.
+            Item::Found(e, _) => e.path.clone().into_os_string(),
+            Item::FoundInArchive(a, n, _) => OsString::from(format!("{}\0{}", failbrauwser::location::Location::Archive(a.clone()).display(), n.path)),
         }
     }
     pub fn is_dir_like(&self) -> bool {
         match self {
             Item::Fs(e) => e.is_dir_like(),
             Item::Archive(n) => n.is_dir,
-            Item::Trash(_, e) => e.is_dir_like(),
+            Item::Trash(_, e) | Item::Found(e, _) => e.is_dir_like(),
+            Item::FoundInArchive(_, n, _) => n.is_dir,
         }
     }
     pub fn is_hidden(&self) -> bool {
         match self {
             Item::Fs(e) => e.is_hidden(),
             Item::Archive(n) => n.name.starts_with('.'),
-            // Everything in the trash is shown.
-            Item::Trash(..) => false,
+            // Everything in the trash and every search result is shown.
+            Item::Trash(..) | Item::Found(..) | Item::FoundInArchive(..) => false,
         }
     }
     /// The file on disk (for trashed items: the file inside the trash).
     pub fn path(&self) -> Option<&PathBuf> {
         match self {
-            Item::Fs(e) | Item::Trash(_, e) => Some(&e.path),
-            Item::Archive(_) => None,
+            Item::Fs(e) | Item::Trash(_, e) | Item::Found(e, _) => Some(&e.path),
+            Item::Archive(_) | Item::FoundInArchive(..) => None,
         }
     }
     pub fn size(&self) -> u64 {
         match self {
-            Item::Fs(e) | Item::Trash(_, e) => e.size,
-            Item::Archive(n) => n.size,
+            Item::Fs(e) | Item::Trash(_, e) | Item::Found(e, _) => e.size,
+            Item::Archive(n) | Item::FoundInArchive(_, n, _) => n.size,
         }
     }
     pub fn content_type(&self) -> String {
         match self {
-            Item::Fs(e) | Item::Trash(_, e) => e.content_type.clone(),
-            Item::Archive(n) => {
+            Item::Fs(e) | Item::Trash(_, e) | Item::Found(e, _) => e.content_type.clone(),
+            Item::Archive(n) | Item::FoundInArchive(_, n, _) => {
                 if n.is_dir {
                     "inode/directory".into()
                 } else {
@@ -124,6 +138,8 @@ impl Item {
             (Item::Fs(a), Item::Fs(b)) => a == b,
             (Item::Archive(a), Item::Archive(b)) => a == b,
             (Item::Trash(a, x), Item::Trash(b, y)) => a == b && x == y,
+            (Item::Found(a, _), Item::Found(b, _)) => a == b,
+            (Item::FoundInArchive(_, a, _), Item::FoundInArchive(_, b, _)) => a == b,
             _ => false,
         }
     }
@@ -144,7 +160,7 @@ pub fn fill_row(store: &gtk::ListStore, iter: &gtk::TreeIter, key: u64, item: &I
             util::user_name(e.uid),
             util::group_name(e.gid),
         ),
-        Item::Fs(e) => (
+        Item::Fs(e) | Item::Found(e, _) => (
             util::icon_for_entry(e),
             e.size,
             e.mtime,
@@ -153,7 +169,7 @@ pub fn fill_row(store: &gtk::ListStore, iter: &gtk::TreeIter, key: u64, item: &I
             util::user_name(e.uid),
             util::group_name(e.gid),
         ),
-        Item::Archive(n) => {
+        Item::Archive(n) | Item::FoundInArchive(_, n, _) => {
             let ct = item.content_type();
             (util::icon_for_type(&ct), n.size, n.mtime.unwrap_or(0), ct, String::new(), String::new(), String::new())
         }
@@ -183,6 +199,10 @@ pub fn fill_row(store: &gtk::ListStore, iter: &gtk::TreeIter, key: u64, item: &I
             (COL_SENSITIVE, &!item.is_hidden()),
             // A changed file needs a new thumbnail.
             (COL_THUMB, &None::<gtk::gdk_pixbuf::Pixbuf>),
+            (COL_FOLDER, &match item {
+                Item::Found(_, f) | Item::FoundInArchive(_, _, f) => f.clone(),
+                _ => String::new(),
+            }),
         ],
     );
 }

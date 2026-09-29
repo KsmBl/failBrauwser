@@ -200,3 +200,21 @@ fn status_bar_summary() {
         std::os::unix::fs::symlink(t.join("huge"), s.join("sub1/link")).unwrap();
     });
 }
+
+#[test]
+fn search() {
+    run("search.fbt", |t| {
+        let w = t.join("w");
+        std::fs::create_dir_all(w.join("a/b")).unwrap();
+        std::fs::write(w.join("report-2024.txt"), "r").unwrap();
+        std::fs::write(w.join("a/b/REPORT old.txt"), "r").unwrap();
+        std::fs::write(w.join("a/report.md"), "r").unwrap();
+        std::fs::write(w.join("notes.txt"), "n").unwrap();
+        let ok = Command::new("python3")
+            .arg("-c")
+            .arg(format!("import zipfile\nz=zipfile.ZipFile('{}/stuff.zip','w')\nz.writestr('docs/inside-report.txt','x')\nz.close()", w.display()))
+            .status()
+            .unwrap();
+        assert!(ok.success());
+    });
+}

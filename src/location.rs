@@ -50,6 +50,15 @@ impl ArchiveLoc {
     }
 }
 
+/// Search results below a folder.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SearchLoc {
+    pub root: PathBuf,
+    pub query: String,
+    /// Look inside archives too.
+    pub archives: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Location {
     Dir(PathBuf),
@@ -57,6 +66,7 @@ pub enum Location {
     Drives,
     /// The trash (freedesktop.org spec; shared with other file managers).
     Trash,
+    Search(SearchLoc),
 }
 
 pub const DRIVES_URI: &str = "drives:///";
@@ -85,6 +95,7 @@ impl Location {
             }
             Location::Drives => DRIVES_URI.into(),
             Location::Trash => TRASH_URI.into(),
+            Location::Search(s) => format!("{} — search “{}”", s.root.display(), s.query),
         }
     }
 
@@ -106,6 +117,7 @@ impl Location {
             }
             Location::Drives => "Drives".into(),
             Location::Trash => "Trash".into(),
+            Location::Search(s) => format!("Search “{}”", s.query),
         }
     }
 
@@ -124,6 +136,7 @@ impl Location {
                 a.file.parent().map(|p| Location::Dir(p.to_path_buf()))
             }
             Location::Drives | Location::Trash => None,
+            Location::Search(s) => Some(Location::Dir(s.root.clone())),
         }
     }
 
@@ -132,7 +145,7 @@ impl Location {
         match self {
             Location::Dir(p) => Some(Location::Dir(p.join(name))),
             Location::Archive(a) => Some(Location::Archive(a.with_inner(&a.entry_path(name)))),
-            Location::Drives | Location::Trash => None,
+            Location::Drives | Location::Trash | Location::Search(_) => None,
         }
     }
 
@@ -148,6 +161,7 @@ impl Location {
         match self {
             Location::Dir(p) => Some(p.clone()),
             Location::Archive(a) => a.file.parent().map(Path::to_path_buf),
+            Location::Search(s) => Some(s.root.clone()),
             Location::Drives | Location::Trash => None,
         }
     }

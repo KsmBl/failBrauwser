@@ -19,6 +19,7 @@ pub fn window_created(w: &Rc<Window>) {
     w.add_action("compress", archive::compress);
     w.add_action("open-as-archive", archive::open_as_archive);
     w.add_action("properties", super::properties::show);
+    w.add_action("find", super::searchbar::open);
     super::trash::install_actions(w);
     super::sidebar::attach(w);
 }
@@ -40,11 +41,13 @@ pub fn pane_created(w: &Window, p: &Rc<Pane>) {
     dnd::setup(w, p);
     super::drives::attach(w, p);
     super::trash::attach(p);
+    super::searchbar::attach(p);
 }
 
 pub fn pane_location_changed(_w: &Window, p: &Rc<Pane>) {
     super::drives::location_changed(p);
     super::trash::update_bar(p);
+    super::searchbar::location_changed(p);
 }
 
 /// Other rows scrolled into view.
@@ -104,7 +107,7 @@ pub fn location_writable(loc: &Location) -> bool {
         // Known once the archive was listed (always the case while it is shown).
         Location::Archive(a) => failbrauwser::archive::vfs::Vfs::global().cached(a).is_some_and(|x| x.writable),
         // Nothing can be put into the trash view; items there are restored or deleted.
-        Location::Drives | Location::Trash => false,
+        Location::Drives | Location::Trash | Location::Search(_) => false,
     }
 }
 

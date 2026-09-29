@@ -52,7 +52,8 @@ pub fn show(w: &Window) {
         [one] => (one.display_name(), match one {
             Item::Fs(e) => util::icon_for_entry(e),
             Item::Archive(_) => util::icon_for_type(&one.content_type()),
-            Item::Trash(_, e) => util::icon_for_entry(e),
+            Item::Trash(_, e) | Item::Found(e, _) => util::icon_for_entry(e),
+            Item::FoundInArchive(..) => util::icon_for_type(&one.content_type()),
         }),
         many => (format!("{} items", many.len()), gio::ThemedIcon::new("edit-select-all").upcast()),
     };
@@ -78,7 +79,7 @@ pub fn show(w: &Window) {
     // Paths to measure (local only; archive sizes are known from the listing).
     let mut measure = Vec::new();
     match items.as_slice() {
-        [Item::Fs(e)] => {
+        [Item::Fs(e) | Item::Found(e, _)] => {
             add("Type:", &util::type_description(&e.content_type));
             if e.kind == failbrauwser::fs::Kind::Symlink {
                 let target = std::fs::read_link(&e.path).map(|t| t.display().to_string()).unwrap_or_default();
@@ -115,7 +116,7 @@ pub fn show(w: &Window) {
             }
             add("In the trash as:", &e.path.display().to_string());
         }
-        [Item::Archive(n)] => {
+        [Item::Archive(n) | Item::FoundInArchive(_, n, _)] => {
             add("Type:", &util::type_description(&items[0].content_type()));
             add("Location:", &where_);
             let size = if n.is_dir {

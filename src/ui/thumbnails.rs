@@ -325,7 +325,7 @@ fn wanted(w: &Window, pane: &Pane) -> Option<Flavor> {
                 return None;
             }
         }
-        Location::Trash => {}
+        Location::Trash | Location::Search(_) => {}
         _ => return None,
     }
     Some(Flavor::for_size(px))

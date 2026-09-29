@@ -1,0 +1,37 @@
+# Filter the folder, search below it, inside archives, and act on results.
+open $T/w
+find repo
+expect-rows 1
+find-close
+expect-rows 4
+# Recursive search: results from all levels, with where they are.
+find report
+find-options on off
+wait-row report-2024.txt
+wait-row REPORT old.txt
+expect-rows 3
+# Wildcards.
+find *.md
+expect-rows 1
+# Inside archives too.
+find inside
+find-options on on
+wait-row inside-report.txt
+# Opening an archive hit goes into the archive, with the entry selected.
+select inside-report.txt
+activate
+expect-location $T/w/stuff.zip/docs
+expect-selected inside-report.txt
+action win.back
+action win.back
+expect-location $T/w
+# Delete a result: the search runs again.
+find report
+find-options on off
+wait-row REPORT old.txt
+select REPORT old.txt
+action win.trash
+wait-missing $T/w/a/b/REPORT old.txt
+wait-no-row REPORT old.txt
+find-close
+expect-location $T/w

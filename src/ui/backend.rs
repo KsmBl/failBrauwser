@@ -36,7 +36,8 @@ pub fn read_location(loc: &Location) -> Result<Vec<Item>, LoadError> {
                 None => Err(format!("“{}” does not exist in this archive.", a.inner).into()),
             }
         }
-        Location::Drives => Ok(Vec::new()),
+        // Search results stream in while searching (see the pane).
+        Location::Drives | Location::Search(_) => Ok(Vec::new()),
         Location::Trash => Ok(failbrauwser::trash::list(&failbrauwser::trash::trash_dirs())
             .into_iter()
             .filter_map(|t| failbrauwser::fs::FileEntry::stat(&t.path).ok().map(|e| Item::Trash(t, e)))
@@ -56,7 +57,7 @@ pub fn watch_path(loc: &Location) -> Option<PathBuf> {
             let _ = std::fs::create_dir_all(&files);
             Some(files)
         }
-        Location::Drives => None,
+        Location::Drives | Location::Search(_) => None,
     }
 }
 
