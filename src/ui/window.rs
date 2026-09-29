@@ -236,6 +236,10 @@ impl Window {
                 PaneEvent::OpenFiles(items) => w.open_items(items),
                 PaneEvent::Zoom(step) => w.zoom(*step),
                 PaneEvent::Scrolled => super::extensions::pane_scrolled(&w, &p),
+                PaneEvent::ClickedEmpty => {
+                    w.pathbar.show_crumbs();
+                    w.location_entry.set_text(&p.location().display());
+                }
                 PaneEvent::PasswordNeeded(loc) => super::extensions::ask_archive_password(&w, &p, loc),
             }
             if matches!(ev, PaneEvent::Contents) {
