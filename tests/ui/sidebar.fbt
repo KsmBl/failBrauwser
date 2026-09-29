@@ -29,3 +29,13 @@ wait-tree-children $T/a = b, other, zeta
 select zeta
 action win.delete
 wait-tree-children $T/a = b, other
+# Clicking the tree while the drives page is shown opens the folder (it used to crash).
+action win.tree-root current
+open $T/a
+wait-tree-children $T/a = b, other
+action win.drives
+wait-drive File System
+tree-click $T/a/b
+expect-location $T/a/b
+expect-tree-root $T/a/b
+expect-page list

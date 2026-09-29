@@ -228,7 +228,8 @@ impl Sidebar {
         });
         match found {
             Some(p) => {
-                self.tree.selection().select_path(&p);
+                // Like a real click: the cursor moves there too.
+                self.tree.set_cursor(&p, None::<&gtk::TreeViewColumn>, false);
                 true
             }
             None => false,
@@ -280,12 +281,18 @@ impl Sidebar {
             if path.is_empty() {
                 return;
             }
-            if let Some(w) = sb.window.upgrade() {
-                let target = Location::Dir(PathBuf::from(path));
-                if w.current_location() != target {
-                    w.current_pane().navigate(target);
+            // Navigating can rebuild this tree (a new root), which must not happen inside
+            // the tree's own selection handling: GTK crashes clearing a store it is
+            // still walking.
+            let win = sb.window.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(w) = win.upgrade() {
+                    let target = Location::Dir(PathBuf::from(path));
+                    if w.current_location() != target {
+                        w.current_pane().navigate(target);
+                    }
                 }
-            }
+            });
         });
         let me = Rc::downgrade(self);
         self.tree.connect_button_press_event(move |tree, ev| {
@@ -362,7 +369,10 @@ impl Sidebar {
 
     fn set_root(&self, root: &Path) {
         *self.root.borrow_mut() = Some(root.to_path_buf());
+        // Removing the selected row changes the selection; that is not a click.
+        let was = self.syncing.replace(true);
         self.store.clear();
+        self.syncing.set(was);
         let name = if root == Path::new("/") {
             "File System".to_string()
         } else if root == glib::home_dir() {
