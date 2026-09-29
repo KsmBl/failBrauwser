@@ -20,6 +20,10 @@ placessidebar row image.sidebar-icon:dir(ltr) { padding-right: 6px; }
 placessidebar row image.sidebar-icon:dir(rtl) { padding-left: 6px; }
 placessidebar separator { margin: 2px 0; }
 
+/* Path bar: framed like a text field in the theme's field colors, buttons inside. */
+.fb-pathbar { border: 1px solid @borders; border-radius: 5px; background-color: @theme_base_color; padding: 1px; }
+.fb-pathbar button { min-height: 0; padding: 2px 8px; border-radius: 3px; }
+
 /* Our own shortcut rows (Drives) look like the places below them. */
 list.fb-shortcuts row { min-height: 26px; padding: 0 8px; }
 list.fb-shortcuts row image.sidebar-icon:dir(ltr) { padding-right: 6px; }

@@ -74,8 +74,9 @@ that; windows then take a moment longer the first time).
 | <kbd>Ctrl</kbd>+<kbd>1</kbd> / <kbd>Ctrl</kbd>+<kbd>2</kbd> | Detailed list / icons |
 | <kbd>F5</kbd>, <kbd>F9</kbd>, <kbd>Alt</kbd>+<kbd>Enter</kbd> | Reload, side panel, properties |
 
-**Path bar:** every step of the path is a button; going up keeps the deeper buttons, so the
-way back down is one click too. Click the empty space right of the last button (or press
+**Path bar:** every step of the path, from `/`, is a button; the folder you are in is shown
+pressed, and the last step always stays in view. Click the empty space right of the last
+button (the text cursor shows where; or press
 <kbd>Ctrl</kbd>+<kbd>L</kbd>) to type a location; <kbd>Enter</kbd> or <kbd>Esc</kbd> returns to
 the buttons. Home and Drives are in the side panel.
 
