@@ -25,8 +25,21 @@ for n in ["Budget 2026.ods", "Letter to landlord.odt", "Thesis draft.pdf", "note
     f("Documents/" + n, random.randint(8_000, 900_000))
 for i in range(1, 9):
     f(f"Music/Night Drive/{i:02d} - Track {i}.flac", random.randint(900_000, 3_000_000))
+# Real pictures, so thumbnails have something to show.
+from PIL import Image, ImageDraw
+os.makedirs(os.path.join(home, "Pictures/Vacation"), exist_ok=True)
 for i in range(1, 25):
-    f(f"Pictures/Vacation/IMG_{2400 + i}.jpg", random.randint(300_000, 2_500_000))
+    w, h = 1200, 800
+    top = (random.randint(40, 120), random.randint(120, 200), random.randint(180, 255))
+    bottom = (random.randint(180, 255), random.randint(120, 200), random.randint(40, 120))
+    im = Image.new("RGB", (w, h))
+    d = ImageDraw.Draw(im)
+    for y in range(h):
+        t = y / h
+        d.line([(0, y), (w, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)))
+    d.ellipse([random.randint(100, 800), random.randint(80, 300), random.randint(900, 1150), random.randint(400, 700)], fill=(255, 230, 120))
+    d.polygon([(0, h), (random.randint(200, 600), random.randint(350, 550)), (w, h)], fill=(40, 90, 60))
+    im.save(os.path.join(home, f"Pictures/Vacation/IMG_{2400 + i}.jpg"), quality=85)
 for n in ["cat.png", "sunset.jpg", "wallpaper.png"]:
     f("Pictures/" + n, random.randint(200_000, 4_000_000))
 for n in ["index.html", "style.css", "app.js", "README.md"]:
@@ -65,7 +78,8 @@ shoot main "action win.tree-root home" "action win.column-dirsize" "open $DEMO" 
 shoot archive "action win.column-dirsize" "open $DEMO/Downloads/photos-2024.zip/2024" "select summer" "sleep 1000" "screenshot $OUT/archive.png"
 shoot nested "open $DEMO/Downloads/backup.zip/server-backup.tar.gz/server" "select config.toml" "sleep 800" "screenshot $OUT/nested-archive.png"
 shoot drives "action win.drives" "wait-drive File System" "sleep 800" "screenshot $OUT/drives.png"
-shoot icons "action win.view-mode icons" "open $DEMO/Pictures/Vacation" "sleep 800" "screenshot $OUT/icons.png"
+shoot icons "action win.view-mode icons" "action win.zoom-in" "open $DEMO/Pictures/Vacation" "wait-thumbnails 12" "sleep 800" "screenshot $OUT/icons.png"
+shoot search "open $DEMO" "find img_241" "find-options on off" "wait-row IMG_2411.jpg" "sleep 600" "screenshot $OUT/search.png"
 shoot properties "open $DEMO" "select Music" "action win.properties" "sleep 1200" "screenshot $OUT/properties.png"
 shoot conflict "open $DEMO/Documents" "select notes.txt" "action win.copy" "open $DEMO/Desktop" "action win.paste" "sleep 800" "screenshot $OUT/copy-conflict.png"
 shoot trash "open $DEMO/Documents" "select Letter to landlord.odt | notes.txt" "action win.trash" "wait-missing $DEMO/Documents/notes.txt" \
