@@ -13,3 +13,10 @@ expect-sidebar-drives selected
 expect-crumbs Drives
 action win.back
 expect-sidebar-drives unselected
+# Drive properties open without trouble.
+action win.drives
+wait-drive File System
+drive-properties File System
+sleep 300
+action win.properties
+sleep 300

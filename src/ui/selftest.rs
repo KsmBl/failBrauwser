@@ -300,6 +300,11 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let (name, want) = (name.to_string(), want.to_string());
             wait(r, move |r| Ok(r.window.current_pane().cell_text(&name, column).as_deref() == Some(want.as_str())));
         }
+        "drive-properties" => {
+            if !super::drives::show_properties_of(&w.current_pane(), arg) {
+                return Err("no such drive".into());
+            }
+        }
         "wait-drive" => {
             // A volume with this title is listed (e.g. "File System" for /).
             let want = arg.to_string();

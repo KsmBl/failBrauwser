@@ -24,8 +24,9 @@ pub struct DrivesPage {
     /// Change notifications from UDisks2, only while the page is shown (dropped = unsubscribed).
     subscription: RefCell<Option<gio::SignalSubscription>>,
     refresh_pending: std::cell::Cell<bool>,
-    /// Volumes shown, in row order.
+    /// Volumes shown, in row order, with their fill levels.
     volumes: RefCell<Vec<Volume>>,
+    usages: RefCell<Vec<Option<Usage>>>,
     /// Block objects with an operation running (their buttons are disabled).
     busy: RefCell<Vec<String>>,
     weak: RefCell<Weak<DrivesPage>>,
@@ -77,6 +78,7 @@ pub fn attach(w: &Window, pane: &Rc<Pane>) {
         subscription: RefCell::new(None),
         refresh_pending: std::cell::Cell::new(false),
         volumes: RefCell::new(Vec::new()),
+        usages: RefCell::new(Vec::new()),
         busy: RefCell::new(Vec::new()),
         weak: RefCell::new(Weak::new()),
     });
@@ -89,7 +91,45 @@ pub fn attach(w: &Window, pane: &Rc<Pane>) {
             }
         }
     });
+    let weak = Rc::downgrade(&page);
+    page.list.connect_button_press_event(move |list, ev| {
+        if ev.button() != 3 {
+            return glib::Propagation::Proceed;
+        }
+        let Some(p) = weak.upgrade() else { return glib::Propagation::Proceed };
+        if let Some(row) = list.row_at_y(ev.position().1 as i32) {
+            list.select_row(Some(&row));
+            p.context_menu(row.index() as usize, ev);
+        }
+        glib::Propagation::Stop
+    });
     PAGES.with(|p| p.borrow_mut().push(page));
+}
+
+/// Properties of the drive selected on this pane's page (Alt+Enter).
+pub fn show_selected_properties(pane: &Rc<Pane>) {
+    let Some(page) = page_for(pane) else { return };
+    let idx = page.list.selected_row().map(|r| r.index() as usize).unwrap_or(0);
+    let v = page.volumes.borrow().get(idx).cloned();
+    let u = page.usages.borrow().get(idx).copied().flatten();
+    if let Some(v) = v {
+        page.show_properties(&v, u);
+    }
+}
+
+/// Opens the properties of the volume with this title (tests).
+pub fn show_properties_of(pane: &Rc<Pane>, title: &str) -> bool {
+    let Some(page) = page_for(pane) else { return false };
+    let found = page.volumes.borrow().iter().position(|v| v.title() == title);
+    match found {
+        Some(i) => {
+            let v = page.volumes.borrow()[i].clone();
+            let u = page.usages.borrow().get(i).copied().flatten();
+            page.show_properties(&v, u);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Shows or hides the page as the pane's location changes.
@@ -176,6 +216,7 @@ impl DrivesPage {
             self.list.remove(&child);
         }
         *self.volumes.borrow_mut() = vols.iter().map(|(v, _)| v.clone()).collect();
+        *self.usages.borrow_mut() = vols.iter().map(|(_, u)| *u).collect();
         for (v, u) in &vols {
             let row = self.make_row(v, u.as_ref());
             self.list.add(&row);
@@ -281,6 +322,16 @@ impl DrivesPage {
             let vol = v.clone();
             add("_Eject", "Unmount and power off, safe to unplug", Box::new(move |p| p.unmount(&vol, true)));
         }
+        let info = gtk::Button::from_icon_name(Some("document-properties-symbolic"), gtk::IconSize::Button);
+        info.set_tooltip_text(Some("Properties"));
+        let (vol, u) = (v.clone(), usage.copied());
+        let weak = self.weak.borrow().clone();
+        info.connect_clicked(move |_| {
+            if let Some(p) = weak.upgrade() {
+                p.show_properties(&vol, u);
+            }
+        });
+        buttons.pack_start(&info, false, false, 0);
         if busy {
             let spinner = gtk::Spinner::new();
             spinner.start();
@@ -289,6 +340,204 @@ impl DrivesPage {
         grid.attach(&buttons, 2, 0, 1, 4);
         row.add(&grid);
         row
+    }
+
+    fn context_menu(&self, index: usize, ev: &gtk::gdk::EventButton) {
+        let Some(v) = self.volumes.borrow().get(index).cloned() else { return };
+        let u = self.usages.borrow().get(index).copied().flatten();
+        let menu = gtk::Menu::new();
+        let add = |label: &str, f: Box<dyn Fn(&DrivesPage)>| {
+            let item = gtk::MenuItem::with_mnemonic(label);
+            let weak = self.weak.borrow().clone();
+            item.connect_activate(move |_| {
+                if let Some(p) = weak.upgrade() {
+                    f(&p);
+                }
+            });
+            menu.append(&item);
+        };
+        let vol = v.clone();
+        if v.mount_point().is_some() {
+            add("_Open", Box::new(move |p| p.open(&vol)));
+        } else if v.mountable {
+            add("_Mount", Box::new(move |p| p.open(&vol)));
+        }
+        let is_root = v.mount_points.iter().any(|m| m == Path::new("/"));
+        if v.mount_point().is_some() && !is_root && !v.system && !v.block_object.is_empty() {
+            let vol = v.clone();
+            add("_Unmount", Box::new(move |p| p.unmount(&vol, false)));
+        }
+        if (v.usb || v.ejectable) && !v.drive_object.is_empty() {
+            let vol = v.clone();
+            add("_Eject", Box::new(move |p| p.unmount(&vol, true)));
+        }
+        menu.append(&gtk::SeparatorMenuItem::new());
+        let vol = v.clone();
+        add("_Properties…", Box::new(move |p| p.show_properties(&vol, u)));
+        menu.set_attach_widget(Some(&self.list));
+        menu.show_all();
+        menu.popup_at_pointer(Some(ev));
+    }
+
+    /// Everything known about a volume, its drive and how full it is.
+    fn show_properties(&self, v: &Volume, usage: Option<Usage>) {
+        let Some(w) = self.window.upgrade() else { return };
+        let d = gtk::Dialog::with_buttons(Some(&format!("{} — Properties", v.title())), Some(&w.win), gtk::DialogFlags::DESTROY_WITH_PARENT, &[]);
+        d.set_resizable(false);
+        let area = d.content_area();
+        area.set_border_width(12);
+        area.set_spacing(12);
+
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        header.pack_start(&gtk::Image::from_gicon(&gio::ThemedIcon::from_names(&v.icon_names()), gtk::IconSize::Dialog), false, false, 0);
+        let titles = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let title = gtk::Label::new(None);
+        title.set_markup(&format!("<big><b>{}</b></big>", glib::markup_escape_text(&v.title())));
+        title.set_xalign(0.0);
+        let mut sub: Vec<String> = Vec::new();
+        let kind = drives::drive_kind(v);
+        if !kind.is_empty() {
+            sub.push(kind);
+        }
+        if v.size > 0 {
+            sub.push(human_size(v.size));
+        }
+        if !v.fs_type.is_empty() {
+            sub.push(v.fs_type.clone());
+        }
+        let subtitle = gtk::Label::new(Some(&sub.join(" · ")));
+        subtitle.set_xalign(0.0);
+        subtitle.style_context().add_class("dim-label");
+        titles.pack_start(&title, false, false, 0);
+        titles.pack_start(&subtitle, false, false, 0);
+        header.pack_start(&titles, true, true, 0);
+        area.add(&header);
+
+        // How full: a bar with used / free / total underneath.
+        if let Some(u) = usage {
+            let bar = gtk::LevelBar::for_interval(0.0, 1.0);
+            bar.remove_offset_value(Some(gtk::LEVEL_BAR_OFFSET_LOW));
+            bar.remove_offset_value(Some(gtk::LEVEL_BAR_OFFSET_HIGH));
+            bar.remove_offset_value(Some(gtk::LEVEL_BAR_OFFSET_FULL));
+            bar.add_offset_value(gtk::LEVEL_BAR_OFFSET_HIGH, 0.9);
+            bar.add_offset_value(gtk::LEVEL_BAR_OFFSET_LOW, 1.0);
+            bar.set_value(u.fraction());
+            bar.set_size_request(360, 12);
+            area.add(&bar);
+            let counts = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            counts.set_homogeneous(true);
+            for (label, value) in [
+                ("Used", format!("{} ({:.0} %)", human_size(u.used), u.fraction() * 100.0)),
+                ("Free", human_size(u.free)),
+                ("Total", human_size(u.total)),
+            ] {
+                let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                let k = gtk::Label::new(Some(label));
+                k.style_context().add_class("dim-label");
+                let val = gtk::Label::new(None);
+                val.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&value)));
+                b.pack_start(&k, false, false, 0);
+                b.pack_start(&val, false, false, 0);
+                counts.pack_start(&b, true, true, 0);
+            }
+            area.add(&counts);
+        }
+
+        let grid = gtk::Grid::new();
+        grid.set_column_spacing(12);
+        grid.set_row_spacing(4);
+        let mut y = 0;
+        let mut section = |name: &str, rows: Vec<(&str, String)>| {
+            let rows: Vec<_> = rows.into_iter().filter(|(_, v)| !v.is_empty()).collect();
+            if rows.is_empty() {
+                return;
+            }
+            let h = gtk::Label::new(None);
+            h.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(name)));
+            h.set_xalign(0.0);
+            h.set_margin_top(if y == 0 { 0 } else { 8 });
+            grid.attach(&h, 0, y, 2, 1);
+            y += 1;
+            for (k, val) in rows {
+                let kl = gtk::Label::new(Some(k));
+                kl.set_xalign(1.0);
+                kl.set_yalign(0.0);
+                kl.style_context().add_class("dim-label");
+                let vl = gtk::Label::new(Some(&val));
+                vl.set_xalign(0.0);
+                vl.set_selectable(true);
+                vl.set_line_wrap(true);
+                vl.set_line_wrap_mode(gtk::pango::WrapMode::WordChar);
+                vl.set_max_width_chars(44);
+                grid.attach(&kl, 0, y, 1, 1);
+                grid.attach(&vl, 1, y, 1, 1);
+                y += 1;
+            }
+        };
+        let fs = match (v.fs_type.as_str(), v.fs_version.as_str()) {
+            (t, "") => t.to_string(),
+            (t, ver) => format!("{t} {ver}"),
+        };
+        let mounted = v.mount_points.iter().map(|m| m.display().to_string()).collect::<Vec<_>>().join("\n");
+        let options = v.mount_point().and_then(|m| drives::mount_options(m)).unwrap_or_default();
+        let yes_no = |b: bool| if b { "Yes".to_string() } else { "No".to_string() };
+        section(
+            "Volume",
+            vec![
+                ("Label:", v.label.clone()),
+                ("Device:", v.device.clone()),
+                ("File system:", fs),
+                ("UUID:", v.uuid.clone()),
+                ("Mounted at:", if mounted.is_empty() { "Not mounted".into() } else { mounted }),
+                ("Mount options:", options),
+                ("Read-only:", yes_no(v.read_only || v.mount_point().and_then(|m| drives::mount_options(m)).is_some_and(|o| o.split(',').any(|x| x == "ro")))),
+            ],
+        );
+        section(
+            "Partition",
+            vec![
+                ("Number:", if v.partition_number > 0 { v.partition_number.to_string() } else { String::new() }),
+                ("Name:", v.partition_name.clone()),
+                ("Type:", if v.partition_type.is_empty() { String::new() } else { drives::partition_type_name(&v.partition_type) }),
+            ],
+        );
+        section(
+            "Drive",
+            vec![
+                ("Model:", v.drive_name.clone()),
+                ("Serial number:", v.serial.clone()),
+                ("Firmware:", v.revision.clone()),
+                ("Kind:", drives::drive_kind(v)),
+                ("Connection:", match v.bus.as_str() {
+                    "usb" => "USB".into(),
+                    "sdio" => "SD card reader".into(),
+                    "ieee1394" => "FireWire".into(),
+                    "" if v.device.starts_with("/dev/nvme") => "NVMe".into(),
+                    "" if !v.drive_object.is_empty() => "Internal".into(),
+                    other => other.to_string(),
+                }),
+                ("Drive size:", if v.drive_size > 0 { human_size(v.drive_size) } else { String::new() }),
+                ("Removable:", if v.drive_object.is_empty() { String::new() } else { yes_no(v.removable || v.usb) }),
+            ],
+        );
+        area.add(&grid);
+
+        if v.mount_point().is_some() || (v.mountable && !v.block_object.is_empty()) {
+            d.add_button(if v.mount_point().is_some() { "_Open" } else { "_Mount and Open" }, gtk::ResponseType::Accept);
+        }
+        d.add_button("_Close", gtk::ResponseType::Close);
+        d.set_default_response(gtk::ResponseType::Close);
+        let weak = self.weak.borrow().clone();
+        let vol = v.clone();
+        d.connect_response(move |d, resp| {
+            if resp == gtk::ResponseType::Accept {
+                if let Some(p) = weak.upgrade() {
+                    p.open(&vol);
+                }
+            }
+            d.close();
+        });
+        d.show_all();
     }
 
     fn open(&self, v: &Volume) {

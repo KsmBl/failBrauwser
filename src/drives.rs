@@ -29,6 +29,21 @@ pub struct Volume {
     pub mountable: bool,
     /// A system volume (root, boot, …) as UDisks2 sees it.
     pub system: bool,
+    pub uuid: String,
+    /// File system version ("1.0" for ext4, "FAT32", …).
+    pub fs_version: String,
+    pub read_only: bool,
+    pub partition_number: u32,
+    pub partition_name: String,
+    /// Partition type (GPT GUID or MBR code).
+    pub partition_type: String,
+    pub serial: String,
+    pub revision: String,
+    /// Connection: "usb", "sdio", "ieee1394", or empty for internal (SATA/NVMe).
+    pub bus: String,
+    /// -1 unknown, 0 solid state, otherwise spindle speed.
+    pub rotation_rate: i32,
+    pub drive_size: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -125,6 +140,14 @@ fn u(p: &Props, k: &str) -> u64 {
     p.get(k).and_then(|v| v.get::<u64>()).unwrap_or(0)
 }
 
+fn i(p: &Props, k: &str) -> i32 {
+    p.get(k).and_then(|v| v.get::<i32>()).unwrap_or(-1)
+}
+
+fn n(p: &Props, k: &str) -> u32 {
+    p.get(k).and_then(|v| v.get::<u32>()).unwrap_or(0)
+}
+
 fn o(p: &Props, k: &str) -> String {
     p.get(k).and_then(|v| v.str().map(str::to_string)).unwrap_or_default()
 }
@@ -164,6 +187,9 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
         }
         let drive_object = o(block, "Drive");
         let drive = all.get(&drive_object).and_then(|d| d.get("org.freedesktop.UDisks2.Drive"));
+        let empty = Props::new();
+        let d = drive.unwrap_or(&empty);
+        let part = ifaces.get("org.freedesktop.UDisks2.Partition").unwrap_or(&empty);
         let (drive_name, removable, usb, optical, ejectable) = match drive {
             Some(d) => {
                 let name = [s(d, "Vendor"), s(d, "Model")].iter().filter(|x| !x.is_empty()).cloned().collect::<Vec<_>>().join(" ");
@@ -192,6 +218,17 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
             drive_object,
             mountable: fs.is_some(),
             system: b(block, "HintSystem"),
+            uuid: s(block, "IdUUID"),
+            fs_version: s(block, "IdVersion"),
+            read_only: b(block, "ReadOnly"),
+            partition_number: n(part, "Number"),
+            partition_name: s(part, "Name"),
+            partition_type: s(part, "Type"),
+            serial: s(d, "Serial"),
+            revision: s(d, "Revision"),
+            bus: s(d, "ConnectionBus"),
+            rotation_rate: if drive.is_some() { i(d, "RotationRate") } else { -1 },
+            drive_size: u(d, "Size"),
         });
     }
     sort_volumes(&mut out);
@@ -241,6 +278,7 @@ pub fn parse_mountinfo(text: &str) -> Vec<Volume> {
             device: source.clone(),
             fs_type: fs_type.to_string(),
             mountable: true,
+            rotation_rate: -1,
             ..Default::default()
         });
         v.mount_points.push(PathBuf::from(mount));
@@ -251,6 +289,75 @@ pub fn parse_mountinfo(text: &str) -> Vec<Volume> {
     }
     sort_volumes(&mut v);
     v
+}
+
+/// Mount options of a mount point, as the kernel reports them ("rw,relatime,…").
+pub fn mount_options_in(text: &str, mount_point: &Path) -> Option<String> {
+    for line in text.lines() {
+        let Some((left, right)) = line.split_once(" - ") else { continue };
+        let l: Vec<&str> = left.split(' ').collect();
+        let r: Vec<&str> = right.split(' ').collect();
+        if l.len() < 6 || r.len() < 3 || Path::new(&unescape_mount(l[4])) != mount_point {
+            continue;
+        }
+        let mut opts: Vec<&str> = l[5].split(',').collect();
+        for o in r[2].split(',') {
+            if !opts.contains(&o) {
+                opts.push(o);
+            }
+        }
+        return Some(opts.join(","));
+    }
+    None
+}
+
+pub fn mount_options(mount_point: &Path) -> Option<String> {
+    std::fs::read_to_string("/proc/self/mountinfo").ok().and_then(|t| mount_options_in(&t, mount_point))
+}
+
+/// A readable name for a GPT type GUID or MBR type code, the raw value in brackets.
+pub fn partition_type_name(t: &str) -> String {
+    let name = match t.to_ascii_lowercase().as_str() {
+        "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" | "0xef" => "EFI system partition",
+        "0fc63daf-8483-4772-8e79-3d69d8477de4" | "0x83" => "Linux file system",
+        "4f68bce3-e8cd-4db1-96e7-fbcaf984b709" => "Linux root (x86-64)",
+        "b921b045-1df0-41c3-af44-4c6f280d3fae" => "Linux root (ARM64)",
+        "933ac7e1-2eb4-4f13-b844-0e14e2aef915" => "Linux home",
+        "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f" | "0x82" => "Linux swap",
+        "e6d6d379-f507-44c2-a23c-238f2a3df928" | "0x8e" => "Linux LVM",
+        "a19d880f-05fc-4d3b-a006-743f0f84911e" | "0xfd" => "Linux RAID",
+        "ca7d7ccb-63ed-4c53-861c-1742536059cc" => "Linux LUKS",
+        "bc13c2ff-59e6-4262-a352-b275fd6f7172" => "Linux extended boot",
+        "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7" => "Basic data (Windows)",
+        "e3c9e316-0b5c-4db8-817d-f92df00215ae" => "Microsoft reserved",
+        "de94bba4-06d1-4d40-a16a-bfd50179d6ac" => "Windows recovery",
+        "21686148-6449-6e6f-744e-656564454649" => "BIOS boot",
+        "0x07" => "NTFS / exFAT",
+        "0x0b" | "0x0c" => "FAT32",
+        "0x0e" | "0x06" => "FAT16",
+        "0x05" | "0x0f" => "Extended partition",
+        _ => return t.to_string(),
+    };
+    format!("{name} ({t})")
+}
+
+/// What kind of drive, in words: "USB drive", "SSD", "Hard disk (7200 rpm)", …
+pub fn drive_kind(v: &Volume) -> String {
+    if v.optical {
+        "Optical drive".into()
+    } else if v.usb {
+        "USB drive".into()
+    } else if v.bus == "sdio" {
+        "Memory card".into()
+    } else if v.removable {
+        "Removable drive".into()
+    } else if v.rotation_rate == 0 || v.device.starts_with("/dev/nvme") {
+        "Solid state drive".into()
+    } else if v.rotation_rate > 0 {
+        format!("Hard disk ({} rpm)", v.rotation_rate)
+    } else {
+        String::new()
+    }
 }
 
 pub fn read_mountinfo() -> Vec<Volume> {
@@ -291,6 +398,32 @@ mod tests {
         assert!(s.usb && s.removable && s.ejectable && s.mountable);
         assert_eq!(s.drive_name, "SanDisk Ultra");
         assert_eq!(s.icon_names()[0], "drive-removable-media-usb");
+        assert_eq!(drive_kind(s), "USB drive");
+    }
+
+    #[test]
+    fn udisks_details_are_read() {
+        let text = "({objectpath '/o/b/nvme0n1p2': {'org.freedesktop.UDisks2.Block': {'Device': <b'/dev/nvme0n1p2'>, 'IdUsage': <'filesystem'>, 'IdType': <'ext4'>, 'IdVersion': <'1.0'>, 'IdUUID': <'abcd-1234'>, 'ReadOnly': <false>, 'HintIgnore': <false>, 'Drive': <objectpath '/o/d/ssd'>}, 'org.freedesktop.UDisks2.Filesystem': {'MountPoints': <[b'/']>}, 'org.freedesktop.UDisks2.Partition': {'Number': <uint32 2>, 'Name': <'root'>, 'Type': <'0fc63daf-8483-4772-8e79-3d69d8477de4'>}}, objectpath '/o/d/ssd': {'org.freedesktop.UDisks2.Drive': {'Model': <'Samsung SSD'>, 'Serial': <'S4GV'>, 'Revision': <'1B4Q'>, 'ConnectionBus': <''>, 'RotationRate': <0>, 'Size': <uint64 256060514304>}}},)";
+        let v = glib::Variant::parse(Some(glib::VariantTy::new("(a{oa{sa{sv}}})").unwrap()), text).unwrap();
+        let vol = &parse_udisks(&v)[0];
+        assert_eq!((vol.uuid.as_str(), vol.fs_version.as_str()), ("abcd-1234", "1.0"));
+        assert_eq!((vol.partition_number, vol.partition_name.as_str()), (2, "root"));
+        assert_eq!((vol.serial.as_str(), vol.revision.as_str()), ("S4GV", "1B4Q"));
+        assert_eq!(vol.drive_size, 256060514304);
+        assert_eq!(drive_kind(vol), "Solid state drive");
+    }
+
+    #[test]
+    fn mount_options_merge_both_lists() {
+        let text = "22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro\n25 22 8:17 / /run/media/me/My\\040Stick rw,nosuid,nodev - exfat /dev/sdb1 rw,uid=1000\n".replace("\\n", "\n");
+        assert_eq!(mount_options_in(&text, Path::new("/")).as_deref(), Some("rw,relatime,errors=remount-ro"));
+        assert_eq!(mount_options_in(&text, Path::new("/run/media/me/My Stick")).as_deref(), Some("rw,nosuid,nodev,uid=1000"));
+        assert!(mount_options_in(&text, Path::new("/nope")).is_none());
+        assert_eq!(partition_type_name("C12A7328-F81F-11D2-BA4B-00A0C93EC93B"), "EFI system partition (C12A7328-F81F-11D2-BA4B-00A0C93EC93B)");
+        assert_eq!(partition_type_name("0x83"), "Linux file system (0x83)");
+        assert_eq!(partition_type_name("unknown"), "unknown");
+        let hdd = Volume { rotation_rate: 7200, ..Default::default() };
+        assert_eq!(drive_kind(&hdd), "Hard disk (7200 rpm)");
     }
 
     #[test]
