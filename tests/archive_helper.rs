@@ -110,3 +110,35 @@ fn errors_are_reported_not_fatal() {
     h.shutdown();
     assert!(!h.is_running());
 }
+
+#[test]
+fn long_operations_report_progress() {
+    let Some(h) = helper() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("many");
+    std::fs::create_dir_all(&src).unwrap();
+    // Random content compresses slowly enough for a few progress samples.
+    let mut seed: u64 = 42;
+    for i in 0..96 {
+        let data: Vec<u8> = (0..256 * 1024)
+            .map(|_| {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (seed >> 33) as u8
+            })
+            .collect();
+        fs::write(src.join(format!("f{i:03}.bin")), data).unwrap();
+    }
+    let archive = dir.path().join("big.tar.gz");
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let s2 = seen.clone();
+    failbrauwser::archive::client::with_progress(move |p| s2.borrow_mut().push(p.clone()), || {
+        h.add(&archive, &[(src.clone(), "many".into())], None).unwrap();
+    });
+    let seen = seen.borrow();
+    assert!(!seen.is_empty(), "no progress reported");
+    for p in seen.iter() {
+        assert!(p.total >= 24 << 20, "{p:?}");
+        assert!(p.done <= p.total, "{p:?}");
+        assert!(p.phase == "adding" || p.phase == "writing", "{p:?}");
+    }
+}
