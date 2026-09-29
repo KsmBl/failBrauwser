@@ -207,7 +207,7 @@ impl Pane {
         self.listeners.borrow_mut().push(Box::new(f));
     }
 
-    fn emit(&self, ev: PaneEvent) {
+    pub fn emit(&self, ev: PaneEvent) {
         if self.quiet.get() > 0 {
             // Row changes emit selection signals mid-update; report them once afterwards.
             if matches!(ev, PaneEvent::Selection) {
@@ -874,7 +874,10 @@ impl Pane {
         let mode = self.settings.borrow().view_mode;
         let focus = self.tree.has_focus() || self.icons.has_focus();
         let keys = self.selected_keys();
-        self.stack.set_visible_child_name(if mode == ViewMode::Icons { "icons" } else { "list" });
+        // The Drives page has no list or icon view; it stays until the location changes.
+        if self.location() != Location::Drives {
+            self.stack.set_visible_child_name(if mode == ViewMode::Icons { "icons" } else { "list" });
+        }
         // Carry the selection over to the other view.
         let st = self.st.borrow();
         for k in keys {
