@@ -29,6 +29,7 @@ fn ask_error(ctx: &JobCtx, path: &Path, e: &io::Error) -> io::Result<bool> {
 }
 
 fn remove_tree(ctx: &JobCtx, p: &Path) -> io::Result<()> {
+    ctx.wait_while_paused();
     if ctx.is_cancelled() {
         return Err(fastcopy::cancelled());
     }

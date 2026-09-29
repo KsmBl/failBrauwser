@@ -130,6 +130,7 @@ pub fn copy_contents(
     let mut method = Method::CopyFileRange;
     let step = if throttle { WINDOW } else { CHUNK };
     loop {
+        ctx.wait_while_paused();
         if ctx.is_cancelled() {
             return Err(cancelled());
         }

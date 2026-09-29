@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -83,6 +83,8 @@ pub struct JobCtx {
     errors: Mutex<Vec<String>>,
     /// Test hook: answers questions without a UI.
     auto_answer: Mutex<Option<Box<dyn Fn(&Question) -> Reply + Send>>>,
+    paused: Mutex<bool>,
+    resumed: Condvar,
 }
 
 impl JobCtx {
@@ -99,9 +101,32 @@ impl JobCtx {
 
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
+        // A paused job must wake up to see it is cancelled.
+        self.resume();
         // Unblock a worker waiting for an answer.
         if let Some(p) = self.pending.lock().unwrap().take() {
             p.answer(Reply { answer: Answer::Cancel, for_all: true });
+        }
+    }
+
+    pub fn pause(&self) {
+        *self.paused.lock().unwrap() = true;
+    }
+
+    pub fn resume(&self) {
+        *self.paused.lock().unwrap() = false;
+        self.resumed.notify_all();
+    }
+
+    pub fn is_paused(&self) -> bool {
+        *self.paused.lock().unwrap()
+    }
+
+    /// Workers call this between steps: blocks while the job is paused.
+    pub fn wait_while_paused(&self) {
+        let mut p = self.paused.lock().unwrap();
+        while *p && !self.is_cancelled() {
+            p = self.resumed.wait(p).unwrap();
         }
     }
 
@@ -232,6 +257,27 @@ mod tests {
         assert!(matches!(pending.question, Question::Error { .. }));
         pending.answer(Reply { answer: Answer::Retry, for_all: false });
         assert_eq!(t.join().unwrap(), Answer::Retry);
+    }
+
+    #[test]
+    fn pause_blocks_until_resumed_or_cancelled() {
+        let ctx = JobCtx::new();
+        ctx.pause();
+        let c2 = ctx.clone();
+        let t = std::thread::spawn(move || {
+            c2.wait_while_paused();
+            true
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!t.is_finished());
+        ctx.resume();
+        assert!(t.join().unwrap());
+        ctx.pause();
+        let c3 = ctx.clone();
+        let t = std::thread::spawn(move || c3.wait_while_paused());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        ctx.cancel();
+        t.join().unwrap();
     }
 
     #[test]
