@@ -1,5 +1,5 @@
 # failBrauwser build entry points. `make` builds everything into target/.
-CWB_ROOT ?= $(abspath ../compressionworkbench)
+CWB_ROOT ?= $(abspath vendor/compressionworkbench)
 HELPER_OUT := target/helper
 
 .PHONY: all app helper test clean
@@ -15,6 +15,7 @@ helper:
 	rm -f $(HELPER_OUT)/*.pdb $(HELPER_OUT)/*.xml $(HELPER_OUT)/*.dbg
 
 test: helper
+	dotnet test helper/FbArchive.Tests/FbArchive.Tests.csproj -p:CwbRoot=$(CWB_ROOT) --nologo -v quiet
 	cargo test
 
 clean:

@@ -8,9 +8,9 @@
 #   ./install.sh --default       make failBrauwser the default file manager
 #   ./install.sh --uninstall     remove what an install with the same options put in place
 #
-# Archive support needs the .NET 10 SDK and a CompressionWorkbench checkout
-# (default: ../compressionworkbench, override with CWB_ROOT=/path). Without them
-# failBrauwser is installed without archive support.
+# Archive support needs the .NET 10 SDK; it builds CompressionWorkbench (by Hawkynt,
+# vendored in vendor/compressionworkbench). Without dotnet failBrauwser is installed
+# without archive support.
 set -euo pipefail
 
 APP_ID=org.failbrauwser.FailBrauwser
@@ -20,7 +20,7 @@ SUDO=""
 AUTOSTART=1
 MAKE_DEFAULT=0
 UNINSTALL=0
-CWB_ROOT=${CWB_ROOT:-"$HERE/../compressionworkbench"}
+CWB_ROOT=${CWB_ROOT:-"$HERE/vendor/compressionworkbench"}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -74,7 +74,7 @@ if command -v dotnet >/dev/null && [ -f "$CWB_ROOT/Compression.Lib/Compression.L
     (cd "$HERE" && make helper CWB_ROOT="$(cd "$CWB_ROOT" && pwd)")
     HELPER="$HERE/target/helper/fb-archive"
 else
-    echo "warning: dotnet or CompressionWorkbench not found — installing without archive support" >&2
+    echo "warning: dotnet not found — installing without archive support" >&2
 fi
 
 say "Installing into $PREFIX"

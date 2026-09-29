@@ -18,7 +18,9 @@
          because every format is registered by source generator, without reflection. -->
     <NoWarn>$(NoWarn);IL2026;IL2104;IL3053;IL2072;IL2075;IL3050</NoWarn>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
-    <CwbRoot Condition="'$(CwbRoot)' == ''">$(MSBuildThisFileDirectory)../../../compressionworkbench</CwbRoot>
+    <!-- CompressionWorkbench by Hawkynt (https://github.com/Hawkynt/CompressionWorkbench),
+         vendored in vendor/compressionworkbench; see VENDORED.md there. -->
+    <CwbRoot Condition="'$(CwbRoot)' == ''">$(MSBuildThisFileDirectory)../../vendor/compressionworkbench</CwbRoot>
   </PropertyGroup>
 
   <ItemGroup>
