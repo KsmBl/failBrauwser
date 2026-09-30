@@ -21,9 +21,17 @@ public sealed class XarWriter : IDisposable {
     _leaveOpen = leaveOpen;
   }
 
-  /// <summary>Adds a file to the archive.</summary>
+  private readonly List<(string name, DateTime modified)> _dirs = [];
+
+  /// <summary>Adds a file to the archive; a path with '/' puts it into folders.</summary>
   public void AddFile(string name, byte[] data, DateTime? modified = null) {
     _files.Add((name, data, modified ?? DateTime.UtcNow));
+  }
+
+  /// <summary>Adds a folder (and its parents); needed only for empty ones.</summary>
+  public void AddDirectory(string name, DateTime? modified = null) {
+    var path = string.Join('/', name.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries));
+    if (path.Length > 0) _dirs.Add((path, modified ?? DateTime.UtcNow));
   }
 
   /// <summary>Writes the archive and flushes.</summary>
@@ -35,7 +43,10 @@ public sealed class XarWriter : IDisposable {
   private void WriteArchive() {
     // Build heap: compress each file and collect metadata
     var heapEntries = new List<(string name, byte[] compressed, long offset, long origSize, long compSize, string origHash, string compHash, DateTime modified)>();
-    long heapOffset = 0;
+    // The heap opens with the SHA-1 of the compressed TOC, which the header announces
+    // (checksum algorithm 1) and xar and libarchive verify.
+    const int TocChecksumSize = 20;
+    long heapOffset = TocChecksumSize;
 
     foreach (var (name, data, modified) in _files) {
       var compressed = CompressZlib(data);
@@ -64,8 +75,9 @@ public sealed class XarWriter : IDisposable {
     BinaryPrimitives.WriteUInt32BigEndian(header[24..], checksumAlgo);
     _output.Write(header);
 
-    // Write compressed TOC
+    // Write compressed TOC, then its checksum at the start of the heap
     _output.Write(tocCompressed);
+    _output.Write(System.Security.Cryptography.SHA1.HashData(tocCompressed));
 
     // Write heap (compressed file data)
     foreach (var entry in heapEntries)
@@ -74,15 +86,40 @@ public sealed class XarWriter : IDisposable {
     _output.Flush();
   }
 
-  private static string BuildToc(List<(string name, byte[] compressed, long offset, long origSize, long compSize, string origHash, string compHash, DateTime modified)> entries) {
-    var xar = new XElement("xar",
-      new XElement("toc",
-        new XElement("creation-time", DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")),
-        entries.Select((e, i) =>
+  private string BuildToc(List<(string name, byte[] compressed, long offset, long origSize, long compSize, string origHash, string compHash, DateTime modified)> entries) {
+    var toc = new XElement("toc",
+      new XElement("creation-time", DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")),
+      new XElement("checksum", new XAttribute("style", "sha1"),
+        new XElement("offset", "0"),
+        new XElement("size", "20")));
+    var nextId = 0;
+    // Folders are <file> elements of type "directory" holding their children.
+    var folders = new Dictionary<string, XElement>(StringComparer.Ordinal) { [""] = toc };
+    XElement Folder(string path, DateTime modified) {
+      if (folders.TryGetValue(path, out var el)) return el;
+      var slash = path.LastIndexOf('/');
+      var parent = Folder(slash < 0 ? "" : path[..slash], modified);
+      el = new XElement("file",
+        new XAttribute("id", (nextId++).ToString()),
+        new XElement("name", path[(slash + 1)..]),
+        new XElement("type", "directory"),
+        new XElement("mode", "0755"),
+        new XElement("mtime", modified.ToString("yyyy-MM-ddTHH:mm:ssZ")));
+      parent.Add(el);
+      folders[path] = el;
+      return el;
+    }
+    foreach (var (name, modified) in _dirs) Folder(name, modified);
+    foreach (var e in entries) {
+      var path = string.Join('/', e.name.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries));
+      var slash = path.LastIndexOf('/');
+      var parent = Folder(slash < 0 ? "" : path[..slash], e.modified);
+      parent.Add(
           new XElement("file",
-            new XAttribute("id", i.ToString()),
-            new XElement("name", e.name),
+            new XAttribute("id", (nextId++).ToString()),
+            new XElement("name", path[(slash + 1)..]),
             new XElement("type", "file"),
+            new XElement("mode", "0644"),
             new XElement("mtime", e.modified.ToString("yyyy-MM-ddTHH:mm:ssZ")),
             new XElement("data",
               new XElement("size", e.origSize.ToString()),
@@ -97,11 +134,9 @@ public sealed class XarWriter : IDisposable {
                 new XAttribute("style", "sha1"),
                 e.compHash)
             )
-          )
-        )
-      )
-    );
-    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + xar.ToString();
+          ));
+    }
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + new XElement("xar", toc).ToString();
   }
 
   private static byte[] CompressZlib(byte[] data) {
