@@ -35,6 +35,7 @@ select pack
 text pack.lzh
 action win.compress
 wait-exists $T/w/pack.lzh
+wait-row pack.lzh
 select pack.lzh
 activate
 wait-row pack
@@ -43,6 +44,7 @@ select pack
 text pack|Fat
 action win.compress
 wait-exists $T/w/pack.img
+wait-row pack.img
 select pack.img
 activate
 wait-row pack
@@ -52,6 +54,7 @@ select notes.txt
 text notes.txt.xz
 action win.compress
 wait-exists $T/w/notes.txt.xz
+wait-row notes.txt.xz
 select notes.txt.xz
 activate
 wait-row notes.txt
