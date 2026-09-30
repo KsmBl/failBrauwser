@@ -5,8 +5,10 @@
 /// What kind of container a format is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// Holds files and usually folders: archives and file system images.
+    /// Holds files and usually folders.
     Archive,
+    /// A disk or file system image (FAT, ext4, ISO, VHD, …).
+    Filesystem,
     /// A tar archive inside a single-file compressor (`.tar.gz`, …).
     Tar,
     /// A single-file compressor (`.gz`, `.xz`, …): one file inside.
@@ -58,4 +60,74 @@ pub fn by_id(id: &str) -> Option<&'static Format> {
 /// The suffix new files of this format get.
 pub fn default_ext(f: &Format) -> &'static str {
     f.exts.first().copied().unwrap_or("")
+}
+
+/// The formats offered first when creating an archive, in this order.
+pub const COMMON: &[&str] = &["Zip", "SevenZip", "TarGz", "TarXz", "TarZst", "Tar"];
+
+/// The formats a new archive can be written in, beyond [`COMMON`], grouped for a menu
+/// and sorted by name. Compressed files and encodings hold exactly one file, so they are
+/// only offered for `single_file`.
+pub fn create_groups(single_file: bool) -> Vec<(&'static str, Vec<&'static Format>)> {
+    let pick = |kinds: &[Kind]| {
+        let mut v: Vec<&'static Format> = FORMATS.iter().filter(|f| f.create && kinds.contains(&f.kind) && !COMMON.contains(&f.id)).collect();
+        v.sort_by_key(|f| f.name.to_lowercase());
+        v
+    };
+    let mut groups = Vec::new();
+    if single_file {
+        groups.push(("Compressed File", pick(&[Kind::Stream])));
+    }
+    groups.push(("Archives", pick(&[Kind::Archive, Kind::Tar])));
+    groups.push(("Disk Images", pick(&[Kind::Filesystem])));
+    if single_file {
+        groups.push(("Encodings", pick(&[Kind::Wrapper])));
+    }
+    groups.retain(|(_, v)| !v.is_empty());
+    groups
+}
+
+/// The file name for a new archive called `name`: the format's suffix is added unless the
+/// name already ends with one of its suffixes.
+pub fn file_name_for(name: &str, f: &Format) -> String {
+    let lower = name.to_lowercase();
+    if f.exts.iter().any(|e| lower.len() > e.len() && lower.ends_with(e)) { name.to_string() } else { format!("{name}{}", default_ext(f)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_formats_exist_and_can_be_created() {
+        for id in COMMON {
+            assert!(by_id(id).is_some_and(|f| f.create), "{id}");
+        }
+    }
+
+    #[test]
+    fn every_creatable_format_is_offered_once() {
+        let offered: Vec<&str> = create_groups(true).into_iter().flat_map(|(_, v)| v).map(|f| f.id).chain(COMMON.iter().copied()).collect();
+        let mut sorted = offered.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), offered.len(), "no format twice");
+        let creatable = FORMATS.iter().filter(|f| f.create).count();
+        assert_eq!(offered.len(), creatable);
+    }
+
+    #[test]
+    fn single_file_formats_only_for_one_file() {
+        let many = create_groups(false);
+        assert!(many.iter().all(|(_, v)| v.iter().all(|f| !matches!(f.kind, Kind::Stream | Kind::Wrapper))));
+        assert!(create_groups(true).iter().any(|(g, _)| *g == "Compressed File"));
+    }
+
+    #[test]
+    fn file_names_get_the_suffix_once() {
+        let gz = by_id("Gzip").unwrap();
+        assert_eq!(file_name_for("notes.txt", gz), "notes.txt.gz");
+        assert_eq!(file_name_for("notes.txt.gz", gz), "notes.txt.gz");
+        assert_eq!(file_name_for("photos", by_id("TarGz").unwrap()), "photos.tar.gz");
+    }
 }
