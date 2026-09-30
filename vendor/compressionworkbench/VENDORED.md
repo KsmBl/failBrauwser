@@ -36,6 +36,16 @@ is fetched at build time.
 - (feat) ISO writer: Rock Ridge, folders, file metadata, unique ISO 9660 identifiers
 - (feat) `IsoBoot`: read El Torito entries, detect hybrid images; the writer writes boot
   catalogs with BIOS and UEFI entries and patches the isolinux boot info table
+- (fix) format ids are matched regardless of case (xDisk, xMash were never recognised)
+- (fix) new ISO images keep folders, with Rock Ridge; CDI, MDF, NRG and BIN images reuse it
+- (fix) ext2/3/4: new images keep folders, empty ones too; rebuilds keep and add folders
+- (fix) NTFS: new images keep folders; folders can be added and removed
+- (fix) XAR: table-of-contents checksum, folders and modes; edits keep the tree
+- (fix) FAT: empty folders; VHD, VHDX, VMDK, VDI, QCOW2 keep long names and folders
+- (bug) BBC DFS removed files of the same name in another directory; extraction names
+- (bug) BKF edits went to the wrong folder and removed same-named files everywhere
+- (bug) the shared rebuild path dropped entries by leaf name; it keeps folders now
+- (bug) MFS-1 adds cut the other names down to their extension
 
 Later changes are in failBrauwser's git history (`git log -- vendor/compressionworkbench`);
 their tests are in `helper/FbArchive.Tests`. They are candidates for upstream pull requests.

@@ -7,9 +7,10 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
 - **Fast copies.** Reflinks where the filesystem can, in-kernel `copy_file_range` otherwise,
   and many small files copied in parallel. Writes to USB sticks and spinning disks are paced,
   so the system never stalls behind gigabytes of cached data and unmounting is instant.
-- **Archives are folders.** Enter a `.zip`, `.7z`, `.tar.gz` (and many more), even an archive
-  inside an archive, and copy, paste, rename, delete or create files in it like anywhere else.
-  Open a file from inside an archive, edit it, save — the archive is updated.
+- **Archives are folders.** Enter a `.zip`, `.7z`, `.tar.gz`, a disk image or any of the
+  ~480 formats the archive library knows, even an archive inside an archive, and copy, paste,
+  rename, delete or create files in it like anywhere else. Open a file from inside an archive,
+  edit it, save — the archive is updated. *Compress…* writes about 300 of these formats.
 - **Looks like your desktop.** Native GTK widgets and your GTK theme, icon theme and fonts;
   nothing is custom-drawn.
 - **Opens instantly.** After the first start a background instance keeps running; a new
@@ -131,11 +132,24 @@ and act like files anywhere else (open, copy, rename, trash, properties). *In su
 *Inside archives* widen the search. Symbolic links are not followed and other drives are not
 entered. <kbd>Esc</kbd> closes it.
 
-**Archives:** double-click an archive to enter it; *Open as Archive* for anything else the
-library understands (disk images, packages, …). *Extract Here*, *Extract To…* and
+**Archives:** double-click an archive to enter it. Every format the library knows opens this
+way: archives (ZIP, 7-Zip, RAR, TAR, CAB, LHA, ARJ, StuffIt, …), compressed files (`.gz`,
+`.xz`, `.zst`, `.br`, `.lz4`, …), disk and file system images (ISO, FAT, exFAT, ext2/3/4,
+NTFS, HFS+, SquashFS, VHD/VHDX, VMDK, QCOW2, VDI, UDF, …) and packages (`.deb`, `.rpm`,
+`.whl`, …). Files that belong to another program — office documents, e-books, pictures,
+fonts, programs and installers, databases — still open with it; *Open as Archive* shows what
+is inside them, and inside audio and video files too. *Extract Here*, *Extract To…* and
 *Compress…* are in the context menu. Long archive operations show a progress bar with the
 bytes done. Formats the library can only read are shown read-only, and the status bar says
 why.
+
+**Compressed files** such as `notes.txt.gz` show the one file inside; open it, edit it and
+save, and the file is compressed again. *Extract Here* gives `notes.txt` itself.
+
+**Compress…** offers ZIP, 7-Zip and the tar formats first, then every other format the
+library can write in submenus: *Compressed File* (for a single file), *Archives* and *Disk
+Images* (FAT, ext4, NTFS, ISO, VHD, …, with folders and long names). The password fields
+are active for formats that encrypt.
 
 **Passwords:** encrypted archives ask for their password when you enter them, open a file or
 extract, and ask again if it was wrong. *Compress…* can create password-protected `.zip`
@@ -268,7 +282,20 @@ listed in `vendor/compressionworkbench/VENDORED.md`:
 - ISO images: the reader prefers Rock Ridge names (and reads permissions, times and
   continuation areas); the writer gained Rock Ridge, folders, file metadata and El Torito boot
   records (catalog, BIOS and UEFI entries, boot info table), so images can be edited.
-- Regression tests: `helper/FbArchive.Tests` (run by `make test`).
+- New disk images lost their folders: ISO, ext2/3/4, NTFS, XAR and the CD images (CDI, MDF,
+  NRG, BIN) wrote every file into the top folder, and VHD, VHDX, VMDK, VDI and QCOW2 turned
+  names into upper-case 8.3. They now keep folders, empty folders and long names; ext, NTFS
+  and XAR also add and remove inside folders.
+- XAR files were rejected by `xar` and libarchive (a missing table-of-contents checksum).
+- Edits that deleted the wrong file: BBC Micro disks removed `A.TXT` along with `C.TXT`,
+  BKF backups removed same-named files from every folder and added into the wrong one, the
+  shared rebuild path matched leaf names, and MFS-1 cut other files' names down to their
+  extension.
+- Two formats (xDisk, xMash) were never recognised, because their names differ in case.
+- Regression tests: `helper/FbArchive.Tests` (run by `make test`), among them a round trip of
+  every format failBrauwser can write — create, recognise, list, extract, add, remove —
+  against a baseline of known outcomes (`format-baseline.tsv`), and checks of the results
+  with `e2fsck`, `debugfs`, `bsdtar`, `fsck.fat`, `qemu-img` and `xorriso` where installed.
 
 ## Development
 
@@ -284,10 +311,17 @@ sway session with a private D-Bus and private config, data and trash folders; th
 `sway`, `grim` and `dbus-run-session` and are skipped otherwise. `FB_SELFTEST=<script>` runs
 such a script (see `src/ui/selftest.rs` for the commands).
 
-## Limitations of v0.2
+## Limitations
 
 - GVfs network locations without a local path (`smb://` not mounted through FUSE, `mtp://`)
   are not browsable yet.
+- Of the formats failBrauwser can write, about 270 keep files exactly. The rest are what
+  their format is: old disk formats store upper-case 8.3 names or pad files to whole sectors
+  (CP/M, RT-11, LIF, PlayStation memory cards), some formats have no folders, a few need
+  particular inputs (icons, fonts, subtitles), and container formats such as PDF or e-mail add
+  entries of their own. `helper/FbArchive.Tests/format-baseline.tsv` lists each one.
+- CD images (CDI, MDF, NRG, BIN) show plain ISO 9660 names (upper case); BIN/CUE and ODS-1
+  are read-only.
 - Edits to formats without in-place modification rebuild the archive.
 - Hybrid ISO images are read-only; Rock Ridge names longer than about 170 bytes are
   shortened when an ISO is rebuilt.
