@@ -37,6 +37,26 @@ public class IsoTests {
   }
 
   [Test]
+  public void NewImage_KeepsFoldersAndLongNames() {
+    var src = Directory.CreateTempSubdirectory("fb-iso-new-");
+    try {
+      var name = "A long name with Case, longer than the old 8.3 limit.txt";
+      Directory.CreateDirectory(Path.Combine(src.FullName, "pack", "sub", "empty"));
+      File.WriteAllText(Path.Combine(src.FullName, "pack", "sub", name), "deep");
+      File.WriteAllText(Path.Combine(src.FullName, "top.txt"), "top");
+      var iso = Path.Combine(src.FullName, "new.iso");
+      Commands.Add(iso, [new(Path.Combine(src.FullName, "pack"), "pack"), new(Path.Combine(src.FullName, "top.txt"), "top.txt")], null, "Iso");
+      using var r = new IsoReader(File.OpenRead(iso));
+      var byName = r.Entries.ToDictionary(e => e.Name);
+      Assert.That(byName.Keys, Is.SupersetOf(new[] { "top.txt", "pack", "pack/sub", "pack/sub/empty", "pack/sub/" + name }));
+      Assert.That(r.Extract(byName["pack/sub/" + name]), Is.EqualTo("deep"u8.ToArray()));
+    }
+    finally {
+      src.Delete(true);
+    }
+  }
+
+  [Test]
   public void ElTorito_EntriesPointAtTheirFiles_AndBootInfoTableIsPatched() {
     var bios = new byte[4096];
     new Random(1).NextBytes(bios);

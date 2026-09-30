@@ -139,7 +139,7 @@ InnoSetup	fail list: Exception: listed:
 IntelHex	fail list: Exception: listed: metadata.ini, firmware.bin
 Ipa	ok
 Ipsw	ok	extra
-Iso	ok	flat
+Iso	ok
 Jar	ok
 Jffs2	ok	extra
 Jfs	ok
