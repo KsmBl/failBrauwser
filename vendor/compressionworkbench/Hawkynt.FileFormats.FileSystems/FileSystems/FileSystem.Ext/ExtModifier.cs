@@ -87,7 +87,8 @@ public static class ExtModifier {
   public static void Mutate(
       Stream archive,
       IReadOnlyList<(string Name, byte[] Data)> replacements,
-      IReadOnlyCollection<string> deletions) {
+      IReadOnlyCollection<string> deletions,
+      IReadOnlyCollection<string>? newDirectories = null) {
     archive.Position = 0;
     var reader = new ExtReader(archive);
 
@@ -95,8 +96,14 @@ public static class ExtModifier {
     var replaceMap = replacements.ToDictionary(r => r.Name, r => r.Data, StringComparer.Ordinal);
 
     var final = new List<(string Name, byte[] Data)>();
+    var dirs = new List<string>();
     foreach (var entry in reader.Entries) {
-      if (entry.IsDirectory) continue;
+      if (entry.IsDirectory) {
+        // Directories stay, empty ones too, unless they are deleted with their contents.
+        if (entry.Name != "lost+found" && !delSet.Any(d => entry.Name == d || entry.Name.StartsWith(d + "/", StringComparison.Ordinal)))
+          dirs.Add(entry.Name);
+        continue;
+      }
       if (delSet.Contains(entry.Name)) continue;
       if (replaceMap.TryGetValue(entry.Name, out var newData)) {
         final.Add((entry.Name, newData));
@@ -109,6 +116,8 @@ public static class ExtModifier {
       final.Add((name, data));
 
     var w = new ExtWriter();
+    foreach (var dir in dirs.Concat(newDirectories ?? []))
+      w.AddDirectory(dir);
     foreach (var (name, data) in final)
       w.AddFile(name, data);
     var rebuilt = w.Build();
