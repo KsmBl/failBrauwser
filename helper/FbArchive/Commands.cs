@@ -52,7 +52,7 @@ public static class Commands {
       w.WriteString("id", d.Id);
       w.WriteString("name", d.DisplayName);
       w.WriteString("kind", kind == "archive" && FormatRegistry.FilesystemFormatIds.Contains(d.Id) ? "filesystem" : kind);
-      w.WriteBoolean("create", caps.HasFlag(FormatCapabilities.CanCreate));
+      w.WriteBoolean("create", CanCreate(d));
       w.WriteBoolean("modify", caps.HasFlag(FormatCapabilities.CanModify));
       w.WriteBoolean("password", caps.HasFlag(FormatCapabilities.SupportsPassword));
       w.WriteBoolean("dirs", caps.HasFlag(FormatCapabilities.SupportsDirectories));
@@ -63,6 +63,34 @@ public static class Commands {
       w.WriteEndObject();
     }
     w.WriteEndArray();
+  }
+
+  /// <summary>
+  /// Formats whose writer does not store files so they can be read back (found by the format
+  /// matrix test): they are not offered for new archives.
+  /// </summary>
+  private static readonly HashSet<string> NoCreate = new(StringComparer.OrdinalIgnoreCase) {
+    "StuffItX",    // writes the header only
+    "InnoSetup",   // an installer stub: the files do not list again
+    "Nsis",        // same
+    "Mtree",       // a manifest: names and sizes, no file contents
+    "Umx",         // the music module comes back empty
+    "DiskDoubler", // keeps only the first file
+  };
+
+  /// <summary>True when new archives of this format are offered (it can create, and what it writes reads back).</summary>
+  public static bool CanCreate(IFormatDescriptor d) => d.Capabilities.HasFlag(FormatCapabilities.CanCreate) && !NoCreate.Contains(d.Id);
+
+  /// <summary>Formats that list and extract, but whose edits do not work on files.</summary>
+  private static readonly Dictionary<string, string> NotEditable = new(StringComparer.OrdinalIgnoreCase) {
+    ["BinCue"] = "BIN/CUE images are changed a sector at a time, not file by file.",
+    ["Ods1"] = "Editing ODS-1 volumes damages file contents.",
+  };
+
+  /// <summary>Why an archive of this format cannot be changed, if that is the case.</summary>
+  public static string? ReadOnlyReason(F format, string path) {
+    if (format == F.Iso) return IsoEdit.ReadOnlyReason(path);
+    return NotEditable.GetValueOrDefault(format.ToString());
   }
 
   public static void Probe(Utf8JsonWriter w, string path) {
@@ -81,6 +109,7 @@ public static class Commands {
     if (format is F.Iso) return path == null || IsoEdit.ReadOnlyReason(path) == null;
     // A compressed single file can be written again: its one file is recompressed.
     if (FormatDetector.IsStreamFormat(format)) return FormatRegistry.GetStreamOps(format.ToString()) != null;
+    if (NotEditable.ContainsKey(format.ToString())) return false;
     var ops = FormatRegistry.GetArchiveOps(format.ToString());
     return ops is IArchiveModifiable || ops is IArchiveCreatable;
   }
@@ -90,7 +119,7 @@ public static class Commands {
     var entries = ArchiveOperations.List(archive, password);
     w.WriteString("format", format.ToString());
     w.WriteBoolean("writable", IsWritable(format, archive));
-    if (format == F.Iso && IsoEdit.ReadOnlyReason(archive) is { } why) w.WriteString("readonly_reason", why);
+    if (ReadOnlyReason(format, archive) is { } why) w.WriteString("readonly_reason", why);
     w.WriteStartArray("entries");
     foreach (var e in entries) {
       w.WriteStartObject();
@@ -165,6 +194,7 @@ public static class Commands {
     Progress.Current?.Phase("adding", inputBytes + existing0);
 
     if (!File.Exists(archive) || new FileInfo(archive).Length == 0) {
+      if (format != null && NoCreate.Contains(format)) throw new NotSupportedException($"{format} archives cannot be written so that their files read back.");
       if (format == null) {
         ArchiveOperations.Create(archive, WithParents(inputs), opts);
       } else {
@@ -362,7 +392,7 @@ public static class Commands {
 
   private static void RequireWritable(string archive) {
     var format = FormatDetector.Detect(archive);
-    if (format == F.Iso && IsoEdit.ReadOnlyReason(archive) is { } why) throw new NotSupportedException(why);
+    if (ReadOnlyReason(format, archive) is { } why) throw new NotSupportedException(why);
     if (!IsWritable(format, archive)) throw new NotSupportedException($"{format} archives are read-only.");
   }
 
