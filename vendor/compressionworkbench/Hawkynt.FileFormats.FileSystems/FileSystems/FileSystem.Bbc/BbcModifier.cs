@@ -68,6 +68,15 @@ public static class BbcModifier {
   }
 
   /// <summary>
+  /// Directory and catalogue name of a published name: "D.NAME" (what List shows, and
+  /// what Create accepts) or a bare name in the default directory '$'.
+  /// </summary>
+  public static (char Directory, string Name) SplitName(string name) =>
+    name.Length >= 3 && name[1] == '.' && name.IndexOf('.', 2) < 0
+      ? (name[0], SanitizeName(name[2..]))
+      : ('$', SanitizeName(name));
+
+  /// <summary>
   /// Removes a named file from the image. Returns true if found and removed.
   /// When <paramref name="wipeData"/> is true, the data sectors are zeroed.
   /// </summary>
@@ -84,16 +93,15 @@ public static class BbcModifier {
     // List/FullName emits ("$.SECRET") — SanitizeName treats the latter's ".NAME"
     // as an extension and would otherwise reduce it to the directory char, making
     // a delete-by-listed-name silently no-op (leaving a forensic remnant).
-    var sanitizedRaw = SanitizeName(name);
-    var dirStripped = name.Length >= 2 && name[1] == '.' ? name[2..] : name;
-    var sanitizedStripped = SanitizeName(dirStripped);
+    // The directory counts: "A.TXT" and "C.TXT" are different files, and a bare name
+    // means the default directory '$'.
+    var (wantDir, wantName) = SplitName(name);
     var match = -1;
     for (var i = 0; i < entries.Count; i++) {
       var e = entries[i];
       var bare = e.Name.TrimEnd();
-      var full = $"{e.Directory}.{bare}";
-      if (bare == sanitizedRaw || bare == sanitizedStripped
-          || string.Equals(full, name, StringComparison.OrdinalIgnoreCase)) { match = i; break; }
+      if (char.ToUpperInvariant(e.Directory) == char.ToUpperInvariant(wantDir)
+          && string.Equals(bare, wantName, StringComparison.OrdinalIgnoreCase)) { match = i; break; }
     }
     if (match < 0) return false;
 
