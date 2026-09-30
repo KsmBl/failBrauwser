@@ -29,3 +29,29 @@ open $T/w
 select notes.txt.br
 action win.extract-here
 wait-exists $T/w/notes.txt
+# Compress writes any format: picked by its suffix, or explicitly (a FAT image).
+open $T/w
+select pack
+text pack.lzh
+action win.compress
+wait-exists $T/w/pack.lzh
+select pack.lzh
+activate
+wait-row pack
+open $T/w
+select pack
+text pack|Fat
+action win.compress
+wait-exists $T/w/pack.img
+select pack.img
+activate
+wait-row pack
+# A single file can become a compressed file.
+open $T/w
+select notes.txt
+text notes.txt.xz
+action win.compress
+wait-exists $T/w/notes.txt.xz
+select notes.txt.xz
+activate
+wait-row notes.txt
