@@ -118,6 +118,12 @@ impl Helper {
         cv.notify_all();
     }
 
+    /// Every format the helper knows (the `formats` request), as JSON objects.
+    pub fn formats(&self) -> Result<Vec<Value>> {
+        let v = self.request(serde_json::json!({"cmd": "formats"}))?;
+        Ok(v["formats"].as_array().cloned().unwrap_or_default())
+    }
+
     /// Sends one request and waits for its answer. `req` must be a JSON object;
     /// the `id` field is filled in here.
     pub fn request(&self, req: Value) -> Result<Value> {

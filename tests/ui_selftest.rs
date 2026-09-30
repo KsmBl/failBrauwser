@@ -285,3 +285,22 @@ fn encrypted_archives() {
         assert_eq!(std::fs::read_to_string(t.join("w/locked/plan.txt")).unwrap(), "the plan");
     });
 }
+
+#[test]
+fn more_formats_open_as_folders() {
+    let helper = failbrauwser::archive::client::locate_helper();
+    if !helper.is_file() {
+        eprintln!("fb-archive helper not built, skipping");
+        return;
+    }
+    run("formats.fbt", |t| {
+        let w = t.join("w");
+        std::fs::create_dir_all(&w).unwrap();
+        std::fs::write(t.join("a.txt"), "alpha").unwrap();
+        let h = failbrauwser::archive::Helper::new(helper);
+        for name in ["old.lzh", "disk.img", "floppy.adf", "root.sqfs"] {
+            h.add(&w.join(name), &[(t.join("a.txt"), "a.txt".into())], None).unwrap();
+        }
+        h.shutdown();
+    });
+}
