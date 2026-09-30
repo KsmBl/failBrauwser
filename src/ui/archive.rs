@@ -678,6 +678,28 @@ pub fn compress(w: &Window) {
     });
 }
 
+/// Opens a file as a folder when the archive library can read it, else with an application.
+pub fn enter_or_open(w: &Window, path: PathBuf) {
+    let me = Rc::downgrade(&w.me());
+    let pane = Rc::downgrade(&w.current_pane());
+    glib::spawn_future_local(async move {
+        // It has to list something: a name alone (random data called ".bin") is not enough.
+        let probe = path.clone();
+        let readable = gio::spawn_blocking(move || match Vfs::global().helper().list(&probe, None) {
+            Ok(listing) => !listing.entries.is_empty(),
+            Err(e) => e.needs_password(),
+        })
+        .await
+        .unwrap_or(false);
+        let (Some(w), Some(pane)) = (me.upgrade(), pane.upgrade()) else { return };
+        if readable {
+            pane.navigate(Location::Archive(ArchiveLoc::root(path)));
+        } else {
+            util::open_with_default(w.win.upcast_ref(), &path);
+        }
+    });
+}
+
 /// Opens any file as a folder if the archive library understands it.
 pub fn open_as_archive(w: &Window) {
     let pane = w.current_pane();
