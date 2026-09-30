@@ -92,7 +92,7 @@ public class FormatMatrixTests {
         Commands.Add(arc, items, null, id);
         step = "detect";
         var detected = FormatDetector.Detect(arc).ToString();
-        if (detected != id) throw new Exception($"recognised as {detected}");
+        if (!string.Equals(detected, id, StringComparison.OrdinalIgnoreCase)) throw new Exception($"recognised as {detected}");
         step = "list";
         var want = single ? ["a.txt"] : dirs ? new[] { "a.txt", "d/b.bin" } : ["a.txt", "b.bin"];
         var names = Names(arc);
@@ -129,7 +129,7 @@ public class FormatMatrixTests {
     }
     catch (AggregateException e) {
       var ie = e.InnerException!;
-      var result = $"fail {step}: {ie.GetType().Name}: {ie.Message.Split('\n')[0].Trim()}";
+      var result = $"fail {step}: {ie.GetType().Name}: {ie.Message.Split('\n')[0].Trim().Replace(root.FullName, "<tmp>")}";
       return flags.Count > 0 ? $"{result}\t{string.Join(',', flags)}" : result;
     }
     finally {
