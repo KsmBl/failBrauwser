@@ -6,7 +6,7 @@ using Compression.Registry;
 namespace FbArchive.Tests;
 
 /// <summary>
-/// Every format the library can write goes through what failBrauwser does with it: create
+/// Every format failBrauwser offers for new archives goes through what failBrauwser does with it: create
 /// (with the format named explicitly, as the Compress dialog does), recognise, list, extract,
 /// and for writable ones add and remove. The outcome of each format is compared with
 /// <c>format-baseline.tsv</c>; a format that gets worse fails. <c>FB_REGEN_MATRIX=1</c>
@@ -27,7 +27,7 @@ public class FormatMatrixTests {
     FormatRegistration.EnsureInitialized();
     return FormatRegistry.All
       .Where(d => d.Category is FormatCategory.Archive or FormatCategory.CompoundTar or FormatCategory.Stream or FormatCategory.Wrapper)
-      .Where(d => d.Capabilities.HasFlag(FormatCapabilities.CanCreate))
+      .Where(Commands.CanCreate)
       .Select(d => d.Id).OrderBy(x => x, StringComparer.Ordinal);
   }
 

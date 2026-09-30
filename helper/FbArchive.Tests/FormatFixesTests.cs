@@ -54,4 +54,34 @@ public class FormatFixesTests {
     var dirs = ArchiveOperations.List(bkf, null).Where(e => e.IsDirectory).Select(e => Commands.Normalize(e.Name));
     Assert.That(dirs, Does.Contain("d/e"), "empty folder kept");
   }
+
+  /// <summary>Adding to an MFS-1 image cut the other files' names down to their extension.</summary>
+  [Test]
+  public void Mfs1_AddingKeepsTheOtherNames() {
+    var img = Path.Combine(_root, "m.mfsd");
+    Commands.Add(img, [new(File("a.txt", "alpha"), "a.txt"), new(File("b.bin", "beta"), "b.bin")], null, "Mfs1");
+    Commands.Add(img, [new(File("c.txt", "gamma"), "c.txt")], null);
+    Assert.That(Names(img).Select(n => n.ToLowerInvariant()), Is.EquivalentTo(new[] { "a.txt", "b.bin", "c.txt" }));
+    Commands.Remove(img, [Names(img).First(n => n.Equals("a.txt", StringComparison.OrdinalIgnoreCase))], null);
+    Assert.That(Names(img).Select(n => n.ToLowerInvariant()), Is.EquivalentTo(new[] { "b.bin", "c.txt" }));
+  }
+
+  /// <summary>Formats whose files do not read back are not offered for new archives.</summary>
+  [TestCase("StuffItX", ".sitx")]
+  [TestCase("Mtree", ".mtree")]
+  public void UnrecoverableWritersAreRefused(string format, string ext) {
+    var target = Path.Combine(_root, "x" + ext);
+    Assert.Throws<NotSupportedException>(() => Commands.Add(target, [new(File("a.txt", "alpha"), "a.txt")], null, format));
+    Assert.That(System.IO.File.Exists(target), Is.False);
+  }
+
+  /// <summary>BIN/CUE images open read-only, with the reason.</summary>
+  [Test]
+  public void BinCue_IsReadOnlyWithAReason() {
+    var bin = Path.Combine(_root, "d.bin");
+    Commands.Add(bin, [new(File("a.txt", "alpha"), "a.txt")], null, "BinCue");
+    Assert.That(Commands.IsWritable(FormatDetector.Detect(bin), bin), Is.False);
+    Assert.That(Commands.ReadOnlyReason(FormatDetector.Detect(bin), bin), Does.Contain("sector"));
+    Assert.Throws<NotSupportedException>(() => Commands.Remove(bin, ["A.TXT"], null));
+  }
 }

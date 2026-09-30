@@ -39,7 +39,7 @@ BcacheFs	ok	extra
 Bcm	ok
 Bfs	ok
 Big	ok
-BinCue	fail add: NotSupportedException: BIN/CUE: 'c.txt' cannot be added. This image is edited a sector at a time, so an entry has to be named 'sector-NNNN.bin' for the sector it replaces. Adding a file to the ISO 9660 filesystem inside the image is not something this supports.	case
+BinCue	ok	case
 BinHex	ok
 BinaryII	ok	case
 Bkf	ok
@@ -78,7 +78,6 @@ D81	ok	case
 Dcs	fail list: Exception: listed: track_000.raw, track_001.raw
 Deb	ok
 Density	ok
-DiskDoubler	fail list: Exception: listed: a.txt
 Dmg	ok
 Dms	fail create: ArgumentException: DMS format requires exactly one input file (disk image).
 Doc	ok
@@ -135,7 +134,6 @@ Human68k	ok	case,flat
 IcePacker	ok
 Ico	fail create: ArgumentException: ICO: input is neither a PNG nor a BMP file
 IffCdaf	ok
-InnoSetup	fail list: Exception: listed:
 IntelHex	fail list: Exception: listed: metadata.ini, firmware.bin
 Ipa	ok
 Ipsw	ok	extra
@@ -174,7 +172,7 @@ Mcm	ok
 Mdf	ok	case
 MessagePack	ok
 Mfs	ok
-Mfs1	fail add: Exception: after adding: C.TXT, TXT, BIN	case
+Mfs1	ok	case
 Mhk	fail list: Exception: listed: tDAT_1000, tDAT_1001
 MinixFs	ok
 MinixV1	ok
@@ -187,7 +185,6 @@ Msa	ok	case
 Msg	ok
 Msi	ok
 Msix	fail detect: Exception: recognised as Appx
-Mtree	fail extract: NotSupportedException: mtree is a metadata manifest and contains no file bodies. CWB intentionally does not dereference manifest contents= paths on the host filesystem.
 Narc	ok
 Nds	ok	flat
 Nib	fail list: Exception: listed: metadata.ini, track_00.bin, track_02.bin, track_04.bin, track_06.bin, track_08.bin, track_10.bin, track_12.bin, track_14.bin, track_16.bin, track_18.bin, track_20.bin, track_22.bin, track_24.bin, track_26.bin, track_28.bin, track_30.bin, track_32.bin, track_34.bin, track_36.bin, track_38.bin, track_40.bin, track_42.bin, track_44.bin, track_46.bin, track_48.bin, track_50.bin, track_52.bin, track_54.bin, track_56.bin, track_58.bin, track_60.bin, track_62.bin, track_64.bin, track_66.bin, track_68.bin
@@ -197,7 +194,6 @@ Npy	fail list: Exception: listed: metadata.ini, header.bin, array.bin
 Npz	fail list: Exception: listed: metadata.ini, a.txt.npy, d/b.bin.npy
 Nrg	ok	case
 Nsa	ok
-Nsis	fail list: Exception: listed: block_0, block_1
 Nss	ok
 Ntfs	ok
 NuFx	ok
@@ -207,7 +203,7 @@ Nwfs386	ok	case
 Ocfs2	ok
 Odp	ok
 Ods	ok
-Ods1	fail extract2: Exception: c.txt differs	case,flat
+Ods1	ok	case,flat
 Odt	ok
 OpenVms	ok	case
 OrangeFs	ok
@@ -271,7 +267,6 @@ Srec	fail list: Exception: listed: metadata.ini, firmware.bin
 Stacker	ok	case
 Storable	ok
 StuffIt	ok
-StuffItX	fail list: Exception: listed:
 Sup	fail create: InvalidOperationException: SUP creation needs complete Blu-ray PGS display-set streams (PCS through END), such as the subtitle_NNN.bin entries a SUP demux produces; a .sup file is a single subtitle stream and cannot represent an arbitrary file tree. Input 'a.txt' is not a complete SUP segment stream: PGS: file shorter than minimum 13-byte header.
 Swf	fail create: InvalidDataException: Unrecognised SWF signature "hel". Expected "FWS", "CWS", or "ZWS".
 SysV	ok
@@ -305,7 +300,6 @@ Udf	ok
 UefiFv	fail list: Exception: listed: metadata.ini, 09cbb718-9e9a-f5a3-0ba8-99b5ba81e0d3_RAW.bin, fec6b687-fcb9-a994-9980-18df8566c728_RAW.bin
 Ufs	ok
 Uharc	ok	flat
-Umx	fail extract: Exception: content differs:
 UnityBundle	ok
 UnrealPak	ok
 UuEncoding	ok
