@@ -1,0 +1,21 @@
+# Less common archives and disk images open like folders on double click.
+open $T/w
+select old.lzh
+activate
+expect-location $T/w/old.lzh
+wait-row a.txt
+open $T/w
+select disk.img
+activate
+expect-location $T/w/disk.img
+wait-row a.txt
+open $T/w
+select floppy.adf
+activate
+expect-location $T/w/floppy.adf
+wait-row a.txt
+open $T/w
+select root.sqfs
+activate
+expect-location $T/w/root.sqfs
+wait-row a.txt
