@@ -10,7 +10,7 @@ use super::pane::Pane;
 use super::util;
 use super::window::Window;
 use failbrauwser::archive::vfs::Vfs;
-use failbrauwser::archive::{ArchiveError, CREATE_FORMATS, is_browsable_name};
+use failbrauwser::archive::{ArchiveError, formats, is_browsable_name};
 use failbrauwser::location::{ArchiveLoc, Location};
 use failbrauwser::ops::copy::{self, Mode};
 use failbrauwser::ops::job::{Answer, JobCtx, Question};
@@ -568,17 +568,35 @@ pub fn compress(w: &Window) {
     name_label.set_mnemonic_widget(Some(&entry));
     let fmt_label = gtk::Label::with_mnemonic("_Format:");
     fmt_label.set_xalign(1.0);
-    let combo = gtk::ComboBoxText::new();
-    for (label, ext) in CREATE_FORMATS {
-        combo.append(Some(ext), &format!("{label} ({ext})"));
+    // The common formats, then every other one the library can write, in submenus.
+    let single_file = items.len() == 1 && items[0].is_file();
+    let store = gtk::TreeStore::new(&[glib::Type::STRING, glib::Type::STRING]);
+    let label_of = |f: &formats::Format| format!("{} ({})", f.name, formats::default_ext(f));
+    for id in formats::COMMON {
+        if let Some(f) = formats::by_id(id) {
+            store.insert_with_values(None, None, &[(0, &label_of(f)), (1, &f.id)]);
+        }
     }
-    combo.set_active(Some(0));
+    store.insert_with_values(None, None, &[(0, &"-"), (1, &"")]);
+    for (group, list) in formats::create_groups(single_file) {
+        let parent = store.insert_with_values(None, None, &[(0, &group), (1, &"")]);
+        for f in list {
+            store.insert_with_values(Some(&parent), None, &[(0, &label_of(f)), (1, &f.id)]);
+        }
+    }
+    let combo = gtk::ComboBox::with_model(&store);
+    combo.set_id_column(1);
+    let cell = gtk::CellRendererText::new();
+    combo.pack_start(&cell, true);
+    combo.add_attribute(&cell, "text", 0);
+    combo.set_row_separator_func(|m, it| m.value(it, 0).get::<String>().is_ok_and(|s| s == "-"));
+    combo.set_active_id(Some("Zip"));
     fmt_label.set_mnemonic_widget(Some(&combo));
     grid.attach(&name_label, 0, 0, 1, 1);
     grid.attach(&entry, 1, 0, 1, 1);
     grid.attach(&fmt_label, 0, 1, 1, 1);
     grid.attach(&combo, 1, 1, 1, 1);
-    // Encryption: ZIP (AES-256) and 7-Zip.
+    // Encryption, for the formats that have it (ZIP with AES-256, 7-Zip, …).
     let pw_label = gtk::Label::with_mnemonic("_Password:");
     pw_label.set_xalign(1.0);
     let pw = gtk::Entry::new();
@@ -598,7 +616,7 @@ pub fn compress(w: &Window) {
     grid.attach(&pw2, 1, 3, 1, 1);
     let (p1, p2) = (pw.clone(), pw2.clone());
     combo.connect_changed(move |c| {
-        let can = matches!(c.active_id().as_deref(), Some(".zip") | Some(".7z"));
+        let can = c.active_id().and_then(|id| formats::by_id(&id)).is_some_and(|f| f.password);
         p1.set_sensitive(can);
         p2.set_sensitive(can);
     });
@@ -606,13 +624,13 @@ pub fn compress(w: &Window) {
     d.show_all();
     let weak = Rc::downgrade(&w.me());
     let reply = super::selftest::scripted_text();
-    let run = move |name: String, ext: String, password: Option<String>| {
+    let run = move |name: String, format: &'static formats::Format, password: Option<String>| {
         let Some(w) = weak.upgrade() else { return };
         if !util::valid_file_name(&name) {
             util::show_error(&w.win, "Invalid name", "A name cannot be empty or contain “/”.");
             return;
         }
-        let file = format!("{name}{ext}");
+        let file = formats::file_name_for(&name, format);
         let target = dir.join(&file);
         if target.exists() {
             util::show_error(&w.win, "Cannot create archive", &format!("“{file}” already exists."));
@@ -624,7 +642,7 @@ pub fn compress(w: &Window) {
         w.app.jobs.start(
             w.win.upcast_ref(),
             format!("Creating “{file}”"),
-            move |ctx| tracked(ctx, || Vfs::global().helper().add(&target, &items, password.as_deref())).map(|_| vec![target.clone()]).map_err(io),
+            move |ctx| tracked(ctx, || Vfs::global().helper().create(&target, format.id, &items, password.as_deref())).map(|_| vec![target.clone()]).map_err(io),
             move |outcome| {
                 if let (Some(w), Outcome::Done(made)) = (w2.upgrade(), outcome) {
                     fileops::select_created(&w, &loc, made);
@@ -633,24 +651,28 @@ pub fn compress(w: &Window) {
         );
     };
     if let Some(r) = reply {
-        // Self-test: "name.ext" picks the format by its extension.
-        let ext = CREATE_FORMATS.iter().map(|(_, e)| *e).find(|e| r.ends_with(e)).unwrap_or(".zip");
+        // Self-test: "name.ext" picks the format by its extension, "name|Id" by its id.
+        let (name, format) = match r.split_once('|') {
+            Some((n, id)) => (n.to_string(), formats::by_id(id)),
+            None => (r.clone(), formats::by_name(&r).filter(|f| f.create)),
+        };
+        let format = format.unwrap_or_else(|| formats::by_id("Zip").expect("zip"));
         // A second scripted reply is the password.
         let password = super::selftest::scripted_text();
-        run(r.trim_end_matches(ext).to_string(), ext.to_string(), password);
+        run(name, format, password);
         d.close();
         return;
     }
     d.connect_response(move |d, resp| {
         if resp == gtk::ResponseType::Ok {
-            let ext = combo.active_id().map(|s| s.to_string()).unwrap_or_else(|| ".zip".into());
+            let Some(format) = combo.active_id().and_then(|id| formats::by_id(&id)) else { return };
             let (a, b) = (pw.text().to_string(), pw2.text().to_string());
             if a != b {
                 util::show_error(d, "Passwords differ", "Type the same password twice.");
                 return;
             }
             let password = (!a.is_empty() && pw.is_sensitive()).then_some(a);
-            run(entry.text().to_string(), ext, password);
+            run(entry.text().to_string(), format, password);
         }
         d.close();
     });

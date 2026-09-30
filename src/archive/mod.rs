@@ -105,6 +105,14 @@ impl Helper {
         self.request(with_password(json!({"cmd": "add", "archive": path_str(archive), "items": items}), password)).map(|_| ())
     }
 
+    /// Creates a new archive in the format with this id (see [`formats`]) from files or
+    /// folders on disk, whatever its name suggests.
+    pub fn create(&self, archive: &Path, format: &str, items: &[(std::path::PathBuf, String)], password: Option<&str>) -> Result<()> {
+        let items: Vec<Value> = items.iter().map(|(src, name)| json!({"src": path_str(src), "name": name})).collect();
+        let req = json!({"cmd": "add", "archive": path_str(archive), "items": items, "format": format});
+        self.request(with_password(req, password)).map(|_| ())
+    }
+
     pub fn remove(&self, archive: &Path, names: &[String], password: Option<&str>) -> Result<()> {
         self.request(with_password(json!({"cmd": "remove", "archive": path_str(archive), "names": names}), password)).map(|_| ())
     }
@@ -174,16 +182,6 @@ pub fn is_browsable_name(name: &str) -> bool {
     }
     formats::by_name(&lower).is_some() && !NOT_BY_NAME.iter().any(ends)
 }
-
-/// File name suffixes a new archive can be created with from the UI.
-pub const CREATE_FORMATS: &[(&str, &str)] = &[
-    ("ZIP", ".zip"),
-    ("7-Zip", ".7z"),
-    ("Tar + Gzip", ".tar.gz"),
-    ("Tar + XZ", ".tar.xz"),
-    ("Tar + Zstandard", ".tar.zst"),
-    ("Tar", ".tar"),
-];
 
 #[cfg(test)]
 mod tests {

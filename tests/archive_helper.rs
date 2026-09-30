@@ -236,6 +236,7 @@ fn formats_table() {
         let b = |k: &str| f[k].as_bool().unwrap();
         let kind = match f["kind"].as_str().unwrap() {
             "archive" => "Archive",
+            "filesystem" => "Filesystem",
             "tar" => "Tar",
             "stream" => "Stream",
             _ => "Wrapper",

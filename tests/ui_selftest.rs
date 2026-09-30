@@ -302,6 +302,8 @@ fn more_formats_open_as_folders() {
             h.add(&w.join(name), &[(t.join("a.txt"), "a.txt".into())], None).unwrap();
         }
         std::fs::write(t.join("notes.txt"), "notes").unwrap();
+        std::fs::create_dir_all(w.join("pack/sub")).unwrap();
+        std::fs::write(w.join("pack/sub/p.txt"), "packed").unwrap();
         h.add(&w.join("notes.txt.br"), &[(t.join("notes.txt"), "notes.txt".into())], None).unwrap();
         h.shutdown();
     });
