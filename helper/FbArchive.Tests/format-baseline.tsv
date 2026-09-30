@@ -330,7 +330,7 @@ Wbn	fail list: Exception: listed: FULL.wbn, metadata.ini
 Wheel	ok	extra
 Wim	ok
 Wrapster	fail detect: Exception: recognised as Mp3
-Xar	ok	flat
+Xar	ok
 Xenix	ok
 Xfs	ok
 Xls	ok
