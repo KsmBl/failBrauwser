@@ -882,6 +882,8 @@ public sealed class FatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     }
 
     var w = new FatWriter();
+    foreach (var input in inputs.Where(i => i.IsDirectory))
+      w.AddDirectory(input.ArchiveName);
     foreach (var input in inputs.Where(i => !i.IsDirectory))
       w.AddFile(input.ArchiveName, input.ReadContent(),
                 input.InMemoryContent != null ? null : File.GetLastWriteTime(input.FullPath));
@@ -900,7 +902,7 @@ public sealed class FatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     ArgumentNullException.ThrowIfNull(inputs);
     var w = new FatWriter();
     foreach (var input in inputs) {
-      if (input.IsDirectory) continue;
+      if (input.IsDirectory) { w.AddDirectory(input.Name); continue; }
       w.AddStreamingFile(input.Name, input.Size, input.OpenStream, null);
     }
     BuildAndWrite(output, w, options, streaming: true);
@@ -1211,7 +1213,10 @@ public sealed class FatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
       IReadOnlyList<ArchiveInputInfo> inputs) {
     var result = new List<Compression.Registry.Streaming.StreamingArchiveInput>();
     foreach (var i in inputs) {
-      if (i.IsDirectory) continue;
+      if (i.IsDirectory) {
+        result.Add(new Compression.Registry.Streaming.StreamingArchiveInput(i.ArchiveName, 0, true, () => Stream.Null));
+        continue;
+      }
       var info = i;
       var size = info.InMemoryContent?.LongLength
                  ?? (File.Exists(info.FullPath) ? new FileInfo(info.FullPath).Length : 0L);
