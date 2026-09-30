@@ -224,3 +224,32 @@ fn iso_edits_keep_rock_ridge_joliet_and_boot_records() {
     let names: Vec<String> = h.list(&iso, None).unwrap().entries.into_iter().map(|e| e.name).collect();
     assert!(names.contains(&long.to_string()), "{names:?}");
 }
+
+/// The format table compiled into the program matches what the helper reports
+/// (`FB_REGEN_FORMATS=1` rewrites it).
+#[test]
+fn formats_table() {
+    let Some(h) = helper() else { return };
+    let mut out = String::from("// Generated from `fb-archive` by the `formats_table` test in tests/archive_helper.rs.\n// Do not edit; regenerate with FB_REGEN_FORMATS=1.\n\npub static FORMATS: &[Format] = &[\n");
+    for f in h.formats().unwrap() {
+        let s = |k: &str| f[k].as_str().unwrap().to_string();
+        let b = |k: &str| f[k].as_bool().unwrap();
+        let kind = match f["kind"].as_str().unwrap() {
+            "archive" => "Archive",
+            "tar" => "Tar",
+            "stream" => "Stream",
+            _ => "Wrapper",
+        };
+        let exts: Vec<String> = f["ext"].as_array().unwrap().iter().map(|e| format!("{:?}", e.as_str().unwrap())).collect();
+        out += &format!(
+            "    Format {{ id: {:?}, name: {:?}, kind: Kind::{kind}, create: {}, modify: {}, password: {}, dirs: {}, multi: {}, exts: &[{}] }},\n",
+            s("id"), s("name"), b("create"), b("modify"), b("password"), b("dirs"), b("multi"), exts.join(", ")
+        );
+    }
+    out += "];\n";
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/archive/formats_table.rs");
+    if std::env::var_os("FB_REGEN_FORMATS").is_some() {
+        fs::write(&file, &out).unwrap();
+    }
+    assert_eq!(fs::read_to_string(&file).unwrap(), out, "format table out of date: FB_REGEN_FORMATS=1 cargo test --test archive_helper formats_table");
+}
