@@ -108,13 +108,59 @@ fn extract_all_makes_one_folder() {
 fn read_only_formats_refuse_edits() {
     let d = tempfile::tempdir().unwrap();
     let Some(v) = vfs(&d.path().join("cache")) else { return };
-    let st = std::process::Command::new("sh").arg("-c").arg(format!("echo hi | gzip > {}", d.path().join("x.gz").display())).status().unwrap();
-    assert!(st.success());
-    let loc = ArchiveLoc::root(d.path().join("x.gz"));
+    // SQLite databases are listed as tables, never written.
+    let db = d.path().join("x.sqlite");
+    let st = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(format!("import sqlite3; c = sqlite3.connect({:?}); c.execute('create table t (a)'); c.commit()", db.display().to_string()))
+        .status();
+    if !st.is_ok_and(|s| s.success()) {
+        eprintln!("python3 with sqlite3 missing, skipping");
+        return;
+    }
+    let loc = ArchiveLoc::root(db);
     let a = v.archive(&loc).unwrap();
     assert!(!a.writable);
     let err = v.mkdir(&loc, "nope").unwrap_err();
     assert_eq!(err.code, "unsupported");
+}
+
+/// A compressed single file (.gz, .xz, …) shows the file inside, which can be edited and
+/// saved back, and extracts to that file itself.
+#[test]
+fn compressed_files_are_edited_and_extracted() {
+    let d = tempfile::tempdir().unwrap();
+    let Some(v) = vfs(&d.path().join("cache")) else { return };
+    fs::write(d.path().join("notes.txt"), "first version\n").unwrap();
+    fs::write(d.path().join("edited"), "second version, longer than the first\n").unwrap();
+    for ext in ["gz", "bz2", "xz", "zst", "br", "lz4", "lzma", "lz", "z", "uue"] {
+        let file = d.path().join(format!("notes.txt.{ext}"));
+        v.helper().add(&file, &[(d.path().join("notes.txt"), "notes.txt".into())], None).unwrap();
+        let loc = ArchiveLoc::root(file.clone());
+        let a = v.archive(&loc).unwrap();
+        assert!(a.writable, "{ext} is writable");
+        assert_eq!(names(&v, &loc, ""), ["notes.txt"], "{ext}");
+        // Saving an edited copy recompresses the file.
+        v.add(&loc, &[(d.path().join("edited"), "notes.txt".into())]).unwrap();
+        let out = d.path().join(format!("out-{ext}"));
+        v.extract(&loc, &["notes.txt".into()], &out).unwrap();
+        assert_eq!(fs::read_to_string(out.join("notes.txt")).unwrap(), "second version, longer than the first\n", "{ext}");
+        // Nothing else fits in.
+        assert!(v.add(&loc, &[(d.path().join("edited"), "other.txt".into())]).is_err(), "{ext}");
+        assert!(v.remove(&loc, &["notes.txt".into()]).is_err(), "{ext}");
+        assert!(v.rename(&loc, "notes.txt", "x.txt").is_err(), "{ext}");
+        assert!(v.mkdir(&loc, "dir").is_err(), "{ext}");
+        // Extract Here gives the file, not a folder around it.
+        let here = d.path().join(format!("here-{ext}"));
+        fs::create_dir(&here).unwrap();
+        assert_eq!(v.extract_all(&loc, &here).unwrap(), here.join("notes.txt"), "{ext}");
+        assert!(here.join("notes.txt").is_file(), "{ext}");
+    }
+    // Other programs read what was written.
+    if std::process::Command::new("gzip").arg("--version").output().is_ok() {
+        let out = std::process::Command::new("gzip").arg("-dc").arg(d.path().join("notes.txt.gz")).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "second version, longer than the first\n");
+    }
 }
 
 #[test]
@@ -128,7 +174,9 @@ fn failed_extraction_leaves_nothing_behind() {
     fs::create_dir(&dest).unwrap();
     let loc = ArchiveLoc::root(zip);
     assert!(v.extract_all(&loc, &dest).unwrap_err().needs_password());
-    assert_eq!(fs::read_dir(&dest).unwrap().count(), 0);
+    let left: Vec<_> = fs::read_dir(&dest).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert!(left.is_empty(), "left behind: {left:?}");
     v.set_password(&loc, "pw");
-    assert_eq!(v.extract_all(&loc, &dest).unwrap(), dest.join("locked"));
+    // A single file lands as itself, not in "f (2).txt".
+    assert_eq!(v.extract_all(&loc, &dest).unwrap(), dest.join("f.txt"));
 }

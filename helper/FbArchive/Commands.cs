@@ -79,7 +79,8 @@ public static class Commands {
     // ISO images are edited by rebuilding them (IsoEdit): Rock Ridge and Joliet names and
     // El Torito boot entries survive, hybrid (USB-bootable) images do not and stay read-only.
     if (format is F.Iso) return path == null || IsoEdit.ReadOnlyReason(path) == null;
-    if (FormatDetector.IsStreamFormat(format)) return false;
+    // A compressed single file can be written again: its one file is recompressed.
+    if (FormatDetector.IsStreamFormat(format)) return FormatRegistry.GetStreamOps(format.ToString()) != null;
     var ops = FormatRegistry.GetArchiveOps(format.ToString());
     return ops is IArchiveModifiable || ops is IArchiveCreatable;
   }
@@ -165,6 +166,15 @@ public static class Commands {
       IsoEdit.Edit(archive, tmp => Place(tmp, inputs));
       return;
     }
+    if (IsStream(archive, out var streamFormat)) {
+      // The one file inside is replaced (saving it after editing); nothing can be added.
+      var inside = ArchiveOperations.List(archive, null).Single().Name;
+      var files = inputs.Where(i => !i.IsDirectory).ToList();
+      if (files.Count != 1 || inputs.Count != 1 || Normalize(files[0].EntryName) != Normalize(inside))
+        throw new InvalidOperationException(OneFileOnly(archive));
+      ArchiveOperations.Create(archive, files, opts, streamFormat);
+      return;
+    }
     if (password != null) {
       // In-place edits of some formats (ZIP) ignore the password and would add new entries
       // unencrypted: with a password the archive is rebuilt, everything encrypted.
@@ -228,6 +238,7 @@ public static class Commands {
   /// <summary>Removes entries; a directory name removes the whole subtree.</summary>
   public static void Remove(string archive, string[] names, string? password) {
     RequireWritable(archive);
+    if (IsStream(archive, out _)) throw new InvalidOperationException(OneFileOnly(archive));
     var wanted = names.Select(Normalize).Where(n => n.Length > 0).ToArray();
     if (IsIso(archive)) {
       IsoEdit.Edit(archive, tmp => {
@@ -280,6 +291,7 @@ public static class Commands {
     if (src.Length == 0 || dst.Length == 0) throw new ProtocolException("empty entry name");
     if (src == dst) return;
     if (IsAtOrBelow(dst, src)) throw new InvalidOperationException("Cannot move a folder into itself.");
+    if (IsStream(archive, out _)) throw new InvalidOperationException($"The file inside “{Path.GetFileName(archive)}” is named after it: rename “{Path.GetFileName(archive)}” instead.");
 
     var entries = ArchiveOperations.List(archive, password);
     var names = entries.Select(e => Normalize(e.Name)).ToHashSet(StringComparer.Ordinal);
@@ -341,6 +353,15 @@ public static class Commands {
     if (format == F.Iso && IsoEdit.ReadOnlyReason(archive) is { } why) throw new NotSupportedException(why);
     if (!IsWritable(format, archive)) throw new NotSupportedException($"{format} archives are read-only.");
   }
+
+  /// <summary>True for a single-file compressor or encoding (.gz, .xz, .uue, …).</summary>
+  private static bool IsStream(string archive, out F format) {
+    format = File.Exists(archive) ? FormatDetector.Detect(archive) : F.Unknown;
+    return FormatDetector.IsStreamFormat(format);
+  }
+
+  private static string OneFileOnly(string archive)
+    => $"“{Path.GetFileName(archive)}” is one compressed file: files can be opened, edited and saved, not added or removed.";
 
   private static bool IsIso(string archive) => File.Exists(archive) && FormatDetector.Detect(archive) == F.Iso;
 

@@ -207,7 +207,8 @@ impl Vfs {
     }
 
     /// Extracts everything into `dest_dir`: directly when the archive holds a single top
-    /// folder, else into a new folder named after the archive. Returns what was created.
+    /// folder or file (a compressed file becomes that file), else into a new folder named
+    /// after the archive. Returns what was created.
     pub fn extract_all(&self, loc: &ArchiveLoc, dest_dir: &Path) -> Result<PathBuf> {
         let a = self.archive(loc)?;
         let tops = a.tree.children("").unwrap_or_default();
@@ -217,7 +218,7 @@ impl Vfs {
         let pw = self.password_for(loc);
         // Everything goes into a folder that did not exist before; a failed extraction (a
         // wrong password, say) removes it again, so a retry does not land in "name (2)".
-        let (target, extract_into) = if tops.len() == 1 && tops[0].is_dir && !dest_dir.join(&tops[0].name).exists() {
+        let (target, extract_into) = if tops.len() == 1 && std::fs::symlink_metadata(dest_dir.join(&tops[0].name)).is_err() {
             (dest_dir.join(&tops[0].name), dest_dir.to_path_buf())
         } else {
             let folder = if dest_dir.join(&stem).exists() {
@@ -229,7 +230,11 @@ impl Vfs {
             (folder.clone(), folder)
         };
         if let Err(e) = self.helper.extract(&backing, None, &extract_into, pw.as_deref()) {
-            let _ = std::fs::remove_dir_all(&target);
+            if target.is_dir() {
+                let _ = std::fs::remove_dir_all(&target);
+            } else {
+                let _ = std::fs::remove_file(&target);
+            }
             return Err(e);
         }
         Ok(target)

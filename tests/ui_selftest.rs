@@ -301,6 +301,8 @@ fn more_formats_open_as_folders() {
         for name in ["old.lzh", "disk.img", "floppy.adf", "root.sqfs"] {
             h.add(&w.join(name), &[(t.join("a.txt"), "a.txt".into())], None).unwrap();
         }
+        std::fs::write(t.join("notes.txt"), "notes").unwrap();
+        h.add(&w.join("notes.txt.br"), &[(t.join("notes.txt"), "notes.txt".into())], None).unwrap();
         h.shutdown();
     });
 }
