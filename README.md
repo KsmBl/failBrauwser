@@ -10,7 +10,7 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
 - **Archives are folders.** Enter a `.zip`, `.7z`, `.tar.gz`, a disk image or any of the
   ~480 formats the archive library knows, even an archive inside an archive, and copy, paste,
   rename, delete or create files in it like anywhere else. Open a file from inside an archive,
-  edit it, save — the archive is updated. *Compress…* writes about 300 of these formats.
+  edit it, save — the archive is updated. *Compress…* writes about 350 of these formats.
 - **Looks like your desktop.** Native GTK widgets and your GTK theme, icon theme and fonts;
   nothing is custom-drawn.
 - **Opens instantly.** After the first start a background instance keeps running; a new
