@@ -163,7 +163,7 @@ public static class Commands {
       if (format == null) {
         ArchiveOperations.Create(archive, WithParents(inputs), opts);
       } else {
-        if (!Enum.TryParse<F>(format, out var f)) throw new ProtocolException($"unknown format '{format}'");
+        if (!Enum.TryParse<F>(format, ignoreCase: true, out var f)) throw new ProtocolException($"unknown format '{format}'");
         ArchiveOperations.Create(archive, FormatDetector.IsStreamFormat(f) ? inputs : WithParents(inputs), opts, f);
       }
       return;
