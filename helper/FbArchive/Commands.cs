@@ -51,7 +51,7 @@ public static class Commands {
       w.WriteStartObject();
       w.WriteString("id", d.Id);
       w.WriteString("name", d.DisplayName);
-      w.WriteString("kind", kind);
+      w.WriteString("kind", kind == "archive" && FormatRegistry.FilesystemFormatIds.Contains(d.Id) ? "filesystem" : kind);
       w.WriteBoolean("create", caps.HasFlag(FormatCapabilities.CanCreate));
       w.WriteBoolean("modify", caps.HasFlag(FormatCapabilities.CanModify));
       w.WriteBoolean("password", caps.HasFlag(FormatCapabilities.SupportsPassword));
@@ -145,7 +145,9 @@ public static class Commands {
   /// Adds files and directories. A directory source is added recursively under its target name.
   /// A missing archive is created, in the format its extension names.
   /// </summary>
-  public static void Add(string archive, IReadOnlyList<AddItem> items, string? password) {
+  /// <remarks><paramref name="format"/> (a format id) picks the format of a new archive; without
+  /// it the extension decides.</remarks>
+  public static void Add(string archive, IReadOnlyList<AddItem> items, string? password, string? format = null) {
     var inputs = new List<ArchiveInput>();
     foreach (var item in items) Expand(item, inputs);
     if (inputs.Count == 0) return;
@@ -158,7 +160,12 @@ public static class Commands {
     Progress.Current?.Phase("adding", inputBytes + existing0);
 
     if (!File.Exists(archive) || new FileInfo(archive).Length == 0) {
-      ArchiveOperations.Create(archive, WithParents(inputs), opts);
+      if (format == null) {
+        ArchiveOperations.Create(archive, WithParents(inputs), opts);
+      } else {
+        if (!Enum.TryParse<F>(format, out var f)) throw new ProtocolException($"unknown format '{format}'");
+        ArchiveOperations.Create(archive, FormatDetector.IsStreamFormat(f) ? inputs : WithParents(inputs), opts, f);
+      }
       return;
     }
     RequireWritable(archive);

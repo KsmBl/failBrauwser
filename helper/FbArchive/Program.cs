@@ -58,7 +58,7 @@ public static class Program {
           case "extract":
             Commands.Extract(Str(req, "archive"), Str(req, "dest"), OptStrArray(req, "entries"), OptStr(req, "password"));
             break;
-          case "add": Commands.Add(Str(req, "archive"), Items(req), OptStr(req, "password")); break;
+          case "add": Commands.Add(Str(req, "archive"), Items(req), OptStr(req, "password"), OptStr(req, "format")); break;
           case "remove": Commands.Remove(Str(req, "archive"), OptStrArray(req, "names") ?? [], OptStr(req, "password")); break;
           case "rename": Commands.Rename(Str(req, "archive"), Str(req, "from"), Str(req, "to"), OptStr(req, "password")); break;
           case "mkdir": Commands.Mkdir(Str(req, "archive"), Str(req, "name"), OptStr(req, "password")); break;
