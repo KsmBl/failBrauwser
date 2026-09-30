@@ -302,6 +302,11 @@ fn more_formats_open_as_folders() {
             h.add(&w.join(name), &[(t.join("a.txt"), "a.txt".into())], None).unwrap();
         }
         std::fs::write(t.join("notes.txt"), "notes").unwrap();
+        // A ZIP under a generic name, and an LHA archive without any suffix.
+        h.create(&t.join("backup.zip"), "Zip", &[(t.join("a.txt"), "a.txt".into())], None).unwrap();
+        std::fs::rename(t.join("backup.zip"), w.join("backup.bin")).unwrap();
+        h.create(&w.join("mystery"), "Lzh", &[(t.join("a.txt"), "a.txt".into())], None).unwrap();
+        std::fs::write(w.join("junk.bin"), (0..4096u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect::<Vec<u8>>()).unwrap();
         std::fs::create_dir_all(w.join("pack/sub")).unwrap();
         std::fs::write(w.join("pack/sub/p.txt"), "packed").unwrap();
         h.add(&w.join("notes.txt.br"), &[(t.join("notes.txt"), "notes.txt".into())], None).unwrap();

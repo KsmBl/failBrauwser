@@ -136,9 +136,11 @@ entered. <kbd>Esc</kbd> closes it.
 way: archives (ZIP, 7-Zip, RAR, TAR, CAB, LHA, ARJ, StuffIt, …), compressed files (`.gz`,
 `.xz`, `.zst`, `.br`, `.lz4`, …), disk and file system images (ISO, FAT, exFAT, ext2/3/4,
 NTFS, HFS+, SquashFS, VHD/VHDX, VMDK, QCOW2, VDI, UDF, …) and packages (`.deb`, `.rpm`,
-`.whl`, …). Files that belong to another program — office documents, e-books, pictures,
-fonts, programs and installers, databases — still open with it; *Open as Archive* shows what
-is inside them, and inside audio and video files too. *Extract Here*, *Extract To…* and
+`.whl`, …). A file without a suffix, or with one that says nothing (`.bin`, `.img`, `.dat`),
+opens as a folder too when the library recognises its contents and no application is set up
+for it. Files that belong to another program — office documents, e-books, pictures, fonts,
+programs and installers, databases — still open with that program; *Open as Archive* shows
+what is inside them, and inside audio and video files too. *Extract Here*, *Extract To…* and
 *Compress…* are in the context menu. Long archive operations show a progress bar with the
 bytes done. Formats the library can only read are shown read-only, and the status bar says
 why.

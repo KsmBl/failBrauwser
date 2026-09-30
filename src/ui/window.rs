@@ -335,6 +335,15 @@ impl Window {
     }
 
     pub fn open_items(&self, items: &[Item]) {
+        // One file no application is set for: if the archive library can read it (a format
+        // known by its contents, or by a name that also belongs to other programs), it opens
+        // as a folder; otherwise the application chooser comes up as before.
+        if let [Item::Fs(e)] = items {
+            if gio::AppInfo::default_for_type(&e.content_type, false).is_none() {
+                super::archive::enter_or_open(self, e.path.clone());
+                return;
+            }
+        }
         for item in items {
             if let Some(p) = item.path() {
                 util::open_with_default(self.win.upcast_ref(), p);

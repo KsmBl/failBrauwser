@@ -11,7 +11,7 @@ AlZip	ok	flat
 AmigaPfs	ok
 Ampk	ok
 AndroidBundle	ok	extra
-AndroidOta	fail detect: Exception: recognised as BinCue
+AndroidOta	fail list: Exception: listed: FULL.bin, metadata.ini, manifest.pb, metadata_signature.bin, data.bin
 AndroidSparse	fail list: Exception: listed: metadata.ini, image.raw
 Ani	fail create: ArgumentException: ANI: input 'a.txt' is not an ICO or CUR file (expected magic 00 00 01 00 or 00 00 02 00). (Parameter 'inputs')
 Aomei	ok
@@ -39,7 +39,7 @@ BcacheFs	ok	extra
 Bcm	ok
 Bfs	ok
 Big	ok
-BinCue	ok	case
+BinCue	fail detect: Exception: recognised as Iso
 BinHex	ok
 BinaryII	ok	case
 Bkf	ok

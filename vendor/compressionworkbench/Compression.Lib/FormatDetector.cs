@@ -696,7 +696,17 @@ public static partial class FormatDetector {
 
   public static Format Detect(string path) {
     var byExt = DetectByExtension(path);
-    if (byExt != Format.Unknown) return byExt;
+    if (byExt != Format.Unknown) {
+      // The name decides, except for suffixes that say nothing about the contents (".bin",
+      // ".img", …): there a clear signature wins, so a ZIP saved as "backup.bin" (claimed by
+      // BIN/CUE, which has no signature) is a ZIP. Specific suffixes stay decisive: a ".jar"
+      // or ".docx" is a ZIP underneath and must still open as what its name says.
+      if (!GenericSuffixes.Contains(Path.GetExtension(path))) return byExt;
+      var header = ReadHeader(path);
+      if (header.Length == 0 || OwnMagicMatches(header, byExt)) return byExt;
+      var (byContent, confidence) = BestMagic(header);
+      return byContent != Format.Unknown && byContent != byExt && confidence >= ContentOverridesName ? byContent : byExt;
+    }
 
     var byMagic = DetectByMagicFromFile(path);
 
@@ -761,6 +771,36 @@ public static partial class FormatDetector {
 
   private static bool CanCreate(Format format)
     => GetDesc(format) is { } desc && desc.Capabilities.HasFlag(FormatCapabilities.CanCreate);
+
+  /// <summary>Suffixes many unrelated formats use; the contents decide for them.</summary>
+  private static readonly HashSet<string> GenericSuffixes = new(StringComparer.OrdinalIgnoreCase) {
+    ".bin", ".dat", ".img", ".dsk", ".raw", ".data", ".dump", ".out", ".image",
+  };
+
+  /// <summary>How sure a signature must be to overrule the file name.</summary>
+  private const double ContentOverridesName = 0.8;
+
+  private static bool OwnMagicMatches(ReadOnlySpan<byte> header, Format format) {
+    if (GetDesc(format) is not { } desc) return false;
+    foreach (var sig in desc.MagicSignatures)
+      if (MatchesMagic(header, sig)) return true;
+    return false;
+  }
+
+  /// <summary>The registered format whose signature matches most confidently.</summary>
+  private static (Format Format, double Confidence) BestMagic(ReadOnlySpan<byte> header) {
+    var best = Format.Unknown;
+    var bestConfidence = 0.0;
+    foreach (var desc in Reg.All) {
+      if (!FormatDetector._idToFormat!.TryGetValue(desc.Id, out var f)) continue;
+      foreach (var sig in desc.MagicSignatures)
+        if (sig.Confidence > bestConfidence && MatchesMagic(header, sig)) {
+          bestConfidence = sig.Confidence;
+          best = f;
+        }
+    }
+    return (best, bestConfidence);
+  }
 
   private static Format ResolveSharedExtension(string path, List<Format> claimants) {
     var header = ReadHeader(path);
