@@ -159,24 +159,25 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   }
 
   /// <inheritdoc/>
+  /// <remarks>Folders are kept, with Rock Ridge names, permissions and times.</remarks>
   public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
-    var w = new IsoWriter {
-      VolumeIdentifier      = options?.GetOption("VolumeLabel", "CDROM") ?? "CDROM",
-      SystemIdentifier      = options?.GetOption("SystemId", "") ?? "",
-      PublisherIdentifier   = options?.GetOption("Publisher", "") ?? "",
-      ApplicationIdentifier = options?.GetOption("Application", "") ?? "",
-      EnableJoliet          = options?.GetOptionBool("Joliet", true) ?? true,
-    };
+    var w = NewWriter(options);
     foreach (var i in inputs) {
-      if (i.IsDirectory) continue;
+      var name = EntryPath(i.ArchiveName);
+      if (name.Length == 0) continue;
+      var source = string.IsNullOrEmpty(i.FullPath) ? null : i.FullPath;
+      if (i.IsDirectory) {
+        w.AddDirectory(name, ModeOf(source), source != null && Directory.Exists(source) ? Directory.GetLastWriteTimeUtc(source) : null);
+        continue;
+      }
       var info = i;
       // Only the length is needed to lay the image out; reading a large input
       // into a byte[] would cap the image at what an array can hold.
-      var name = Path.GetFileName(info.ArchiveName);
       if (info.InMemoryContent is { } bytes)
         w.AddFile(name, bytes);
       else
         w.AddStreamingFile(name, new FileInfo(info.FullPath).Length, () => File.OpenRead(info.FullPath));
+      if (source != null && File.Exists(source)) w.SetMetadata(name, ModeOf(source), File.GetLastWriteTimeUtc(source));
     }
     if (output.CanSeek) w.BuildToStreaming(output);
     else output.Write(w.Build());
@@ -185,42 +186,52 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// <summary>
   /// Two-pass streaming creation: the pre-known per-input sizes drive the
   /// ISO 9660 path table + directory + file-extent layout in pass 1 (identical
-  /// to <see cref="Create"/>, which flattens to leaf filenames); pass 2 streams
+  /// to <see cref="Create"/>); pass 2 streams
   /// each file's bytes from its
   /// <see cref="Compression.Registry.Streaming.StreamingArchiveInput.OpenStream"/>
   /// factory into its data extent via 64 KB chunks — no file is ever buffered
-  /// as a <c>byte[]</c>. Output is byte-identical to <see cref="Create"/> for
-  /// the same inputs (the ECMA-119 volume/record timestamps are sampled once
-  /// per <c>Build</c>). Falls back to a buffered build when the target stream
+  /// as a <c>byte[]</c>. Falls back to a buffered build when the target stream
   /// is not seekable.
   /// </summary>
   public void CreateFromStreams(Stream output, IEnumerable<StreamingArchiveInput> inputs, FormatCreateOptions options) {
     ArgumentNullException.ThrowIfNull(output);
     ArgumentNullException.ThrowIfNull(inputs);
-    var w = new IsoWriter {
-      VolumeIdentifier      = options?.GetOption("VolumeLabel", "CDROM") ?? "CDROM",
-      SystemIdentifier      = options?.GetOption("SystemId", "") ?? "",
-      PublisherIdentifier   = options?.GetOption("Publisher", "") ?? "",
-      ApplicationIdentifier = options?.GetOption("Application", "") ?? "",
-      EnableJoliet          = options?.GetOptionBool("Joliet", true) ?? true,
-    };
-    if (!output.CanSeek) {
-      foreach (var input in inputs) {
-        if (input.IsDirectory) continue;
-        using var src = input.OpenStream();
-        using var ms = new MemoryStream();
-        src.CopyTo(ms);
-        w.AddFile(Path.GetFileName(input.Name), ms.ToArray());
-      }
-      output.Write(w.Build());
-      return;
-    }
+    var w = NewWriter(options);
     foreach (var input in inputs) {
-      if (input.IsDirectory) continue;
-      // Match Create's FlatFiles flattening: ISO records the leaf filename.
-      w.AddStreamingFile(Path.GetFileName(input.Name), input.Size, input.OpenStream);
+      var name = EntryPath(input.Name);
+      if (name.Length == 0) continue;
+      if (input.IsDirectory) { w.AddDirectory(name); continue; }
+      if (output.CanSeek) {
+        w.AddStreamingFile(name, input.Size, input.OpenStream);
+        continue;
+      }
+      using var src = input.OpenStream();
+      using var ms = new MemoryStream();
+      src.CopyTo(ms);
+      w.AddFile(name, ms.ToArray());
     }
-    w.BuildToStreaming(output);
+    if (output.CanSeek) w.BuildToStreaming(output);
+    else output.Write(w.Build());
+  }
+
+  private static IsoWriter NewWriter(FormatCreateOptions? options) => new() {
+    VolumeIdentifier      = options?.GetOption("VolumeLabel", "CDROM") ?? "CDROM",
+    SystemIdentifier      = options?.GetOption("SystemId", "") ?? "",
+    PublisherIdentifier   = options?.GetOption("Publisher", "") ?? "",
+    ApplicationIdentifier = options?.GetOption("Application", "") ?? "",
+    EnableJoliet          = options?.GetOptionBool("Joliet", true) ?? true,
+    // Rock Ridge keeps long names, case, permissions and times, as Linux tools expect.
+    EnableRockRidge       = options?.GetOptionBool("RockRidge", true) ?? true,
+  };
+
+  /// <summary>An input name as a relative path with forward slashes and no trailing slash.</summary>
+  private static string EntryPath(string name) => name.Replace('\\', '/').Trim('/');
+
+  private static int? ModeOf(string? path) {
+    if (path == null || OperatingSystem.IsWindows()) return null;
+    try { return (int)File.GetUnixFileMode(path); }
+    catch (IOException) { return null; }
+    catch (UnauthorizedAccessException) { return null; }
   }
 
   /// <inheritdoc/>
