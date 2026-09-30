@@ -1,6 +1,7 @@
 //! Archives as directories: typed requests to the helper and the directory tree of a listing.
 
 pub mod client;
+pub mod formats;
 pub mod tree;
 pub mod vfs;
 
@@ -117,8 +118,7 @@ impl Helper {
     }
 }
 
-/// Archive types that open as a folder on double click. Anything else (office documents,
-/// jars, disk images, …) opens with its application; "Open as Archive" still probes it.
+/// Archive types that always open as a folder on double click, whatever else claims them.
 const BROWSABLE_SUFFIXES: &[&str] = &[
     ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tar.lz", ".tar.lzma", ".tar.lz4", ".tar.z", ".tgz", ".tbz",
     ".tbz2", ".txz", ".tzst", ".tlz", ".zip", ".7z", ".rar", ".tar", ".cpio", ".ar", ".deb", ".rpm", ".cab", ".lzh",
@@ -128,10 +128,51 @@ const BROWSABLE_SUFFIXES: &[&str] = &[
     ".iso",
 ];
 
-/// True when a file with this name opens as a folder on activation.
+/// Suffixes the archive library understands but whose files belong to another program:
+/// documents, e-books, pictures, fonts, programs and installers, databases and data files,
+/// ROMs, and names too generic to guess from (`.bin`, `.dat`, `.txt`). They open with their
+/// application; *Open as Archive* still shows what is inside.
+const NOT_BY_NAME: &[&str] = &[
+    // Office documents, e-books, mail, drawings.
+    ".doc", ".docx", ".docm", ".dot", ".dotx", ".dotm", ".xls", ".xlsx", ".xlsm", ".xlt", ".xltx", ".xltm", ".ppt",
+    ".pptx", ".pptm", ".pps", ".ppsx", ".ppsm", ".pot", ".potx", ".potm", ".odt", ".ods", ".odp", ".vsdx", ".vsdm",
+    ".vssx", ".vssm", ".vstx", ".vstm", ".one", ".onetoc2", ".pub", ".wpd", ".wp", ".wp5", ".wp6", ".wp7", ".pmd",
+    ".xps", ".oxps", ".pdf", ".epub", ".mobi", ".azw", ".azw3", ".fb2", ".lit", ".chm", ".prc", ".msg", ".eml",
+    ".mbox", ".mbx", ".pst", ".ost", ".sketch", ".ai", ".fla", ".swf", ".swc", ".fig", ".dxf", ".dae", ".3ds", ".obj",
+    ".ply", ".stl", ".tnef",
+    // Pictures, fonts, media.
+    ".gif", ".apng", ".mng", ".tif", ".tiff", ".bigtiff", ".ico", ".cur", ".ani", ".icns", ".jxl", ".qoi", ".ktx2",
+    ".mpo", ".dpx", ".dcm", ".dicom", ".dcmdir", ".fits", ".fts", ".fit", ".flc", ".fli", ".ttf", ".otf", ".ttc",
+    ".otc", ".ts", ".m2ts", ".mts", ".flac", ".mp3", ".umx", ".psf", ".psf2", ".minipsf", ".minipsf2", ".2sf", ".gsf",
+    ".ncsf", ".snsf", ".ssf", ".dsf", ".usf", ".sup", ".idx", ".m3u", ".m3u8", ".cue", ".fsb", ".bnk", ".awb", ".acb",
+    // Programs, libraries, installers, packages that install.
+    ".exe", ".dll", ".so", ".o", ".a", ".ko", ".elf", ".dylib", ".macho", ".ocx", ".cpl", ".sys", ".com", ".mui",
+    ".mun", ".resource.dll", ".wasm", ".jar", ".war", ".ear", ".apk", ".apks", ".aab", ".ipa", ".xpi", ".crx",
+    ".msi", ".msp", ".mst", ".msix", ".msixbundle", ".appx", ".appimage", ".snap", ".sh", ".lnk", ".reg", ".efi",
+    // Databases and data files.
+    ".db", ".db3", ".sqlite", ".sqlite3", ".mdb", ".accdb", ".ldb", ".mdt", ".hdf", ".hdf4", ".hdf5", ".h4", ".h5",
+    ".nc", ".cdf", ".parquet", ".feather", ".arrow", ".avro", ".orc", ".onnx", ".pkl", ".pickle", ".npy", ".npz",
+    ".msgpack", ".mat", ".nrbf", ".storable", ".pcap", ".pcapng", ".json", ".xml", ".txt", ".cwb.json", ".cwb.xml",
+    ".mo", ".dtb", ".dtbo", ".hex", ".ihex", ".ihx", ".srec", ".s19", ".s28", ".s37", ".mot", ".h86", ".tfrecord",
+    ".tfrecords", ".p12", ".pfx", ".hive", ".hiv", ".pol", ".nii", ".nii.gz", ".kmz", ".par2", ".cap", ".vdf",
+    ".aa",
+    // Source code and translations that share a suffix with a format.
+    ".pas", ".po", ".ovl", ".ufo", ".bundle",
+    // Game ROMs and snapshots (emulators open them).
+    ".nes", ".sfc", ".smc", ".gb", ".gbc", ".nds", ".z80", ".sna", ".tap", ".tzx", ".nsp", ".lnx",
+    // Too generic.
+    ".bin", ".dat", ".f", ".do", ".as", ".001", ".sst", ".pp", ".mem", ".smart", ".share", ".sea", ".win",
+];
+
+/// True when a file with this name opens as a folder on activation: a known archive,
+/// compressed file or disk image that no other program owns (see [`NOT_BY_NAME`]).
 pub fn is_browsable_name(name: &str) -> bool {
     let lower = name.to_lowercase();
-    BROWSABLE_SUFFIXES.iter().any(|s| lower.len() > s.len() && lower.ends_with(s))
+    let ends = |s: &&str| lower.len() > s.len() && lower.ends_with(*s);
+    if BROWSABLE_SUFFIXES.iter().any(ends) {
+        return true;
+    }
+    formats::by_name(&lower).is_some() && !NOT_BY_NAME.iter().any(ends)
 }
 
 /// File name suffixes a new archive can be created with from the UI.
@@ -156,6 +197,25 @@ mod tests {
         assert!(!is_browsable_name(".zip"));
         assert!(!is_browsable_name("doc.odt"));
         assert!(!is_browsable_name("zip"));
+        // Everything else the library knows, unless another program owns it.
+        assert!(is_browsable_name("disk.vhdx"));
+        assert!(is_browsable_name("notes.txt.br"));
+        assert!(is_browsable_name("old.lzh"));
+        assert!(is_browsable_name("floppy.d64"));
+        assert!(!is_browsable_name("report.docx"));
+        assert!(!is_browsable_name("setup.exe"));
+        assert!(!is_browsable_name("firmware.bin"));
+        assert!(!is_browsable_name("readme.txt"));
+        assert!(!is_browsable_name("font.ttf"));
+        assert!(!is_browsable_name("de.po"));
+    }
+
+    #[test]
+    fn formats_by_name_prefer_the_longest_suffix() {
+        assert_eq!(formats::by_name("a.tar.gz").map(|f| f.kind), Some(formats::Kind::Tar));
+        assert_eq!(formats::by_name("a.gz").map(|f| f.kind), Some(formats::Kind::Stream));
+        assert_eq!(formats::by_name("A.ZIP").map(|f| f.id), Some("Zip"));
+        assert!(formats::by_name("zip").is_none());
     }
 
     #[test]
