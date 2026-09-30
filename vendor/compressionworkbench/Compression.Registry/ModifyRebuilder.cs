@@ -259,6 +259,25 @@ public static class ModifyRebuilder {
   }
 
   /// <summary>Whether a volume is past the size an in-memory edit can handle.</summary>
+  /// <summary>
+  /// Adds files and folders by unpacking the archive and writing it anew with the format's
+  /// own writer, for formats whose in-place editing cannot place entries in folders.
+  /// Folders, empty ones included, are kept.
+  /// </summary>
+  public static void AddViaCreate(System.IO.Stream archive, System.Collections.Generic.IReadOnlyList<ArchiveInputInfo> inputs,
+      IArchiveFormatOperations ops, IArchiveCreatable creator)
+    => RebuildLargeVolume(archive, ops, creator, drop: null, extra: inputs);
+
+  /// <summary>
+  /// Removes entries (a folder with everything below it) by unpacking the archive and
+  /// writing it anew with the format's own writer. Names are full paths.
+  /// </summary>
+  public static void RemoveViaCreate(System.IO.Stream archive, string[] entryNames,
+      IArchiveFormatOperations ops, IArchiveCreatable creator)
+    => RebuildLargeVolume(archive, ops, creator,
+      new System.Collections.Generic.HashSet<string>(System.Linq.Enumerable.Select(entryNames, Norm), System.StringComparer.OrdinalIgnoreCase),
+      extra: null);
+
   public static bool NeedsLargeVolumePath(System.IO.Stream archive)
     => archive != null && archive.CanSeek && archive.Length > MaxBufferedImageBytes;
 
@@ -288,11 +307,32 @@ public static class ModifyRebuilder {
           if (!input.IsDirectory)
             replaced.Add(Norm(input.ArchiveName));
 
+      // A name drops that entry and, for a folder, everything below it. Only the full
+      // path counts: matching the leaf as well dropped "sub/a.txt" with "a.txt".
+      bool Dropped(string name) {
+        if (drop == null) return false;
+        var parts = name.Split('/');
+        for (var n = 1; n <= parts.Length; ++n)
+          if (drop.Contains(string.Join('/', parts[..n]))) return true;
+        return false;
+      }
+
       var carried = new System.Collections.Generic.List<ArchiveInputInfo>();
+      // Folders stay, empty ones included.
+      archive.Position = 0;
+      foreach (var entry in ops.List(archive, null)) {
+        var name = Norm(entry.Name);
+        if (entry.IsDirectory && name.Length > 0 && !Dropped(name))
+          carried.Add(new ArchiveInputInfo("", name + "/", true));
+      }
+      if (extra != null)
+        foreach (var input in extra)
+          if (input.IsDirectory)
+            carried.Add(input);
       foreach (var file in System.IO.Directory.EnumerateFiles(
           unpacked, "*", System.IO.SearchOption.AllDirectories)) {
         var name = Norm(System.IO.Path.GetRelativePath(unpacked, file));
-        if (drop != null && (drop.Contains(name) || drop.Contains(Norm(System.IO.Path.GetFileName(file)))))
+        if (Dropped(name))
           continue;
         // A reader that also surfaces the raw image must not have it written
         // back as a file: the volume would carry a copy of its own former self.
@@ -376,5 +416,5 @@ public static class ModifyRebuilder {
 
   // Path-normalised name key for add/remove matching: forward slashes, no leading
   // slash — so a reader reporting "/dir/x" and a caller passing "dir/x" agree.
-  private static string Norm(string name) => name.Replace('\\', '/').TrimStart('/');
+  private static string Norm(string name) => name.Replace('\\', '/').Trim('/');
 }
