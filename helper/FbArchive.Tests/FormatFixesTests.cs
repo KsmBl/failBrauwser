@@ -75,13 +75,30 @@ public class FormatFixesTests {
     Assert.That(System.IO.File.Exists(target), Is.False);
   }
 
-  /// <summary>BIN/CUE images open read-only, with the reason.</summary>
+  /// <summary>
+  /// A ".bin" holding plain ISO sectors (as the library writes BIN images) is an ISO and can be
+  /// edited like one; raw BIN/CUE images stay read-only, with the reason.
+  /// </summary>
   [Test]
-  public void BinCue_IsReadOnlyWithAReason() {
+  public void Bin_WithIsoSectorsIsAnIso_RawBinCueIsReadOnly() {
     var bin = Path.Combine(_root, "d.bin");
     Commands.Add(bin, [new(File("a.txt", "alpha"), "a.txt")], null, "BinCue");
-    Assert.That(Commands.IsWritable(FormatDetector.Detect(bin), bin), Is.False);
-    Assert.That(Commands.ReadOnlyReason(FormatDetector.Detect(bin), bin), Does.Contain("sector"));
-    Assert.Throws<NotSupportedException>(() => Commands.Remove(bin, ["A.TXT"], null));
+    Assert.That(FormatDetector.Detect(bin), Is.EqualTo(FormatDetector.Format.Iso));
+    Assert.That(Commands.IsWritable(FormatDetector.Detect(bin), bin), Is.True);
+    Assert.That(Commands.ReadOnlyReason(FormatDetector.Format.BinCue, bin), Does.Contain("sector"));
   }
-}
+
+  /// <summary>A generic suffix does not hide what a file is: a ZIP saved as ".bin" is a ZIP.</summary>
+  [Test]
+  public void GenericSuffix_ContentDecides() {
+    var zip = Path.Combine(_root, "backup.zip");
+    Commands.Add(zip, [new(File("a.txt", "alpha"), "a.txt")], null);
+    var bin = Path.Combine(_root, "backup.bin");
+    System.IO.File.Move(zip, bin);
+    Assert.That(FormatDetector.Detect(bin), Is.EqualTo(FormatDetector.Format.Zip));
+    Assert.That(Names(bin), Is.EqualTo(new[] { "a.txt" }));
+    // A specific suffix still decides: a .jar is a ZIP underneath but stays a JAR.
+    var jar = Path.Combine(_root, "x.jar");
+    Commands.Add(jar, [new(File("b.txt", "beta"), "b.txt")], null, "Jar");
+    Assert.That(FormatDetector.Detect(jar), Is.EqualTo(FormatDetector.Format.Jar));
+  }}

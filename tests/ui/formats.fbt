@@ -58,3 +58,21 @@ wait-row notes.txt.xz
 select notes.txt.xz
 activate
 wait-row notes.txt
+# Files no application is set for open as folders when the archive library reads them:
+# a ZIP with a generic name, an archive without a suffix.
+open $T/w
+select backup.bin
+activate
+wait-location $T/w/backup.bin
+wait-row a.txt
+open $T/w
+select mystery
+activate
+wait-location $T/w/mystery
+wait-row a.txt
+# Anything else still goes to an application.
+open $T/w
+select junk.bin
+activate
+wait-opened
+expect-location $T/w
