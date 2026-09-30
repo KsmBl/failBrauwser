@@ -214,6 +214,26 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     else output.Write(w.Build());
   }
 
+  /// <summary>
+  /// An ISO writer holding <paramref name="inputs"/> in memory, with folders, Rock Ridge and
+  /// Joliet names, for the CD image formats that wrap an ISO 9660 track (CDI, MDF, NRG, BIN).
+  /// </summary>
+  public static IsoWriter BufferedWriterFor(IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions? options = null) {
+    var w = NewWriter(options);
+    foreach (var i in inputs) {
+      var name = EntryPath(i.ArchiveName);
+      if (name.Length == 0) continue;
+      var source = string.IsNullOrEmpty(i.FullPath) ? null : i.FullPath;
+      if (i.IsDirectory) {
+        w.AddDirectory(name, ModeOf(source), source != null && Directory.Exists(source) ? Directory.GetLastWriteTimeUtc(source) : null);
+        continue;
+      }
+      w.AddFile(name, i.ReadContent());
+      if (source != null && File.Exists(source)) w.SetMetadata(name, ModeOf(source), File.GetLastWriteTimeUtc(source));
+    }
+    return w;
+  }
+
   private static IsoWriter NewWriter(FormatCreateOptions? options) => new() {
     VolumeIdentifier      = options?.GetOption("VolumeLabel", "CDROM") ?? "CDROM",
     SystemIdentifier      = options?.GetOption("SystemId", "") ?? "",

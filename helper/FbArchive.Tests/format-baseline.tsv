@@ -39,7 +39,7 @@ BcacheFs	ok	extra
 Bcm	ok
 Bfs	ok
 Big	ok
-BinCue	fail add: NotSupportedException: BIN/CUE: 'c.txt' cannot be added. This image is edited a sector at a time, so an entry has to be named 'sector-NNNN.bin' for the sector it replaces. Adding a file to the ISO 9660 filesystem inside the image is not something this supports.	case,flat
+BinCue	fail add: NotSupportedException: BIN/CUE: 'c.txt' cannot be added. This image is edited a sector at a time, so an entry has to be named 'sector-NNNN.bin' for the sector it replaces. Adding a file to the ISO 9660 filesystem inside the image is not something this supports.	case
 BinHex	ok
 BinaryII	ok	case
 Bkf	fail add: Exception: after adding: a.txt, d/b.bin, d/c.txt
@@ -53,7 +53,7 @@ Cab	ok
 Cb7	ok
 Cbr	ok
 Cbz	ok
-Cdi	ok	case,flat
+Cdi	ok	case
 CephFs	fail list: Exception: listed: rados/@default/a.txt, rados/@default/b.bin
 Chm	ok
 Cmix	ok
@@ -171,7 +171,7 @@ Macrium	ok
 Maff	ok
 Mbox	fail list: Exception: listed: message_00.eml, message_01.eml
 Mcm	ok
-Mdf	ok	case,flat
+Mdf	ok	case
 MessagePack	ok
 Mfs	ok
 Mfs1	fail add: Exception: after adding: C.TXT, TXT, BIN	case
@@ -232,7 +232,7 @@ ProDos	ok	case,flat
 Ps1MemoryCard	fail extract: Exception: a.txt differs
 Psarc	ok
 Psf	fail list: Exception: listed: header.bin, program.bin
-Qcow2	ok	case
+Qcow2	ok
 Qnx4	ok	flat
 Qnx6	ok	flat
 Qoi	fail create: InvalidOperationException: QOI Create requires a pixels.bin input.
@@ -310,11 +310,11 @@ UnityBundle	ok
 UnrealPak	ok
 UuEncoding	ok
 Vdfs	ok
-Vdi	ok	case
-Vhd	ok	case
-Vhdx	ok	case
+Vdi	ok
+Vhd	ok
+Vhdx	ok
 Vib	fail list: Exception: listed: descriptor.xml, sig.pkcs7, payload/a.txt, payload/d/b.bin
-Vmdk	ok	case
+Vmdk	ok
 VobSub	fail create: ArgumentException: VobSub cannot accept 'a.txt': Expected index.idx, metadata.ini, subtitle_NNN.bin, or subtitle_NNN.spu. (Parameter 'inputs')
 Vpk	ok
 Vpp	ok
