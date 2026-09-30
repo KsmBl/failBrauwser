@@ -56,7 +56,7 @@ public static partial class FormatDetector {
     var maxMagicExtent = FastProbeBytes;
 
     foreach (var desc in Reg.All) {
-      if (!Enum.TryParse<Format>(desc.Id, out var f)) 
+      if (!Enum.TryParse<Format>(desc.Id, ignoreCase: true, out var f)) 
         continue;
 
       idToFormat[desc.Id] = f;
