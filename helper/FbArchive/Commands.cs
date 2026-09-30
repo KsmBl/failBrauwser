@@ -32,18 +32,33 @@ public static class Commands {
 
   // ── Queries ─────────────────────────────────────────────────────────
 
+  /// <summary>
+  /// Every format that holds files: archives, file system images, tar combinations, single-file
+  /// compressors and encoding wrappers (audio, video and image containers are left out).
+  /// </summary>
   public static void Formats(Utf8JsonWriter w) {
     w.WriteStartArray("formats");
     foreach (var d in FormatRegistry.All) {
-      if (d.Category is not (FormatCategory.Archive or FormatCategory.CompoundTar)) continue;
+      var kind = d.Category switch {
+        FormatCategory.Archive => "archive",
+        FormatCategory.CompoundTar => "tar",
+        FormatCategory.Stream => "stream",
+        FormatCategory.Wrapper => "wrapper",
+        _ => null,
+      };
+      if (kind == null) continue;
+      var caps = d.Capabilities;
       w.WriteStartObject();
       w.WriteString("id", d.Id);
       w.WriteString("name", d.DisplayName);
-      w.WriteBoolean("create", d.Capabilities.HasFlag(FormatCapabilities.CanCreate));
-      w.WriteBoolean("modify", d.Capabilities.HasFlag(FormatCapabilities.CanModify));
+      w.WriteString("kind", kind);
+      w.WriteBoolean("create", caps.HasFlag(FormatCapabilities.CanCreate));
+      w.WriteBoolean("modify", caps.HasFlag(FormatCapabilities.CanModify));
+      w.WriteBoolean("password", caps.HasFlag(FormatCapabilities.SupportsPassword));
+      w.WriteBoolean("dirs", caps.HasFlag(FormatCapabilities.SupportsDirectories));
+      w.WriteBoolean("multi", caps.HasFlag(FormatCapabilities.SupportsMultipleEntries));
       w.WriteStartArray("ext");
-      foreach (var e in d.CompoundExtensions) w.WriteStringValue(e);
-      foreach (var e in d.Extensions) w.WriteStringValue(e);
+      foreach (var e in d.CompoundExtensions.Concat(d.Extensions).Select(e => e.ToLowerInvariant()).Distinct()) w.WriteStringValue(e);
       w.WriteEndArray();
       w.WriteEndObject();
     }
