@@ -264,10 +264,9 @@ public sealed class Mfs1FormatDescriptor : IFormatDescriptor, IArchiveFormatOper
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
     ArgumentNullException.ThrowIfNull(archive);
     ArgumentNullException.ThrowIfNull(inputs);
-    var pairs = new List<(string Name, byte[] Data)>();
-    foreach (var (name, data) in FlatFiles(inputs))
-      pairs.Add((name, data));
-    Mfs1InPlaceModifier.AddFiles(archive, pairs);
+    // Rewritten through the writer: the in-place catalogue update cut the names of the
+    // files already there down to their extension.
+    ModifyRebuilder.AddViaCreate(archive, inputs, this, this);
   }
 
   /// <summary>
@@ -278,7 +277,7 @@ public sealed class Mfs1FormatDescriptor : IFormatDescriptor, IArchiveFormatOper
   public void Remove(Stream archive, string[] entryNames) {
     ArgumentNullException.ThrowIfNull(archive);
     ArgumentNullException.ThrowIfNull(entryNames);
-    Mfs1InPlaceModifier.RemoveFiles(archive, entryNames);
+    ModifyRebuilder.RemoveViaCreate(archive, entryNames, this, this);
   }
 
   private const int HeaderReadCap = 1 << 20; // 1 MiB cap — a 40-track SSD is 100k, 80-track is 200k.
