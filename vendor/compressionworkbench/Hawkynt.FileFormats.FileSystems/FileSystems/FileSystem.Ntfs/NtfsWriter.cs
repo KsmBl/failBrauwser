@@ -276,6 +276,16 @@ public sealed class NtfsWriter {
     this._version = version;
   }
 
+  // Directories added on their own, so empty ones exist too ('/'-separated paths).
+  private readonly List<string> _dirs = [];
+
+  /// <summary>Adds a directory (and its parents); needed only for empty ones.</summary>
+  public void AddDirectory(string name) {
+    ArgumentNullException.ThrowIfNull(name);
+    var path = string.Join('/', name.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries));
+    if (path.Length > 0) this._dirs.Add(path);
+  }
+
   /// <summary>Adds a file to the NTFS image.</summary>
   public void AddFile(string name, byte[] data) {
     ArgumentNullException.ThrowIfNull(name);
@@ -1184,6 +1194,26 @@ public sealed class NtfsWriter {
       dir.Children.Add(fileNode);
       dir.ChildByName[leaf] = fileNode;
       nodes.Add(fileNode);
+    }
+
+    // Directories added on their own (empty ones among them).
+    foreach (var path in this._dirs) {
+      var dir = root;
+      foreach (var segment in path.Split('/')) {
+        if (!dir.ChildByName.TryGetValue(segment, out var child)) {
+          child = new TreeNode {
+            Name = segment,
+            RecordNumber = nextRecord++,
+            ParentRecord = dir.RecordNumber,
+            IsDirectory = true,
+          };
+          dir.Children.Add(child);
+          dir.ChildByName[segment] = child;
+          nodes.Add(child);
+        }
+        if (!child.IsDirectory) break;
+        dir = child;
+      }
     }
 
     return (root, nodes);
