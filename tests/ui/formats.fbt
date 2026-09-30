@@ -19,3 +19,13 @@ select root.sqfs
 activate
 expect-location $T/w/root.sqfs
 wait-row a.txt
+# A compressed file shows the file inside; Extract Here gives that file.
+open $T/w
+select notes.txt.br
+activate
+expect-location $T/w/notes.txt.br
+wait-row notes.txt
+open $T/w
+select notes.txt.br
+action win.extract-here
+wait-exists $T/w/notes.txt
