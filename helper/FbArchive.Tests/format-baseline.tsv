@@ -199,7 +199,7 @@ Nrg	ok	case
 Nsa	ok
 Nsis	fail list: Exception: listed: block_0, block_1
 Nss	ok
-Ntfs	ok	flat
+Ntfs	ok
 NuFx	ok
 NuPkg	ok
 Nwfs	ok	case
