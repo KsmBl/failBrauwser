@@ -386,6 +386,11 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let want = vec![arg.to_string()];
             wait(r, move |r| Ok(r.window.current_pane().selected_items().iter().map(|i| i.display_name()).collect::<Vec<_>>() == want));
         }
+        "wait-location" => {
+            // For locations reached asynchronously (after probing a file).
+            let want = arg.to_string();
+            wait(r, move |r| Ok(r.window.current_location().display() == want && idle(r)));
+        }
         "expect-location" => {
             let loc = w.current_location().display();
             if loc != arg {
