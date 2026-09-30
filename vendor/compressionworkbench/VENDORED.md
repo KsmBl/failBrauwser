@@ -46,6 +46,7 @@ is fetched at build time.
 - (bug) BKF edits went to the wrong folder and removed same-named files everywhere
 - (bug) the shared rebuild path dropped entries by leaf name; it keeps folders now
 - (bug) MFS-1 adds cut the other names down to their extension
+- (fix) behind a generic suffix (.bin, .img, .dat, …) a clear signature decides the format
 
 Later changes are in failBrauwser's git history (`git log -- vendor/compressionworkbench`);
 their tests are in `helper/FbArchive.Tests`. They are candidates for upstream pull requests.
