@@ -99,7 +99,7 @@ Erofs	ok
 Esd	fail detect: Exception: recognised as Wim
 Ewf	fail list: Exception: listed: media.raw, metadata.ini, section_00_header2.bin, section_01_header2.bin, section_02_header.bin, section_03_volume.bin, section_04_sectors.bin, section_05_table.bin, section_06_table2.bin, section_07_data.bin, section_08_hash.bin, section_09_done.bin
 ExFat	ok
-Ext	ok	flat
+Ext	ok
 Ext1	ok	extra,flat
 F2fs	ok
 Fat	ok
@@ -199,7 +199,7 @@ Nrg	ok	case
 Nsa	ok
 Nsis	fail list: Exception: listed: block_0, block_1
 Nss	ok
-Ntfs	ok	flat
+Ntfs	ok
 NuFx	ok
 NuPkg	ok
 Nwfs	ok	case
@@ -297,7 +297,7 @@ Tnef	ok
 TrDos	fail list: Exception: listed: a.txt.cod, b.bin.cod
 Trsdos	ok	case
 Ttc	fail create: ArgumentException: TTC: at least one .ttf or .otf input is required. (Parameter 'inputs')
-Tux2	ok	flat
+Tux2	ok
 U8	ok
 UImage	fail list: Exception: listed: metadata.ini, header.bin, payload.bin, payload_decompressed.bin
 Ubifs	ok
@@ -330,7 +330,7 @@ Wbn	fail list: Exception: listed: FULL.wbn, metadata.ini
 Wheel	ok	extra
 Wim	ok
 Wrapster	fail detect: Exception: recognised as Mp3
-Xar	ok	flat
+Xar	ok
 Xenix	ok
 Xfs	ok
 Xls	ok

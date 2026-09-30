@@ -132,29 +132,57 @@ public sealed class XarFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     // leaveOpen: true — caller owns the stream (e.g. AtomicFileWriter flushes
     // it to disk after we return; closing it here would break that contract).
     using var w = new XarWriter(output, leaveOpen: true);
-    foreach (var (name, data) in FormatHelpers.FlatFiles(inputs))
+    foreach (var i in inputs.Where(i => i.IsDirectory))
+      w.AddDirectory(i.ArchiveName);
+    foreach (var (name, data) in FormatHelpers.FilesOnly(inputs))
       w.AddFile(name, data);
   }
 
   /// <summary>
-  /// Adds (or replaces by name) files inside an existing XAR archive. Uses
-  /// <see cref="XarModifier"/> for true random-access I/O — only the header,
-  /// the compressed XML TOC, the new entry's heap bytes, and (when the TOC
-  /// changes size) the heap-shift delta are read or written.
+  /// Writes the archive anew: what is not dropped (a name or a folder above it), then the
+  /// new folders and files. Used for edits below the top level, which the in-place
+  /// modifier does not handle.
   /// </summary>
-  public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
-    foreach (var (name, data) in FlatFiles(inputs)) {
-      XarModifier.RemoveFile(archive, name, wipeData: true);
-      XarModifier.AddFile(archive, name, data);
+  private static void Rebuild(Stream archive, IReadOnlyList<ArchiveInputInfo> additions, ISet<string> drop) {
+    archive.Position = 0;
+    var r = new XarReader(archive);
+    var dirs = new List<(string, DateTime?)>();
+    var files = new List<(string, byte[], DateTime?)>();
+    bool Dropped(string name) {
+      var parts = name.Split('/');
+      for (var n = 1; n <= parts.Length; ++n)
+        if (drop.Contains(string.Join('/', parts[..n]))) return true;
+      return false;
     }
+    foreach (var e in r.Entries) {
+      if (Dropped(e.FileName)) continue;
+      if (e.IsDirectory) dirs.Add((e.FileName, e.LastModified));
+      else files.Add((e.FileName, r.Extract(e), e.LastModified));
+    }
+    using var ms = new MemoryStream();
+    using (var w = new XarWriter(ms, leaveOpen: true)) {
+      foreach (var (name, modified) in dirs) w.AddDirectory(name, modified);
+      foreach (var i in additions.Where(i => i.IsDirectory)) w.AddDirectory(i.ArchiveName);
+      foreach (var (name, data, modified) in files) w.AddFile(name, data, modified);
+      foreach (var (name, data) in FormatHelpers.FilesOnly(additions)) w.AddFile(name.Replace('\\', '/').Trim('/'), data);
+    }
+    archive.Position = 0;
+    archive.SetLength(0);
+    ms.Position = 0;
+    ms.CopyTo(archive);
   }
 
-  /// <summary>
-  /// Removes named entries from an existing XAR archive. Uses
-  /// <see cref="XarModifier"/> for random-access I/O on the TOC.
-  /// </summary>
+  /// <summary>Adds (or replaces by name) files and folders inside an existing XAR archive.</summary>
+  public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
+    // Rewritten through the writer: the in-place modifier knows a flat table of contents
+    // only and leaves the TOC checksum stale, which other tools then reject.
+    var replaced = FormatHelpers.FilesOnly(inputs).Select(f => f.Name.Replace('\\', '/').Trim('/'));
+    Rebuild(archive, inputs, new HashSet<string>(replaced, StringComparer.Ordinal));
+  }
+
+  /// <summary>Removes entries (folders with their contents) from an existing XAR archive.</summary>
   public void Remove(Stream archive, string[] entryNames) {
-    foreach (var name in entryNames)
-      XarModifier.RemoveFile(archive, name, wipeData: true);
+    // Rewritten through the writer, like Add.
+    Rebuild(archive, [], new HashSet<string>(entryNames.Select(n => n.Replace('\\', '/').Trim('/')), StringComparer.Ordinal));
   }
 }

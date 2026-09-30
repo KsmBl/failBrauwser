@@ -137,6 +137,11 @@ public static class Commands {
         Directory.CreateDirectory(Path.Combine(dest, Normalize(e.Name)));
     }
     ArchiveOperations.Extract(archive, dest, password, raw);
+    // Empty folders, which many formats' extractors skip.
+    if (names == null)
+      foreach (var e in all.Where(e => e.IsDirectory || e.Name.EndsWith('/')))
+        if (Normalize(e.Name) is { Length: > 0 } dir && !dir.Split('/').Any(p => p is ".." or "."))
+          Directory.CreateDirectory(Path.Combine(dest, dir));
   }
 
   // ── Writing ─────────────────────────────────────────────────────────

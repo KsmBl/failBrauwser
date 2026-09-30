@@ -491,7 +491,10 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
       ? new NtfsWriter(generateShortNames: generateShortNames)
       : new NtfsWriter(label, generateShortNames);
     ApplyWriterOptions(w, specific);
-    foreach (var (name, data) in FlatFiles(inputs))
+    // Folders are kept: the writer builds the directory tree from the paths.
+    foreach (var dir in DirectoriesOf(inputs))
+      w.AddDirectory(dir);
+    foreach (var (name, data) in FormatHelpers.FilesOnly(inputs))
       w.AddFile(name, data);
 
     var totalSize     = ParseImageSizeBytes(specific?.GetValueOrDefault("ImageSize"));
@@ -552,7 +555,7 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     // streaming writer).
     ApplyWriterOptions(w, specific);
     foreach (var input in inputs) {
-      if (input.IsDirectory) continue;
+      if (input.IsDirectory) { w.AddDirectory(input.Name); continue; }
       w.AddStreamingFile(input.Name, input.Size, input.OpenStream);
     }
     var totalSize     = ParseImageSizeBytes(specific?.GetValueOrDefault("ImageSize"));
@@ -639,17 +642,21 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
   private static void RebuildInPlaceStreaming(
       Stream archive,
       IReadOnlyList<(string Name, byte[] Data)> additions,
-      ISet<string>? drop) {
+      ISet<string>? drop,
+      IReadOnlyList<string>? newDirs = null) {
     var declaredBytes = archive.Length;
     var combined = new NtfsWriter();
 
     archive.Position = 0;
     var reader = new NtfsReader(archive, leaveOpen: true);
-    foreach (var entry in reader.Entries.Where(e => !e.IsDirectory)) {
-      if (drop != null && (drop.Contains(entry.Name) || drop.Contains(Path.GetFileName(entry.Name))))
+    foreach (var entry in reader.Entries) {
+      if (drop != null && (Dropped(entry.Name, drop) || drop.Contains(Path.GetFileName(entry.Name))))
         continue;
-      combined.AddFile(entry.Name, reader.Extract(entry));
+      if (entry.IsDirectory) combined.AddDirectory(entry.Name);
+      else combined.AddFile(entry.Name, reader.Extract(entry));
     }
+    foreach (var dir in newDirs ?? [])
+      combined.AddDirectory(dir);
     foreach (var (name, data) in additions)
       combined.AddFile(name, data);
 
@@ -670,8 +677,14 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
       return;
     }
 
-    if (archive.CanSeek && archive.Length > MaxBufferedImageBytes) {
-      RebuildInPlaceStreaming(archive, FormatHelpers.FilesOnly(inputs).ToList(), drop: null);
+    var newDirs = DirectoriesOf(inputs);
+    // New folders, and files inside folders, need the directory tree rebuilt; the
+    // in-place adder only writes into the root directory.
+    var nested = newDirs.Count > 0 || inputs.Any(i => !i.IsDirectory && i.ArchiveName.Replace('\\', '/').Trim('/').Contains('/'));
+    if (nested || (archive.CanSeek && archive.Length > MaxBufferedImageBytes)) {
+      var files = FormatHelpers.FilesOnly(inputs).Select(f => (f.Name.Replace('\\', '/').Trim('/'), f.Data)).ToList();
+      // Replacing a file: the old one goes first.
+      RebuildInPlaceStreaming(archive, files, new HashSet<string>(files.Select(f => f.Item1), StringComparer.OrdinalIgnoreCase), newDirs);
       return;
     }
 
@@ -701,8 +714,9 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     // Fallback: verified rebuild from the untouched original.
     var reader = new NtfsReader(new MemoryStream(original, false));
     var combined = new NtfsWriter();
-    foreach (var entry in reader.Entries.Where(e => !e.IsDirectory))
-      combined.AddFile(entry.Name, reader.Extract(entry));
+    foreach (var entry in reader.Entries)
+      if (entry.IsDirectory) combined.AddDirectory(entry.Name);
+      else combined.AddFile(entry.Name, reader.Extract(entry));
     foreach (var (name, data) in items)
       combined.AddFile(name, data);
     var rebuilt = combined.Build(original.Length);
@@ -723,8 +737,16 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
       return;
     }
 
-    if (archive.CanSeek && archive.Length > MaxBufferedImageBytes) {
-      RebuildInPlaceStreaming(archive, [], new HashSet<string>(entryNames, StringComparer.OrdinalIgnoreCase));
+    // The in-place remover works on the root directory; folders and entries inside
+    // folders are removed by a rebuild that keeps the rest of the tree.
+    var nestedOrFolder = entryNames.Any(n => n.Replace('\\', '/').Trim('/').Contains('/') || n.EndsWith('/') || n.EndsWith('\\'));
+    if (!nestedOrFolder && archive.CanSeek) {
+      archive.Position = 0;
+      var names = new HashSet<string>(entryNames, StringComparer.OrdinalIgnoreCase);
+      nestedOrFolder = new NtfsReader(archive, leaveOpen: true).Entries.Any(e => e.IsDirectory && names.Contains(e.Name));
+    }
+    if (nestedOrFolder || (archive.CanSeek && archive.Length > MaxBufferedImageBytes)) {
+      RebuildInPlaceStreaming(archive, [], new HashSet<string>(entryNames.Select(n => n.Replace('\\', '/').Trim('/')), StringComparer.OrdinalIgnoreCase));
       return;
     }
 
@@ -738,6 +760,18 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     archive.Write(image);
     archive.SetLength(image.Length);
   }
+  /// <summary>Directory inputs as '/'-separated paths.</summary>
+  private static List<string> DirectoriesOf(IReadOnlyList<ArchiveInputInfo> inputs) =>
+    inputs.Where(i => i.IsDirectory).Select(i => i.ArchiveName.Replace('\\', '/').Trim('/')).Where(n => n.Length > 0).ToList();
+
+  /// <summary>True when <paramref name="name"/> or a folder above it is in <paramref name="drop"/>.</summary>
+  private static bool Dropped(string name, ISet<string> drop) {
+    var parts = name.Replace('\\', '/').Trim('/').Split('/');
+    for (var n = 1; n <= parts.Length; ++n)
+      if (drop.Contains(string.Join('/', parts[..n]))) return true;
+    return false;
+  }
+
   /// <summary>
   /// Turns buffered inputs into streaming ones. Only a length is needed to lay a
   /// volume out; reading each input into a byte[] first caps the volume at what
@@ -747,7 +781,10 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
       IReadOnlyList<ArchiveInputInfo> inputs) {
     var result = new List<Compression.Registry.Streaming.StreamingArchiveInput>();
     foreach (var i in inputs) {
-      if (i.IsDirectory) continue;
+      if (i.IsDirectory) {
+        result.Add(new Compression.Registry.Streaming.StreamingArchiveInput(i.ArchiveName, 0, true, () => Stream.Null));
+        continue;
+      }
       var info = i;
       var size = info.InMemoryContent?.LongLength
                  ?? (File.Exists(info.FullPath) ? new FileInfo(info.FullPath).Length : 0L);

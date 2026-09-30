@@ -352,13 +352,16 @@ public sealed class ExtFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
     var w = new ExtWriter();
     foreach (var i in inputs) {
-      if (i.IsDirectory) continue;
+      if (i.IsDirectory) {
+        w.AddDirectory(i.ArchiveName);
+        continue;
+      }
       var info = i;
       // Only the length is needed to lay the volume out. Reading a large input
       // into a byte[] just to hand it over would cap the volume at 2 GB even
       // though the writer places file data by seek.
-      // Names are flattened to their leaf, as this path has always done.
-      var name = Path.GetFileName(info.ArchiveName);
+      // Folders are kept: the writer builds the directory tree from the paths.
+      var name = info.ArchiveName.Replace('\\', '/').TrimStart('/');
       if (info.InMemoryContent is { } bytes)
         w.AddFile(name, bytes);
       else
@@ -406,7 +409,7 @@ public sealed class ExtFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     ArgumentNullException.ThrowIfNull(inputs);
     var w = new ExtWriter();
     foreach (var input in inputs) {
-      if (input.IsDirectory) continue;
+      if (input.IsDirectory) { w.AddDirectory(input.Name); continue; }
       w.AddStreamingFile(input.Name, input.Size, input.OpenStream);
     }
     var versionStr = options.GetOption("Version", "ext4");
@@ -455,6 +458,12 @@ public sealed class ExtFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// </summary>
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
     var files = FormatHelpers.FilesOnly(inputs).ToList();
+    // New folders (empty ones included) need the directory tree rebuilt.
+    var dirs = inputs.Where(i => i.IsDirectory).Select(i => i.ArchiveName.Replace('\\', '/').Trim('/')).Where(n => n.Length > 0).ToList();
+    if (dirs.Count > 0) {
+      ExtModifier.Mutate(archive, files, [], dirs);
+      return;
+    }
     // Genuine in-place add (no whole-image re-pack): touches only the affected
     // metadata + data blocks. Cases the in-place writer cannot handle yet (htree
     // directory growth, nested target paths, very fragmented extent layouts) throw
