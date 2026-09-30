@@ -153,26 +153,18 @@ public sealed class BkfFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
     ArgumentNullException.ThrowIfNull(archive);
     ArgumentNullException.ThrowIfNull(inputs);
-    foreach (var (name, data) in FilesOnly(inputs)) {
-      var leaf = Path.GetFileName(name);
-      if (string.IsNullOrEmpty(leaf)) continue;
-      BkfInPlaceModifier.AddFile(archive, leaf, data);
-    }
+    // Rewritten through the writer: an in-place add appends to whichever folder the
+    // catalogue ends with, so files landed in the wrong folder.
+    ModifyRebuilder.AddViaCreate(archive, inputs, this, this);
   }
 
   /// <summary>
-  /// Tombstones each named entry's FILE DBLK in place. The DBLK's 4-byte type
-  /// field becomes the <c>XXXX</c> sentinel and the rest of that FLB block is
-  /// zero-wiped so the file name and STAN payload leave no forensic trace.
-  /// Surrounding DBLKs are not touched.
+  /// Removes entries (a folder with its contents) by writing the backup anew; matching
+  /// by leaf name in place removed files of the same name in other folders.
   /// </summary>
   public void Remove(Stream archive, string[] entryNames) {
     ArgumentNullException.ThrowIfNull(archive);
     ArgumentNullException.ThrowIfNull(entryNames);
-    foreach (var name in entryNames) {
-      var leaf = Path.GetFileName(name);
-      if (string.IsNullOrEmpty(leaf)) continue;
-      BkfInPlaceModifier.RemoveFile(archive, leaf);
-    }
+    ModifyRebuilder.RemoveViaCreate(archive, entryNames, this, this);
   }
 }
