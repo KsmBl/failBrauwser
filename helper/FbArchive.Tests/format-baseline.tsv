@@ -42,7 +42,7 @@ Big	ok
 BinCue	fail add: NotSupportedException: BIN/CUE: 'c.txt' cannot be added. This image is edited a sector at a time, so an entry has to be named 'sector-NNNN.bin' for the sector it replaces. Adding a file to the ISO 9660 filesystem inside the image is not something this supports.	case
 BinHex	ok
 BinaryII	ok	case
-Bkf	fail add: Exception: after adding: a.txt, d/b.bin, d/c.txt
+Bkf	ok
 BriefLz	ok
 Brotli	ok
 Bsa	ok

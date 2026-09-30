@@ -36,4 +36,22 @@ public class FormatFixesTests {
     Commands.Extract(ssd, x, ["a.TXT"], null);
     Assert.That(System.IO.File.ReadAllText(Path.Combine(x, "a.TXT")), Is.EqualTo("alpha"));
   }
+
+  /// <summary>
+  /// BKF edits used to put new files into the last folder of the backup and remove files by
+  /// leaf name from every folder.
+  /// </summary>
+  [Test]
+  public void Bkf_EditsKeepFoldersApart() {
+    var bkf = Path.Combine(_root, "b.bkf");
+    Directory.CreateDirectory(Path.Combine(_root, "d", "e"));
+    System.IO.File.WriteAllText(Path.Combine(_root, "d", "a.txt"), "inner");
+    Commands.Add(bkf, [new(File("a.txt", "outer"), "a.txt"), new(Path.Combine(_root, "d"), "d")], null, "Bkf");
+    Commands.Add(bkf, [new(File("c.txt", "gamma"), "c.txt")], null);
+    Assert.That(Names(bkf), Is.EquivalentTo(new[] { "a.txt", "c.txt", "d/a.txt" }));
+    Commands.Remove(bkf, ["a.txt"], null);
+    Assert.That(Names(bkf), Is.EquivalentTo(new[] { "c.txt", "d/a.txt" }));
+    var dirs = ArchiveOperations.List(bkf, null).Where(e => e.IsDirectory).Select(e => Commands.Normalize(e.Name));
+    Assert.That(dirs, Does.Contain("d/e"), "empty folder kept");
+  }
 }
