@@ -350,3 +350,18 @@ pub fn confirm(parent: &impl IsA<gtk::Window>, title: &str, detail: &str, ok_lab
     });
     d.show();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_uris() {
+        assert!(is_remote_uri("smb://192.168.1.198/GamingCrypt-Drive"));
+        assert!(is_remote_uri(" sftp://me@host/dir "));
+        assert!(!is_remote_uri("file:///tmp"));
+        assert!(!is_remote_uri("trash:///"));
+        assert!(!is_remote_uri("drives:///"));
+        assert!(!is_remote_uri("/home/me/a://b"));
+    }
+}
