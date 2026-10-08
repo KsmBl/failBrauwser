@@ -621,6 +621,18 @@ impl Window {
         self.location_entry.connect_activate(move |e| {
             let Some(w) = weak.upgrade() else { return };
             let text = e.text().to_string();
+            if util::is_remote_uri(&text) {
+                let weak = Rc::downgrade(&w);
+                let uri = text.clone();
+                util::mount_remote(&w.win, &uri, move |res| {
+                    let Some(w) = weak.upgrade() else { return };
+                    match res {
+                        Ok(path) => w.navigate(Location::Dir(path)),
+                        Err(msg) => util::show_error(&w.win, &format!("Cannot open “{text}”"), &msg),
+                    }
+                });
+                return;
+            }
             match Location::parse(&text, failbrauwser::archive::is_browsable_name) {
                 Some(loc) => w.navigate(loc),
                 None => {

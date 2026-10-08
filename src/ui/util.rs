@@ -190,6 +190,44 @@ pub fn show_error(parent: &impl IsA<gtk::Window>, title: &str, detail: &str) {
     d.show();
 }
 
+/// A network address such as `smb://host/share` or `sftp://host/dir`: anything with a
+/// scheme the location parser does not handle itself.
+pub fn is_remote_uri(text: &str) -> bool {
+    let t = text.trim();
+    match t.split_once("://") {
+        Some((scheme, _)) => {
+            !scheme.is_empty()
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+                && !matches!(scheme, "file" | "drives" | "trash")
+        }
+        None => false,
+    }
+}
+
+/// Mounts a network address through GVfs (asking for a password if the server wants one)
+/// and hands back the local folder GVfs exposes it under.
+pub fn mount_remote(parent: &impl IsA<gtk::Window>, uri: &str, done: impl FnOnce(Result<PathBuf, String>) + 'static) {
+    let file = gio::File::for_uri(uri.trim());
+    let local = |f: &gio::File| f.path().filter(|p| p.exists());
+    if let Some(p) = local(&file) {
+        return done(Ok(p));
+    }
+    let op = gtk::MountOperation::new(Some(parent));
+    let f = file.clone();
+    file.mount_enclosing_volume(gio::MountMountFlags::NONE, Some(&op), gio::Cancellable::NONE, move |res| {
+        let res = match res {
+            Ok(()) => Ok(()),
+            Err(e) if e.matches(gio::IOErrorEnum::AlreadyMounted) => Ok(()),
+            Err(e) if e.matches(gio::IOErrorEnum::NotSupported) || e.matches(gio::IOErrorEnum::NotMountableFile) => Err(format!(
+                "{e}\n\nThe GVfs backend for this kind of address is not installed \
+                 (for smb:// install “gvfs-smb”, for sftp:// “gvfs-sftp”…)."
+            )),
+            Err(e) => Err(e.to_string()),
+        };
+        done(res.and_then(|()| local(&f).ok_or_else(|| "The share was mounted but has no local folder (is gvfsd-fuse running?).".to_string())));
+    });
+}
+
 /// Asks for a line of text (new folder name, rename, …). `select_stem` pre-selects the name
 /// without its extension, as file managers do for renames.
 pub fn ask_text(
