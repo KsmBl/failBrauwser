@@ -35,7 +35,7 @@ while [ $# -gt 0 ]; do
         --default) MAKE_DEFAULT=1 ;;
         --no-network) NETWORK=0 ;;
         --uninstall) UNINSTALL=1 ;;
-        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
