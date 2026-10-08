@@ -199,3 +199,62 @@ pub fn find_smb_servers() -> Vec<Host> {
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_keeps_newest_first_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("sub/remote-history");
+        assert!(load_history_from(&p).is_empty());
+        remember_in(&p, "smb://a/x").unwrap();
+        remember_in(&p, " smb://b/y/ ").unwrap();
+        let list = remember_in(&p, "SMB://A/X/").unwrap();
+        assert_eq!(list, vec!["SMB://A/X", "smb://b/y"]);
+        assert_eq!(load_history_from(&p), list);
+        for i in 0..HISTORY_MAX + 5 {
+            remember_in(&p, &format!("smb://h/{i}")).unwrap();
+        }
+        assert_eq!(load_history_from(&p).len(), HISTORY_MAX);
+    }
+
+    #[test]
+    fn hosts_in_typed_addresses() {
+        assert_eq!(smb_host("smb://192.168.1.198/"), Some("192.168.1.198"));
+        assert_eq!(smb_host("smb://me@nas/share/dir"), Some("nas"));
+        assert_eq!(smb_host("smb://nas"), None);
+        assert_eq!(smb_host("sftp://nas/"), None);
+    }
+
+    #[test]
+    fn matching_from_start_or_server() {
+        assert!(suggestion_matches("smb://192.168.1.198", "sm"));
+        assert!(suggestion_matches("smb://192.168.1.198", "192.168"));
+        assert!(suggestion_matches("smb://192.168.1.198/GamingCrypt-Drive", "smb://192.168.1.198/gam"));
+        assert!(!suggestion_matches("smb://192.168.1.198", "smb://192.168.1.198"));
+        assert!(!suggestion_matches("smb://192.168.1.198", "/home"));
+        assert!(!suggestion_matches("smb://192.168.1.198", ""));
+    }
+
+    #[test]
+    fn arp_table() {
+        let t = "IP address       HW type     Flags       HW address            Mask     Device\n\
+                 192.168.1.198    0x1         0x2         00:0c:e7:00:14:c8     *        wlan0\n\
+                 192.168.1.50     0x1         0x0         00:00:00:00:00:00     *        wlan0\n";
+        assert_eq!(parse_arp(t), vec![Ipv4Addr::new(192, 168, 1, 198)]);
+    }
+
+    #[test]
+    fn targets_neighbours_first_without_self() {
+        let own = Ipv4Addr::new(192, 168, 1, 220);
+        let t = scan_targets(&[(own, 24)], &[Ipv4Addr::new(192, 168, 1, 198), Ipv4Addr::new(10, 0, 0, 1)]);
+        assert_eq!(t[0], Ipv4Addr::new(192, 168, 1, 198));
+        assert_eq!(t.len(), 253);
+        assert!(!t.contains(&own));
+        assert!(!t.contains(&Ipv4Addr::new(10, 0, 0, 1)));
+        assert!(!t.contains(&Ipv4Addr::new(192, 168, 1, 255)));
+        // A /16 is only searched around this machine.
+        assert_eq!(scan_targets(&[(Ipv4Addr::new(10, 1, 2, 3), 16)], &[]).len(), 253);
+    }
+}
