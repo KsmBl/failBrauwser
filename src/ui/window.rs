@@ -79,6 +79,7 @@ impl Window {
         }
         let pathbar = super::pathbar::PathBar::new();
         let location_entry = pathbar.entry.clone();
+        super::remote::attach(&location_entry);
         let entry_item = gtk::ToolItem::new();
         gtk::prelude::ToolItemExt::set_expand(&entry_item, true);
         entry_item.set_margin_start(4);
@@ -627,7 +628,10 @@ impl Window {
                 util::mount_remote(&w.win, &uri, move |res| {
                     let Some(w) = weak.upgrade() else { return };
                     match res {
-                        Ok(path) => w.navigate(Location::Dir(path)),
+                        Ok(path) => {
+                            super::remote::remember(&text);
+                            w.navigate(Location::Dir(path));
+                        }
                         Err(msg) => util::show_error(&w.win, &format!("Cannot open “{text}”"), &msg),
                     }
                 });

@@ -9,6 +9,7 @@ pub mod config;
 pub mod drives;
 pub mod location;
 pub mod ops;
+pub mod remote;
 pub mod search;
 pub mod thumbs;
 pub mod trash;
