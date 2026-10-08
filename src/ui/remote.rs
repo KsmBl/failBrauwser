@@ -177,7 +177,7 @@ pub fn attach(entry: &gtk::Entry) {
     });
     let note = gtk::CellRendererText::new();
     note.set_property("foreground-rgba", gtk::gdk::RGBA::new(0.5, 0.5, 0.5, 1.0));
-    note.set_property("xpad", 12);
+    note.set_property("xpad", 12u32);
     completion.pack_end(&note, false);
     completion.add_attribute(&note, "text", COL_NOTE as i32);
     STATE.with(|s| s.borrow_mut().entries.push(entry.downgrade()));
