@@ -218,7 +218,7 @@ pub fn mount_remote(parent: &impl IsA<gtk::Window>, uri: &str, done: impl FnOnce
         let res = match res {
             Ok(()) => Ok(()),
             Err(e) if e.matches(gio::IOErrorEnum::AlreadyMounted) => Ok(()),
-            Err(e) if e.matches(gio::IOErrorEnum::NotSupported) || e.matches(gio::IOErrorEnum::NotMountableFile) => Err(format!(
+            Err(e) if [gio::IOErrorEnum::NotSupported, gio::IOErrorEnum::NotMountableFile, gio::IOErrorEnum::NotMounted].iter().any(|c| e.matches(*c)) => Err(format!(
                 "{e}\n\nThe GVfs backend for this kind of address is not installed \
                  (for smb:// install “gvfs-smb”, for sftp:// “gvfs-sftp”…)."
             )),
