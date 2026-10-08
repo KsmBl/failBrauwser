@@ -99,7 +99,10 @@ pressed, and the last step always stays in view. Click the empty space right of 
 button (the text cursor shows where; or press
 <kbd>Ctrl</kbd>+<kbd>L</kbd>) to type a location; <kbd>Enter</kbd> or <kbd>Esc</kbd> returns to
 the buttons. A network address (`smb://host/share`, `sftp://host/dir`, …) is mounted
-through GVfs, asking for a password if needed, and opens as its local GVfs folder. Home and Drives are in the side panel.
+through GVfs, asking for a password if needed, and opens as its local GVfs folder.
+While you type one, the bar suggests addresses opened before, SMB servers found on the
+local network (searched in the background, about two seconds) and, once a server is typed
+with its slash, that server's shares. Home and Drives are in the side panel.
 
 Click empty space in the list to clear the selection (and to leave the typed path).
 The status bar shows how many files and folders the current folder holds and how much space
@@ -247,6 +250,7 @@ src/
     ops/           copy engine, delete/trash, device classes, jobs
     archive/       helper client, archive tree, VFS (nested archives, write-back)
     location.rs    folders, paths through archives, the drives page
+    remote.rs      network address history, SMB servers on the local network
     drives.rs      UDisks2 / mount table, fill levels
     config.rs      settings
     search.rs      file name search, also inside archives
