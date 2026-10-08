@@ -74,7 +74,8 @@ that; windows then take a moment longer the first time).
 - Rust 1.92 or newer, GTK 3.24 (development files), `pkg-config`
 - For archives: the .NET 10 SDK (the archive library is included in `vendor/`). Without it
   failBrauwser works, minus archives.
-- Optional at run time: UDisks2 (drives page details and mounting), GVfs (trash, places).
+- Optional at run time: UDisks2 (drives page details and mounting), GVfs (trash, places;
+  with its backends such as `gvfs-smb`, network addresses like `smb://host/share`).
 
 ## Using it
 
@@ -97,7 +98,8 @@ that; windows then take a moment longer the first time).
 pressed, and the last step always stays in view. Click the empty space right of the last
 button (the text cursor shows where; or press
 <kbd>Ctrl</kbd>+<kbd>L</kbd>) to type a location; <kbd>Enter</kbd> or <kbd>Esc</kbd> returns to
-the buttons. Home and Drives are in the side panel.
+the buttons. A network address (`smb://host/share`, `sftp://host/dir`, …) is mounted
+through GVfs, asking for a password if needed, and opens as its local GVfs folder. Home and Drives are in the side panel.
 
 Click empty space in the list to clear the selection (and to leave the typed path).
 The status bar shows how many files and folders the current folder holds and how much space
@@ -315,8 +317,8 @@ such a script (see `src/ui/selftest.rs` for the commands).
 
 ## Limitations
 
-- GVfs network locations without a local path (`smb://` not mounted through FUSE, `mtp://`)
-  are not browsable yet.
+- Network addresses need GVfs's FUSE daemon (`gvfsd-fuse`); locations without a local path
+  (`mtp://`) are not browsable yet.
 - Of the formats failBrauwser can write, about 270 keep files exactly. The rest are what
   their format is: old disk formats store upper-case 8.3 names or pad files to whole sectors
   (CP/M, RT-11, LIF, PlayStation memory cards), some formats have no folders, a few need
