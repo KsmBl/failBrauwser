@@ -87,6 +87,13 @@ pub fn icon_for_entry(e: &FileEntry) -> gio::Icon {
     })
 }
 
+/// A symbolic icon for a folder in the side panel: the special folders (Documents, Music, …)
+/// get their own.
+pub fn place_icon(path: &Path) -> gio::Icon {
+    let name = special_dir_icon(path).unwrap_or("folder");
+    gio::ThemedIcon::from_names(&[&format!("{name}-symbolic"), name]).upcast()
+}
+
 pub fn folder_icon() -> gio::Icon {
     icon_for_type("inode/directory")
 }

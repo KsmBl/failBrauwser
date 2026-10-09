@@ -11,7 +11,11 @@
 //! `wait-row <name>`, `wait-no-row <name>`, `activate` (open the selection),
 //! `wait-opened`, `edit-opened <new content>`, `expect-disabled <win.action>`,
 //! `crumb-click <label>`, `expect-crumbs <a > b > c>`, `path-edit`, `expect-path-mode <buttons|text>`,
-//! `type-location <text>`, `write-file <path> = <content>`, `sidebar-drives`, `expect-sidebar-drives <selected|unselected>`, `quit`. Blank lines and `#` comments are ignored.
+//! `type-location <text>`, `write-file <path> = <content>`, `sidebar-drives`, `expect-sidebar-drives <selected|unselected>`,
+//! `expect-shortcuts <a | b | c>`, `expect-shortcut-marked <a>`, `shortcut-click <entry>`,
+//! `shortcut-menu <entry> : <item>` (`Show Hidden Entry/<name>` for the submenu),
+//! `shortcut-drag <entry> > <before entry>`, `shortcut-drop <folder> > <before entry>`,
+//! `window-snapshot <png>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
 use super::window::Window;
@@ -183,6 +187,47 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
         "sidebar-drives" => {
             super::sidebar::for_window(&w).ok_or("no sidebar")?.click_drives();
             wait(r, |r| Ok(idle(r)));
+        }
+        "expect-shortcuts" => {
+            let got = super::sidebar::for_window(&w).ok_or("no sidebar")?.labels().join(" | ");
+            if got != arg {
+                return Err(format!("side panel shows {got:?}"));
+            }
+        }
+        "expect-shortcut-marked" => {
+            let got = super::sidebar::for_window(&w).ok_or("no sidebar")?.marked().join(" | ");
+            if got != arg {
+                return Err(format!("marked: {got:?}"));
+            }
+        }
+        "shortcut-click" => {
+            super::sidebar::for_window(&w).ok_or("no sidebar")?.click_label(arg)?;
+            wait(r, |r| Ok(idle(r)));
+        }
+        "shortcut-menu" => {
+            // shortcut-menu <entry> : <item>   (entry empty: the empty space)
+            let (label, item) = arg.split_once(':').ok_or("need <entry> : <item>")?;
+            super::sidebar::for_window(&w).ok_or("no sidebar")?.menu_item(label.trim(), item.trim())?;
+        }
+        "shortcut-drag" => {
+            // shortcut-drag <entry> > <before entry>   (before empty: to the end)
+            let (label, before) = arg.split_once('>').ok_or("need <entry> > <before>")?;
+            super::sidebar::for_window(&w).ok_or("no sidebar")?.drag_before(label.trim(), before.trim())?;
+        }
+        "shortcut-drop" => {
+            // shortcut-drop <folder> > <before entry>
+            let (dir, before) = arg.split_once('>').ok_or("need <folder> > <before>")?;
+            super::sidebar::for_window(&w).ok_or("no sidebar")?.drop_dirs_before(vec![PathBuf::from(dir.trim())], before.trim())?;
+        }
+        "window-snapshot" => {
+            // The window drawn into a PNG (works on any compositor, unlike `screenshot`).
+            let alloc = w.win.allocation();
+            let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, alloc.width(), alloc.height()).map_err(|e| e.to_string())?;
+            let cr = gtk::cairo::Context::new(&surface).map_err(|e| e.to_string())?;
+            w.win.draw(&cr);
+            drop(cr);
+            let pb = gtk::gdk::pixbuf_get_from_surface(&surface, 0, 0, alloc.width(), alloc.height()).ok_or("cannot read the drawing")?;
+            pb.savev(arg, "png", &[]).map_err(|e| e.to_string())?;
         }
         "expect-sidebar-drives" => {
             let sel = super::sidebar::for_window(&w).ok_or("no sidebar")?.drives_selected();
