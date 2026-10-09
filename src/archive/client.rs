@@ -9,6 +9,7 @@ use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -64,6 +65,8 @@ pub struct Progress {
 
 struct Proc {
     child: Child,
+    /// The helper's process id, readable without the lock (see [`Helper::abort`]); 0 once gone.
+    pid: Arc<AtomicU32>,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
@@ -71,6 +74,7 @@ struct Proc {
 
 impl Drop for Proc {
     fn drop(&mut self) {
+        self.pid.store(0, Ordering::SeqCst);
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -87,6 +91,7 @@ struct State {
 pub struct Helper {
     exe: PathBuf,
     shared: Arc<(Mutex<State>, Condvar)>,
+    pid: Arc<AtomicU32>,
 }
 
 impl Helper {
@@ -97,6 +102,7 @@ impl Helper {
                 Mutex::new(State { proc: None, last_use: Instant::now(), reaper_running: false }),
                 Condvar::new(),
             )),
+            pid: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -116,6 +122,17 @@ impl Helper {
         let mut st = lock.lock().unwrap();
         st.proc = None;
         cv.notify_all();
+    }
+
+    /// Kills the helper in the middle of a request (a cancelled job): the request fails and
+    /// the next one starts a fresh helper. Works while another thread waits for the answer.
+    pub fn abort(&self) {
+        let pid = self.pid.load(Ordering::SeqCst);
+        if pid != 0 {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
     }
 
     /// Every format the helper knows (the `formats` request), as JSON objects.
@@ -223,7 +240,8 @@ impl Helper {
             })?;
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
-        Ok(Proc { child, stdin, stdout, next_id: 0 })
+        self.pid.store(child.id(), Ordering::SeqCst);
+        Ok(Proc { child, pid: self.pid.clone(), stdin, stdout, next_id: 0 })
     }
 
     /// One thread per running helper; it sleeps until the helper has been idle long
