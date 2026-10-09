@@ -323,7 +323,9 @@ such a script (see `src/ui/selftest.rs` for the commands).
 ## Limitations
 
 - Network addresses need GVfs's FUSE daemon (`gvfsd-fuse`); locations without a local path
-  (`mtp://`) are not browsable yet.
+  (`mtp://`) are not browsable yet. Copies onto network shares go through GIO one file at
+  a time (gvfsd-fuse deadlocks under parallel writes); SMB shares cannot hold symbolic
+  links, which are reported and left out.
 - Of the formats failBrauwser can write, about 270 keep files exactly. The rest are what
   their format is: old disk formats store upper-case 8.3 names or pad files to whole sectors
   (CP/M, RT-11, LIF, PlayStation memory cards), some formats have no folders, a few need
