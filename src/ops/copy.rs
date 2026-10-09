@@ -5,6 +5,10 @@
 //! per-file latency, not bandwidth, so parallel requests help a lot on SSDs and network
 //! shares. Folders get their final permissions and times at the end, because writing
 //! into a folder changes its time.
+//!
+//! GVfs shares (`smb://`, `sftp://`, … under `$XDG_RUNTIME_DIR/gvfs`) are written through
+//! GIO, one file at a time: gvfsd-fuse deadlocks under parallel writes to a slow backend
+//! such as SMB, and then every access to the share hangs.
 
 use super::device::{DeviceClass, classify};
 use super::fastcopy::{self, copy_contents, is_cancelled_error};
@@ -19,6 +23,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use gtk::gio;
+use gtk::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -182,6 +188,7 @@ pub fn transfer(ctx: &JobCtx, sources: &[PathBuf], dest_dir: &Path, mode: Mode, 
     ctx.set_phase(Phase::Preparing);
     let dest_meta = fs::metadata(dest_dir)?;
     let dest_class = classify(dest_dir);
+    let via_gio = is_gvfs_path(dest_dir);
     let mut plan = Plan::default();
     let mut tops = Vec::new();
 
@@ -246,7 +253,7 @@ pub fn transfer(ctx: &JobCtx, sources: &[PathBuf], dest_dir: &Path, mode: Mode, 
 
     let throttle = opts.smooth_writes && dest_class.is_slow();
     let src_class = sources.first().and_then(|s| s.parent()).map(classify).unwrap_or(DeviceClass::Fast);
-    let workers = opts.workers.unwrap_or_else(|| dest_class.workers().min(src_class.workers())).max(1);
+    let workers = if via_gio { 1 } else { opts.workers.unwrap_or_else(|| dest_class.workers().min(src_class.workers())).max(1) };
     if src_class == DeviceClass::Rotational {
         // Reading in inode order keeps a spinning source from seeking back and forth.
         plan.files.sort_by_key(|f| f.ino);
@@ -255,13 +262,24 @@ pub fn transfer(ctx: &JobCtx, sources: &[PathBuf], dest_dir: &Path, mode: Mode, 
         // serialized by the filesystem, different folders proceed in parallel.
         interleave_by_folder(&mut plan.files);
     }
-    copy_files(ctx, &plan.files, mode, throttle, workers, opts.verify)?;
+    copy_files(ctx, &plan.files, mode, throttle, workers, opts.verify, via_gio)?;
 
     for (src, target, dst) in &plan.links {
         if ctx.is_cancelled() {
             return Err(fastcopy::cancelled());
         }
-        let made = with_retry(ctx, dst, || std::os::unix::fs::symlink(target, dst))?;
+        let made = if via_gio {
+            match gio::File::for_path(dst).make_symbolic_link(target, gio::Cancellable::NONE) {
+                Ok(()) => Some(()),
+                Err(e) => {
+                    // SMB shares hold no links: say so and go on with the rest.
+                    ctx.record_error(format!("{}: the link could not be created on the share ({e})", dst.display()));
+                    None
+                }
+            }
+        } else {
+            with_retry(ctx, dst, || std::os::unix::fs::symlink(target, dst))?
+        };
         if made.is_some() && mode == Mode::Move {
             let _ = fs::remove_file(src);
         }
@@ -375,7 +393,7 @@ fn interleave_by_folder(files: &mut Vec<FileTask>) {
     files.extend(keyed.into_iter().map(|(_, _, f)| f));
 }
 
-fn copy_files(ctx: &JobCtx, files: &[FileTask], mode: Mode, throttle: bool, workers: usize, verify: bool) -> io::Result<()> {
+fn copy_files(ctx: &JobCtx, files: &[FileTask], mode: Mode, throttle: bool, workers: usize, verify: bool, via_gio: bool) -> io::Result<()> {
     let next = AtomicUsize::new(0);
     let failure: Mutex<Option<io::Error>> = Mutex::new(None);
     let workers = workers.min(files.len()).max(1);
@@ -391,7 +409,7 @@ fn copy_files(ctx: &JobCtx, files: &[FileTask], mode: Mode, throttle: bool, work
                         break;
                     }
                     ctx.set_current(task.src.file_name().unwrap_or_default().to_string_lossy());
-                    match copy_one(ctx, task, mode, throttle, verify, &mut buf) {
+                    match copy_one(ctx, task, mode, throttle, verify, via_gio, &mut buf) {
                         Ok(()) => {
                             ctx.files_done.fetch_add(1, Ordering::Relaxed);
                         }
@@ -418,7 +436,7 @@ fn copy_files(ctx: &JobCtx, files: &[FileTask], mode: Mode, throttle: bool, work
 }
 
 /// Copies one file. Errors the user chose to skip return `Ok`.
-fn copy_one(ctx: &JobCtx, t: &FileTask, mode: Mode, throttle: bool, verify: bool, buf: &mut Vec<u8>) -> io::Result<()> {
+fn copy_one(ctx: &JobCtx, t: &FileTask, mode: Mode, throttle: bool, verify: bool, via_gio: bool, buf: &mut Vec<u8>) -> io::Result<()> {
     let src_meta = match fs::symlink_metadata(&t.src) {
         Ok(m) => m,
         Err(e) => {
@@ -444,7 +462,7 @@ fn copy_one(ctx: &JobCtx, t: &FileTask, mode: Mode, throttle: bool, verify: bool
     };
     let done = with_retry(ctx, &t.src, || {
         let mut counted = 0;
-        let mut r = write_file(ctx, t, &dst, throttle, buf, &mut counted);
+        let mut r = if via_gio { write_file_gio(ctx, t, &dst, &mut counted) } else { write_file(ctx, t, &dst, throttle, buf, &mut counted) };
         if r.is_ok() && verify {
             r = verify_copy(ctx, &t.src, &dst, &mut counted);
             if r.is_err() {
@@ -540,6 +558,47 @@ fn write_file(ctx: &JobCtx, t: &FileTask, dst: &Path, throttle: bool, buf: &mut 
         let _ = fs::remove_file(dst);
     }
     result
+}
+
+/// Whether `p` lies on a GVfs share exposed by gvfsd-fuse.
+pub fn is_gvfs_path(p: &Path) -> bool {
+    let fuse = gtk::glib::user_runtime_dir().join("gvfs");
+    p.starts_with(&fuse) || p.starts_with(gtk::glib::home_dir().join(".gvfs"))
+}
+
+/// Copies one file onto a GVfs share through GIO, which talks to the share's backend
+/// directly instead of through gvfsd-fuse. Keeps the modification time.
+fn write_file_gio(ctx: &JobCtx, t: &FileTask, dst: &Path, counted: &mut u64) -> io::Result<()> {
+    let (src, out) = (gio::File::for_path(&t.src), gio::File::for_path(dst));
+    let cancel = gio::Cancellable::new();
+    let mut seen = 0u64;
+    let mut progress = |done: i64, _total: i64| {
+        let done = done.max(0) as u64;
+        if done > seen {
+            ctx.add_bytes(done - seen);
+            *counted += done - seen;
+            seen = done;
+        }
+        ctx.wait_while_paused();
+        if ctx.is_cancelled() {
+            cancel.cancel();
+        }
+    };
+    let flags = gio::FileCopyFlags::NOFOLLOW_SYMLINKS | gio::FileCopyFlags::TARGET_DEFAULT_PERMS;
+    let result = src.copy(&out, flags, Some(&cancel), Some(&mut progress));
+    // Empty files report no progress; count what is left either way.
+    if result.is_ok() && t.size > seen {
+        ctx.add_bytes(t.size - seen);
+        *counted += t.size - seen;
+    }
+    result.map_err(|e| {
+        if e.matches(gio::IOErrorEnum::Exists) {
+            // Someone else's file: leave it alone.
+            return io::Error::new(io::ErrorKind::AlreadyExists, e.to_string());
+        }
+        let _ = out.delete(gio::Cancellable::NONE);
+        if e.matches(gio::IOErrorEnum::Cancelled) { fastcopy::cancelled() } else { io::Error::other(e.to_string()) }
+    })
 }
 
 /// The name of `p` for messages.
