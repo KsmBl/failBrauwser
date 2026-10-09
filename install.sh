@@ -7,11 +7,13 @@
 #   ./install.sh --no-autostart  do not start the background instance at login
 #   ./install.sh --default       make failBrauwser the default file manager
 #   ./install.sh --no-network    do not install the GVfs SMB backend (smb:// addresses)
+#   ./install.sh --no-archives   do not build archive support (needs no .NET SDK then)
 #   ./install.sh --uninstall     remove what an install with the same options put in place
 #
-# Archive support needs the .NET 10 SDK; it builds CompressionWorkbench (by Hawkynt,
-# vendored in vendor/compressionworkbench). Without dotnet failBrauwser is installed
-# without archive support.
+# Archive support (opening, extracting, creating archives) is a helper built with the
+# .NET 10 SDK from CompressionWorkbench (by Hawkynt, vendored in vendor/compressionworkbench).
+# Without an SDK on the PATH the script downloads one into ~/.local/share/failbrauwser/dotnet
+# (no root needed, only used for building).
 #
 # Typed smb:// addresses are mounted through GVfs; its SMB backend is installed with the
 # system's package manager (asks for sudo) unless it is already there.
@@ -24,6 +26,7 @@ SUDO=""
 AUTOSTART=1
 MAKE_DEFAULT=0
 NETWORK=1
+ARCHIVES=1
 UNINSTALL=0
 CWB_ROOT=${CWB_ROOT:-"$HERE/vendor/compressionworkbench"}
 
@@ -34,8 +37,9 @@ while [ $# -gt 0 ]; do
         --no-autostart) AUTOSTART=0 ;;
         --default) MAKE_DEFAULT=1 ;;
         --no-network) NETWORK=0 ;;
+        --no-archives) ARCHIVES=0 ;;
         --uninstall) UNINSTALL=1 ;;
-        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -75,12 +79,47 @@ say "Building failBrauwser"
 (cd "$HERE" && cargo build --release --locked)
 
 HELPER=""
-if command -v dotnet >/dev/null && [ -f "$CWB_ROOT/Compression.Lib/Compression.Lib.csproj" ]; then
-    say "Building the archive helper (CompressionWorkbench at $CWB_ROOT)"
-    (cd "$HERE" && make helper CWB_ROOT="$(cd "$CWB_ROOT" && pwd)")
-    HELPER="$HERE/target/helper/fb-archive"
-else
-    echo "warning: dotnet not found — installing without archive support" >&2
+DOTNET_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/failbrauwser/dotnet"
+
+# A .NET SDK that can build net10.0: on the PATH, from an earlier run, or downloaded now.
+has_sdk10() { "$1" --list-sdks 2>/dev/null | grep -Eq '^(1[0-9]|[2-9][0-9])\.'; }
+find_dotnet() {
+    if command -v dotnet >/dev/null && has_sdk10 dotnet; then command -v dotnet; return; fi
+    if [ -x "$DOTNET_HOME/dotnet" ] && has_sdk10 "$DOTNET_HOME/dotnet"; then echo "$DOTNET_HOME/dotnet"; return; fi
+    say "Downloading the .NET 10 SDK into $DOTNET_HOME (for building the archive helper)" >&2
+    local script
+    script=$(mktemp)
+    if command -v curl >/dev/null; then curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$script"
+    elif command -v wget >/dev/null; then wget -qO "$script" https://dot.net/v1/dotnet-install.sh
+    else echo "curl or wget is needed to download the .NET SDK" >&2; rm -f "$script"; return 1
+    fi || { rm -f "$script"; return 1; }
+    bash "$script" --channel 10.0 --install-dir "$DOTNET_HOME" --no-path >&2 || { rm -f "$script"; return 1; }
+    rm -f "$script"
+    has_sdk10 "$DOTNET_HOME/dotnet" && echo "$DOTNET_HOME/dotnet"
+}
+
+if [ "$ARCHIVES" = 1 ] && [ -f "$CWB_ROOT/Compression.Lib/Compression.Lib.csproj" ]; then
+    if DOTNET=$(find_dotnet); then
+        # The helper is compiled to native code, which needs a C toolchain to link.
+        AOT_LINKER=()
+        if ! command -v clang >/dev/null; then
+            if command -v gcc >/dev/null; then AOT_LINKER=(-p:CppCompilerAndLinker=gcc)
+            else echo "warning: neither clang nor gcc found — the archive helper cannot be linked" >&2
+            fi
+        fi
+        say "Building the archive helper (CompressionWorkbench at $CWB_ROOT)"
+        if (cd "$HERE" && PATH="$(dirname "$DOTNET"):$PATH" DOTNET_ROOT="$(dirname "$(readlink -f "$DOTNET")")" \
+                DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 \
+                make helper CWB_ROOT="$(cd "$CWB_ROOT" && pwd)" HELPER_FLAGS="${AOT_LINKER[*]}"); then
+            HELPER="$HERE/target/helper/fb-archive"
+        else
+            echo "warning: the archive helper did not build — installing without archive support" >&2
+        fi
+    else
+        echo "warning: no .NET 10 SDK could be set up — installing without archive support" >&2
+    fi
+elif [ "$ARCHIVES" = 1 ]; then
+    echo "warning: $CWB_ROOT has no CompressionWorkbench — installing without archive support" >&2
 fi
 
 say "Installing into $PREFIX"
