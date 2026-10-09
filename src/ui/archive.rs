@@ -68,6 +68,26 @@ fn ask_and_retry(w: &Window, loc: ArchiveLoc, wrong: bool, retry: impl Fn(&Windo
 
 /// Runs archive work with the helper's progress shown in the job.
 fn tracked<T>(ctx: &JobCtx, f: impl FnOnce() -> T) -> T {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    // Cancel stops the helper itself: it may be busy (or stuck) without reporting progress.
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            while !finished.load(Ordering::SeqCst) {
+                if ctx.is_cancelled() {
+                    Vfs::global().helper().abort();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let r = tracked_progress(ctx, f);
+        finished.store(true, Ordering::SeqCst);
+        r
+    })
+}
+
+fn tracked_progress<T>(ctx: &JobCtx, f: impl FnOnce() -> T) -> T {
     use std::sync::atomic::Ordering;
     // The job context outlives this call; the sink is dropped before it returns.
     let ctx_ptr = ctx as *const JobCtx as usize;
@@ -315,7 +335,9 @@ fn transfer_work(ctx: &JobCtx, sources: Vec<ClipSource>, dest: &Location, mode: 
 
     // Everything coming out of an archive is extracted to a staging folder first: next to
     // the destination when that is a folder (so the final step is a rename), else in the cache.
+    // Network shares get a local one: the helper writes in parallel, which hangs gvfsd-fuse.
     let staging = match dest {
+        Location::Dir(d) if copy::is_gvfs_path(d) => local_staging()?,
         Location::Dir(d) => {
             let s = tempfile::Builder::new().prefix(".fb-extract-").tempdir_in(d)?;
             s.keep()
@@ -478,6 +500,14 @@ pub fn fill_sizes(pane: &Rc<Pane>) {
 
 // ── Extract, compress, open as archive ──────────────────────────────
 
+/// A staging folder on local disk (not in the runtime folder, which is memory), for
+/// extractions bound for a network share.
+fn local_staging() -> std::io::Result<PathBuf> {
+    let base = glib::user_cache_dir().join("failbrauwser").join("stage");
+    std::fs::create_dir_all(&base)?;
+    Ok(tempfile::Builder::new().prefix("fb-").tempdir_in(&base)?.keep())
+}
+
 /// Archive files among the selection (local files only).
 pub fn selected_archives(pane: &Pane) -> Vec<PathBuf> {
     pane.selected_items().iter().filter_map(|i| i.path().filter(|_| !i.is_dir_like() && is_browsable_name(&i.display_name())).cloned()).collect()
@@ -505,7 +535,17 @@ fn extract_archives(w: &Window, archives: Vec<PathBuf>, dest: PathBuf) {
             for a in &archives {
                 ctx.set_current(a.file_name().unwrap_or_default().to_string_lossy());
                 let loc = ArchiveLoc::root(a.clone());
-                made.push(tracked(ctx, || Vfs::global().extract_all(&loc, &dest)).map_err(io_at(&loc))?);
+                if copy::is_gvfs_path(&dest) {
+                    // Extracted locally, then copied onto the share (see `transfer_work`).
+                    let staging = local_staging()?;
+                    let result = tracked(ctx, || Vfs::global().extract_all(&loc, &staging))
+                        .map_err(io_at(&loc))
+                        .and_then(|got| copy::transfer(ctx, &[got], &dest, Mode::Move, &copy::Options::default()));
+                    let _ = std::fs::remove_dir_all(&staging);
+                    made.extend(result?);
+                } else {
+                    made.push(tracked(ctx, || Vfs::global().extract_all(&loc, &dest)).map_err(io_at(&loc))?);
+                }
             }
             Ok(made)
         },

@@ -254,3 +254,34 @@ fn formats_table() {
     }
     assert_eq!(fs::read_to_string(&file).unwrap(), out, "format table out of date: FB_REGEN_FORMATS=1 cargo test --test archive_helper formats_table");
 }
+
+#[test]
+fn abort_ends_a_request_that_never_finishes() {
+    let Some(h) = helper() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    sample_tree(&src);
+    let archive = dir.path().join("a.zip");
+    h.add(&archive, &[(src.clone(), "src".into())], None).unwrap();
+    // Reading a pipe nobody writes to blocks for good, like a share that stopped answering.
+    let stuck = dir.path().join("stuck.zip");
+    let fifo = std::ffi::CString::new(stuck.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+    let h2 = h.clone();
+    let out = dir.path().join("out");
+    let worker = std::thread::spawn(move || h2.extract(&stuck, None, &out, None));
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    if worker.is_finished() {
+        panic!("the request should be stuck on the pipe: {:?}", worker.join().unwrap());
+    }
+    h.abort();
+    let started = std::time::Instant::now();
+    while !worker.is_finished() {
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "abort did not end the request");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(worker.join().unwrap().is_err());
+    // The next request gets a fresh helper.
+    assert!(names(&h, &archive).contains(&"src/a.txt".to_string()));
+}
