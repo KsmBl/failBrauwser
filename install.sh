@@ -75,10 +75,9 @@ fi
 command -v cargo >/dev/null || { echo "cargo (Rust) is required: https://rustup.rs" >&2; exit 1; }
 pkg-config --exists gtk+-3.0 || { echo "GTK 3 development files are required (gtk3)" >&2; exit 1; }
 
-say "Building failBrauwser"
-(cd "$HERE" && cargo build --release --locked)
-
 HELPER=""
+HELPER_PID=""
+HELPER_LOG="$HERE/target/helper-build.log"
 DOTNET_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/failbrauwser/dotnet"
 
 # A .NET SDK that can build net10.0: on the PATH, from an earlier run, or downloaded now.
@@ -107,19 +106,35 @@ if [ "$ARCHIVES" = 1 ] && [ -f "$CWB_ROOT/Compression.Lib/Compression.Lib.csproj
             else echo "warning: neither clang nor gcc found — the archive helper cannot be linked" >&2
             fi
         fi
-        say "Building the archive helper (CompressionWorkbench at $CWB_ROOT)"
-        if (cd "$HERE" && PATH="$(dirname "$DOTNET"):$PATH" DOTNET_ROOT="$(dirname "$(readlink -f "$DOTNET")")" \
-                DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 \
-                make helper CWB_ROOT="$(cd "$CWB_ROOT" && pwd)" HELPER_FLAGS="${AOT_LINKER[*]}"); then
-            HELPER="$HERE/target/helper/fb-archive"
-        else
-            echo "warning: the archive helper did not build — installing without archive support" >&2
-        fi
+        # Built alongside the app: most of the helper's native compile runs on one core,
+        # so the Rust build uses the others meanwhile.
+        say "Building the archive helper in the background (CompressionWorkbench at $CWB_ROOT; log: $HELPER_LOG)"
+        mkdir -p "$HERE/target"
+        (cd "$HERE" && PATH="$(dirname "$DOTNET"):$PATH" DOTNET_ROOT="$(dirname "$(readlink -f "$DOTNET")")" \
+            DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 \
+            make helper CWB_ROOT="$(cd "$CWB_ROOT" && pwd)" HELPER_FLAGS="${AOT_LINKER[*]}") >"$HELPER_LOG" 2>&1 &
+        HELPER_PID=$!
+        # Do not leave it running when the app build fails.
+        trap '[ -n "$HELPER_PID" ] && kill "$HELPER_PID" 2>/dev/null' EXIT
     else
         echo "warning: no .NET 10 SDK could be set up — installing without archive support" >&2
     fi
 elif [ "$ARCHIVES" = 1 ]; then
     echo "warning: $CWB_ROOT has no CompressionWorkbench — installing without archive support" >&2
+fi
+
+say "Building failBrauwser"
+(cd "$HERE" && cargo build --release --locked)
+
+if [ -n "$HELPER_PID" ]; then
+    say "Waiting for the archive helper"
+    if wait "$HELPER_PID"; then
+        HELPER="$HERE/target/helper/fb-archive"
+    else
+        grep -v 'warning CS' "$HELPER_LOG" | tail -20 >&2
+        echo "warning: the archive helper did not build (log: $HELPER_LOG) — installing without archive support" >&2
+    fi
+    HELPER_PID=""
 fi
 
 say "Installing into $PREFIX"
