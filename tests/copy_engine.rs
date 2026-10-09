@@ -266,3 +266,39 @@ fn paused_copy_waits_and_then_finishes() {
     t.join().unwrap().unwrap();
     assert_eq!(fs::metadata(dest.join("big")).unwrap().len(), 64 << 20);
 }
+
+/// The GVfs FUSE folder for a local folder, through GVfs's `localtest` backend, when the
+/// session has GVfs with its FUSE daemon.
+fn through_gvfs(dir: &Path) -> Option<std::path::PathBuf> {
+    let fuse = gtk::glib::user_runtime_dir().join("gvfs");
+    let ok = std::process::Command::new("gio").args(["mount", "localtest:///"]).stdin(std::process::Stdio::null()).output().is_ok();
+    let p = fuse.join(format!("localtest:{}", dir.display()));
+    (ok && p.is_dir()).then_some(p)
+}
+
+#[test]
+fn copies_onto_gvfs_shares_through_gio() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    make_tree(&src);
+    for i in 0..40 {
+        fs::write(src.join(format!("sub/many{i}")), vec![i as u8; 70_000]).unwrap();
+    }
+    fs::create_dir(dir.path().join("dest")).unwrap();
+    let Some(dest) = through_gvfs(&dir.path().join("dest")) else {
+        eprintln!("GVfs FUSE with the localtest backend not available, skipping");
+        return;
+    };
+    assert!(failbrauwser::ops::copy::is_gvfs_path(&dest));
+    let ctx = JobCtx::new();
+    transfer(&ctx, &[src.clone()], &dest, Mode::Copy, &opts()).unwrap();
+    let out = dir.path().join("dest/src");
+    assert_eq!(fs::read_to_string(out.join("a.txt")).unwrap(), "alpha");
+    assert_eq!(fs::read(out.join("sub/b.bin")).unwrap(), vec![3u8; 3 << 20]);
+    assert_eq!(fs::read(out.join("sub/many39")).unwrap(), vec![39u8; 70_000]);
+    assert_eq!(fs::metadata(out.join("a.txt")).unwrap().mtime(), 1_600_000_000);
+    assert_eq!(fs::read_link(out.join("sub/link")).unwrap(), Path::new("../a.txt"));
+    let s = ctx.snapshot();
+    assert_eq!(s.bytes_done, s.bytes_total);
+    assert!(ctx.errors().is_empty(), "{:?}", ctx.errors());
+}
