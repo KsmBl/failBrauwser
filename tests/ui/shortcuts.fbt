@@ -1,0 +1,35 @@
+# Side panel entries: open, arrange, rename, hide, show, add and remove.
+open $T/work
+expect-shortcuts Drives | Home | Desktop | Projects | Trash
+shortcut-click Projects
+expect-location $T/projects
+expect-shortcut-marked Projects
+shortcut-click Drives
+expect-location drives:///
+expect-shortcut-marked Drives
+# Reorder through the menu and by dragging (to the end, then before Home).
+shortcut-menu Trash : Move Up
+expect-shortcuts Drives | Home | Desktop | Trash | Projects
+shortcut-drag Drives >
+expect-shortcuts Home | Desktop | Trash | Projects | Drives
+shortcut-drag Drives > Home
+expect-shortcuts Drives | Home | Desktop | Trash | Projects
+# Rename.
+text Code
+shortcut-menu Projects : Rename…
+expect-shortcuts Drives | Home | Desktop | Trash | Code
+# Hide, and show again from the menu of the empty space.
+shortcut-menu Desktop : Hide
+expect-shortcuts Drives | Home | Trash | Code
+shortcut-menu : Show Hidden Entry/Desktop
+expect-shortcuts Drives | Home | Desktop | Trash | Code
+# Add the current folder after an entry, and a folder dropped from the file list.
+open $T/work
+shortcut-menu Home : Add Current Folder
+expect-shortcuts Drives | Home | work | Desktop | Trash | Code
+expect-shortcut-marked work
+shortcut-drop $T/music > Trash
+expect-shortcuts Drives | Home | work | Desktop | music | Trash | Code
+shortcut-menu work : Remove
+expect-shortcuts Drives | Home | Desktop | music | Trash | Code
+window-snapshot $T/panel.png

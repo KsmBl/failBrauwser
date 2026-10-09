@@ -119,8 +119,15 @@ count the whole disk, link loops would never end), hard-linked files count once,
 filesystems below a folder are not entered.
 
 **Folder tree:** *View → Folder Tree → Tree Starts At* the current folder, your home folder or
-`/`. The shortcuts above it are GTK's own places: home, bookmarks, and drives with
-mount/eject.
+`/`.
+
+**Side panel entries:** Drives, Home, Desktop, Trash, your folders and the mounted volumes,
+in the order you like. Right-click an entry to rename, move, hide or remove it (built-in
+entries can only be hidden), or to eject a volume; right-click the empty space to add the
+current folder or show a hidden entry again. Drag entries to reorder them, and drop folders
+from the file list onto the panel to add them. Middle-click opens an entry in a new tab. The
+first start takes over your GTK bookmarks; the arrangement is kept in
+`~/.config/failbrauwser/shortcuts`.
 
 **Thumbnails:** *View → Show Thumbnails*. failBrauwser uses the freedesktop.org thumbnail
 cache (`~/.cache/thumbnails`), so thumbnails made by Thunar, Nautilus or Dolphin are reused
@@ -255,6 +262,7 @@ src/
     drives.rs      UDisks2 / mount table, fill levels
     config.rs      settings
     search.rs      file name search, also inside archives
+    shortcuts.rs   side panel entries: order, names, hidden ones, saved
     thumbs.rs      freedesktop.org thumbnail cache
     actions.rs     custom actions (Thunar uca.xml)
   ui/              GTK: window, tabs, sidebar, drives page, jobs, clipboard, dnd, archives
