@@ -215,3 +215,77 @@ pub fn read_gtk_bookmarks(path: &Path) -> Vec<(PathBuf, Option<String>)> {
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_start_takes_over_gtk_bookmarks() {
+        let dir = tempfile::tempdir().unwrap();
+        let bm = dir.path().join("bookmarks");
+        std::fs::write(&bm, "file:///home/me/Games Spiele\nfile:///home/me/My%20Docs\nsmb://nas/share NAS\n").unwrap();
+        let s = Shortcuts::load_from(&dir.path().join("none"), &bm);
+        let labels: Vec<String> = s.0.iter().map(Shortcut::label).collect();
+        assert_eq!(labels, ["Drives", "Home", "Desktop", "Spiele", "My Docs", "Trash", "Mounted volumes"]);
+        assert_eq!(s.0[4].kind, Kind::Dir("/home/me/My Docs".into()));
+    }
+
+    #[test]
+    fn saves_and_loads_order_names_and_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub/shortcuts");
+        let mut s = Shortcuts::defaults(Vec::new());
+        let g = s.add_dir("/data/Games\twith tab".into(), Some(1));
+        assert_eq!(g, 1);
+        s.rename(g, "Spiele\tx");
+        s.set_hidden(2, true); // Home
+        s.move_to(0, 3); // Drives after Desktop
+        s.save_to(&path).unwrap();
+        let back = Shortcuts::load_from(&path, Path::new("/nonexistent"));
+        assert_eq!(back, Shortcuts::load_from(&path, Path::new("/nonexistent")));
+        let labels: Vec<(String, bool)> = back.0.iter().map(|s| (s.label(), s.hidden)).collect();
+        assert_eq!(
+            labels,
+            [
+                ("Spiele x".into(), false),
+                ("Home".into(), true),
+                ("Desktop".into(), false),
+                ("Drives".into(), false),
+                ("Trash".into(), false),
+                ("Mounted volumes".into(), false)
+            ]
+        );
+        assert_eq!(back.0[0].kind, Kind::Dir("/data/Games\twith tab".into()));
+    }
+
+    #[test]
+    fn editing_rules() {
+        let mut s = Shortcuts::defaults(Vec::new());
+        assert!(!s.remove(0), "built-in entries are only hidden");
+        let i = s.add_dir("/x".into(), None);
+        assert_eq!(s.add_dir("/y".into(), Some(0)), 0);
+        // Adding a folder that is there moves it and shows it again.
+        s.set_hidden(i + 1, true);
+        assert_eq!(s.add_dir("/x".into(), Some(1)), 1);
+        assert_eq!(s.0[1].kind, Kind::Dir("/x".into()));
+        assert!(!s.0[1].hidden);
+        assert_eq!(s.0.iter().filter(|e| e.kind == Kind::Dir("/x".into())).count(), 1);
+        s.rename(1, "Home base");
+        assert_eq!(s.0[1].label(), "Home base");
+        s.rename(1, "  ");
+        assert_eq!(s.0[1].name, None);
+        assert!(s.remove(1));
+        assert!(!s.0.iter().any(|e| e.kind == Kind::Dir("/x".into())));
+    }
+
+    #[test]
+    fn older_files_get_new_builtins_and_skip_junk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shortcuts");
+        std::fs::write(&path, "0\thome\t\n1\ttrash\tBin\ngarbage\n0\tfile:///srv\t\n0\thome\t\n").unwrap();
+        let s = Shortcuts::load_from(&path, Path::new("/nonexistent"));
+        let keys: Vec<String> = s.0.iter().map(|e| e.label()).collect();
+        assert_eq!(keys, ["Home", "Bin", "srv", "Drives", "Desktop", "Mounted volumes"]);
+        assert!(s.0[1].hidden);
+    }
+}

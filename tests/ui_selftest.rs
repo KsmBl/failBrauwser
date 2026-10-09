@@ -52,6 +52,35 @@ fn sidebar_tree() {
 }
 
 #[test]
+fn side_panel_entries() {
+    run_checked(
+        "shortcuts.fbt",
+        &[],
+        |t| {
+            for d in ["work", "projects", "music"] {
+                std::fs::create_dir_all(t.join(d)).unwrap();
+            }
+            // A known start instead of the GTK bookmarks the harness copies from the desktop.
+            let projects = format!("file://{}", t.join("projects").display());
+            std::fs::create_dir_all(t.join("config/failbrauwser")).unwrap();
+            std::fs::write(
+                t.join("config/failbrauwser/shortcuts"),
+                format!("0\tdrives\t\n0\thome\t\n0\tdesktop\t\n0\t{projects}\tProjects\n0\ttrash\t\n1\tmounts\t\n"),
+            )
+            .unwrap();
+        },
+        |t| {
+            // Kept for the next start, in the order arranged.
+            let saved = std::fs::read_to_string(t.join("config/failbrauwser/shortcuts")).unwrap();
+            let keys: Vec<&str> = saved.lines().map(|l| l.split('\t').nth(1).unwrap_or("")).collect();
+            assert_eq!(keys[..3], ["drives", "home", "desktop"]);
+            assert!(keys[3].ends_with("/music"), "{saved}");
+            assert!(saved.contains("\tCode\n"), "{saved}");
+        },
+    );
+}
+
+#[test]
 fn total_size_column() {
     run("dirsize.fbt", |t| {
         let root = t.join("root");
