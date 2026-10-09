@@ -210,7 +210,17 @@ impl Helper {
             .env("DOTNET_GCgen0size", "0x1000000")
             .env("DOTNET_TieredPGO", "0")
             .spawn()
-            .map_err(|e| ArchiveError::new("helper", format!("cannot start archive helper {}: {e}", self.exe.display())))?;
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    ArchiveError::new(
+                        "helper",
+                        "Archive support is not installed: the archive helper (fb-archive) is missing. \
+                         Run install.sh again; it sets up the .NET SDK the helper is built with.",
+                    )
+                } else {
+                    ArchiveError::new("helper", format!("cannot start archive helper {}: {e}", self.exe.display()))
+                }
+            })?;
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         Ok(Proc { child, stdin, stdout, next_id: 0 })
