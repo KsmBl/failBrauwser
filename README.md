@@ -72,8 +72,9 @@ that; windows then take a moment longer the first time).
 ### Requirements
 
 - Rust 1.92 or newer, GTK 3.24 (development files), `pkg-config`
-- For archives: the .NET 10 SDK (the archive library is included in `vendor/`). Without it
-  failBrauwser works, minus archives.
+- For archives: the .NET 10 SDK and clang or gcc (the archive library is included in
+  `vendor/`). `install.sh` downloads the SDK into `~/.local/share/failbrauwser/dotnet` when
+  none is on the `PATH` (needs `curl` or `wget`); `--no-archives` skips archive support.
 - Optional at run time: UDisks2 (drives page details and mounting), GVfs (trash, places;
   with its backends such as `gvfs-smb`, network addresses like `smb://host/share`).
 
