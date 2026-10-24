@@ -66,6 +66,39 @@ public static class Commands {
   }
 
   /// <summary>
+  /// What can be chosen when a new archive of <paramref name="format"/> is written: its
+  /// compression methods and the settings it describes itself (version, dictionary size, …).
+  /// </summary>
+  public static void Options(Utf8JsonWriter w, string format) {
+    var d = FormatRegistry.GetById(format) ?? throw new ProtocolException($"unknown format '{format}'");
+    w.WriteStartArray("methods");
+    foreach (var m in d.Methods) {
+      w.WriteStartObject();
+      w.WriteString("id", m.Name);
+      w.WriteString("name", m.DisplayName);
+      w.WriteEndObject();
+    }
+    w.WriteEndArray();
+    w.WriteStartArray("options");
+    if (d is IFormatOptionsSchema schema) {
+      foreach (var o in schema.OptionsSchema) {
+        w.WriteStartObject();
+        w.WriteString("key", o.Key);
+        w.WriteString("name", o.DisplayName);
+        w.WriteString("kind", o.Kind.ToString().ToLowerInvariant());
+        w.WriteString("default", o.Default);
+        w.WriteStartArray("values");
+        foreach (var v in o.AllowedValues ?? []) w.WriteStringValue(v);
+        w.WriteEndArray();
+        if (o.Description != null) w.WriteString("description", o.Description);
+        if (o.DependsOn != null) w.WriteString("depends", o.DependsOn);
+        w.WriteEndObject();
+      }
+    }
+    w.WriteEndArray();
+  }
+
+  /// <summary>
   /// Formats whose writer does not store files so they can be read back (found by the format
   /// matrix test): they are not offered for new archives.
   /// </summary>
@@ -94,6 +127,14 @@ public static class Commands {
   }
 
   public static void Probe(Utf8JsonWriter w, string path) {
+    if (SplitSet.Parts(path) is { } parts) {
+      using var s = SplitSet.Open(parts);
+      var inner = SplitSet.Format(parts[0], s);
+      w.WriteBoolean("archive", FormatRegistry.GetArchiveOps(inner.ToString()) != null);
+      w.WriteString("format", inner.ToString());
+      w.WriteBoolean("writable", false);
+      return;
+    }
     var format = File.Exists(path) ? FormatDetector.Detect(path) : F.Unknown;
     var archive = format != F.Unknown && (FormatDetector.IsArchive(format) || FormatRegistry.GetArchiveOps(format.ToString()) != null);
     w.WriteBoolean("archive", archive);
@@ -115,11 +156,18 @@ public static class Commands {
   }
 
   public static void List(Utf8JsonWriter w, string archive, string? password) {
-    var format = FormatDetector.Detect(archive);
-    var entries = ArchiveOperations.List(archive, password);
+    var parts = SplitSet.Parts(archive);
+    F format;
+    List<ArchiveEntry> entries;
+    if (parts != null) {
+      entries = SplitSet.List(parts, password, out format);
+    } else {
+      format = FormatDetector.Detect(archive);
+      entries = ArchiveOperations.List(archive, password);
+    }
     w.WriteString("format", format.ToString());
-    w.WriteBoolean("writable", IsWritable(format, archive));
-    if (ReadOnlyReason(format, archive) is { } why) w.WriteString("readonly_reason", why);
+    w.WriteBoolean("writable", parts == null && IsWritable(format, archive));
+    if ((parts != null ? SplitSet.ReadOnlyReason : ReadOnlyReason(format, archive)) is { } why) w.WriteString("readonly_reason", why);
     w.WriteStartArray("entries");
     foreach (var e in entries) {
       w.WriteStartObject();
@@ -150,7 +198,8 @@ public static class Commands {
   public static void Extract(string archive, string dest, string[]? names, string? password) {
     Directory.CreateDirectory(dest);
     string[]? raw = null;
-    var all = ArchiveOperations.List(archive, password);
+    var parts = SplitSet.Parts(archive);
+    var all = parts != null ? SplitSet.List(parts, password, out _) : ArchiveOperations.List(archive, password);
     // Progress: what has arrived in the destination out of what is coming.
     var before = Progress.BytesBelow(dest);
     var wantedSize = names == null
@@ -165,7 +214,8 @@ public static class Commands {
       foreach (var e in all.Where(e => e.IsDirectory && wanted.Any(n => IsAtOrBelow(Normalize(e.Name), n))))
         Directory.CreateDirectory(Path.Combine(dest, Normalize(e.Name)));
     }
-    ArchiveOperations.Extract(archive, dest, password, raw);
+    if (parts != null) SplitSet.Extract(parts, dest, password, raw);
+    else ArchiveOperations.Extract(archive, dest, password, raw);
     // Empty folders, which many formats' extractors skip.
     if (names == null)
       foreach (var e in all.Where(e => e.IsDirectory || e.Name.EndsWith('/')))
@@ -181,11 +231,27 @@ public static class Commands {
   /// </summary>
   /// <remarks><paramref name="format"/> (a format id) picks the format of a new archive; without
   /// it the extension decides.</remarks>
-  public static void Add(string archive, IReadOnlyList<AddItem> items, string? password, string? format = null) {
+  /// <remarks><paramref name="settings"/> (method, level, …) only apply to a new archive.</remarks>
+  public static void Add(string archive, IReadOnlyList<AddItem> items, string? password, string? format = null, CreateSettings? settings = null) {
     var inputs = new List<ArchiveInput>();
     foreach (var item in items) Expand(item, inputs);
     if (inputs.Count == 0) return;
     var opts = new CompressionOptions { Password = password };
+    var creating = !File.Exists(archive) || new FileInfo(archive).Length == 0;
+    if (creating && settings != null) {
+      opts = new CompressionOptions {
+        Password = password,
+        Method = string.IsNullOrEmpty(settings.Method) ? MethodSpec.Default : MethodSpec.Parse(settings.Method),
+        Level = settings.Level,
+        DictSize = settings.DictSize,
+        SolidSize = settings.SolidSize,
+        Threads = Math.Max(1, settings.Threads),
+        ForceCompress = settings.ForceCompress,
+        EncryptFilenames = settings.EncryptNames && password != null,
+        ZipEncryption = password != null ? settings.ZipEncryption : null,
+        FormatSpecific = settings.Specific,
+      };
+    }
     // Progress: bytes of the inputs read by the writer; a rebuild reads the old contents too.
     var inputBytes = inputs.Where(i => !i.IsDirectory && File.Exists(i.FullPath)).Sum(i => new FileInfo(i.FullPath).Length);
     var existing0 = File.Exists(archive) && new FileInfo(archive).Length > 0 && !(FormatRegistry.GetArchiveOps(FormatDetector.Detect(archive).ToString()) is IArchiveModifiable)
@@ -391,6 +457,7 @@ public static class Commands {
   }
 
   private static void RequireWritable(string archive) {
+    if (SplitSet.Parts(archive) != null) throw new NotSupportedException(SplitSet.ReadOnlyReason);
     var format = FormatDetector.Detect(archive);
     if (ReadOnlyReason(format, archive) is { } why) throw new NotSupportedException(why);
     if (!IsWritable(format, archive)) throw new NotSupportedException($"{format} archives are read-only.");

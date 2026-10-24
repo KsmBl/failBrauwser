@@ -294,7 +294,8 @@ public sealed class SevenZipFormatDescriptor : IFormatDescriptor, IArchiveFormat
         ? SevenZipOptionsResolver.ResolveBzip2BlockSize(effectiveDict) * 100 * 1024
         : SevenZipOptionsResolver.ResolveLzmaDictSize(effectiveDict, options.Optimize);
     var ppmdOrder = SevenZipOptionsResolver.ResolvePpmdOrder(options.WordSize);
-    var ppmdMem = SevenZipOptionsResolver.ResolvePpmdMemorySize(effectiveDict);
+    // The dictionary sizes offered go down to 64 KB; PPMd needs at least 1 MB of memory.
+    var ppmdMem = Math.Max(1 << 20, SevenZipOptionsResolver.ResolvePpmdMemorySize(effectiveDict));
     var directSolid = options.SolidSize;
     var schemaSolid = (long)options.GetOptionInt("SolidSize", -1);
     var solid = directSolid > 0 ? directSolid : (schemaSolid >= 0 ? schemaSolid : 0L);

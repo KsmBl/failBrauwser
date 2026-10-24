@@ -5,6 +5,7 @@ pub mod app;
 pub mod archive;
 pub mod backend;
 pub mod clipboard;
+pub mod compress;
 pub mod customactions;
 pub mod desktoplink;
 pub mod dirsize;

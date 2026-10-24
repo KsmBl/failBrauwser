@@ -51,6 +51,72 @@ fn create_list_and_extract_roundtrip() {
 }
 
 #[test]
+fn new_archives_follow_the_settings() {
+    use failbrauwser::archive::options::{CreateSettings, split_file};
+    let Some(h) = helper() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    sample_tree(&src);
+    let items = [(src.clone(), "src".to_string())];
+
+    // The formats say what can be chosen.
+    let rar = h.options("Rar").unwrap();
+    assert_eq!(rar.version().unwrap().values, ["Rar5", "Rar4", "Rar1_5"]);
+    let zip = h.options("Zip").unwrap();
+    assert!(zip.methods.iter().any(|(id, _)| id == "lzma"));
+    assert!(zip.level().is_some());
+    assert!(h.options("NoSuchFormat").is_err());
+
+    // RAR 4 (what WinRAR 3.x writes) has the older signature.
+    let rar4 = dir.path().join("old.rar");
+    let s = CreateSettings { specific: vec![("TargetCompatibility".into(), "Rar4".into())], ..Default::default() };
+    h.create_with(&rar4, "Rar", &items, None, Some(&s)).unwrap();
+    assert_eq!(&fs::read(&rar4).unwrap()[..7], b"Rar!\x1a\x07\x00");
+    let rar5 = dir.path().join("new.rar");
+    h.create_with(&rar5, "Rar", &items, None, Some(&CreateSettings::default())).unwrap();
+    assert_eq!(&fs::read(&rar5).unwrap()[..8], b"Rar!\x1a\x07\x01\x00");
+    assert_eq!(names(&h, &rar4), names(&h, &rar5));
+
+    // ZIP with LZMA: method 14 in the local headers (tiny files that do not shrink are
+    // stored); stored: method 0, the 10 000 bytes as they are.
+    let methods = |p: &Path| -> Vec<u8> {
+        let b = fs::read(p).unwrap();
+        b.windows(4).enumerate().filter(|(_, w)| *w == b"PK\x03\x04").map(|(i, _)| b[i + 8]).collect()
+    };
+    let lzma = dir.path().join("lzma.zip");
+    h.create_with(&lzma, "Zip", &items, None, Some(&CreateSettings { method: Some("lzma".into()), level: Some(9), ..Default::default() })).unwrap();
+    assert!(methods(&lzma).contains(&14), "{:?}", methods(&lzma));
+    let stored = dir.path().join("stored.zip");
+    h.create_with(&stored, "Zip", &items, None, Some(&CreateSettings { method: Some("store".into()), ..Default::default() })).unwrap();
+    assert!(methods(&stored).iter().all(|&m| m == 0) && fs::metadata(&stored).unwrap().len() > 10_000);
+    assert_eq!(names(&h, &lzma), names(&h, &stored));
+
+    // 7z with format settings, split into parts that open as one archive again.
+    let seven = dir.path().join("parts.7z");
+    let s = CreateSettings { method: Some("copy".into()), specific: vec![("DictSize".into(), "65536".into())], ..Default::default() };
+    h.create_with(&seven, "SevenZip", &items, None, Some(&s)).unwrap();
+    let whole = fs::read(&seven).unwrap();
+    let parts = split_file(&seven, 4096).unwrap();
+    assert!(parts.len() >= 3, "{parts:?}");
+    let joined: Vec<u8> = parts.iter().flat_map(|p| fs::read(p).unwrap()).collect();
+    assert_eq!(joined, whole);
+    // The first part opens as the 7z inside, read-only; it extracts like the 7z did.
+    let listing = h.list(&parts[0], None).unwrap();
+    assert_eq!(listing.format, "SevenZip");
+    assert!(!listing.writable);
+    let files = |p: &Path| -> Vec<String> {
+        let mut v: Vec<String> = h.list(p, None).unwrap().entries.into_iter().filter(|e| !e.is_dir).map(|e| e.name).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(files(&parts[0]), files(&rar5));
+    let out = dir.path().join("from-parts");
+    h.extract(&parts[0], None, &out, None).unwrap();
+    assert_eq!(fs::read(out.join("src/sub/deeper/c.bin")).unwrap(), vec![7u8; 10_000]);
+    assert!(h.remove(&parts[0], &["src/a.txt".to_string()], None).is_err());
+}
+
+#[test]
 fn remove_is_exact_and_folders_go_completely() {
     let Some(h) = helper() else { return };
     let dir = tempfile::tempdir().unwrap();

@@ -66,6 +66,55 @@ public class FormatFixesTests {
     Assert.That(Names(img).Select(n => n.ToLowerInvariant()), Is.EquivalentTo(new[] { "b.bin", "c.txt" }));
   }
 
+  /// <summary>7z offers dictionaries down to 64 KB; below 1 MB the PPMd memory used to be refused.</summary>
+  [TestCase("lzma2")]
+  [TestCase("ppmd")]
+  [TestCase("copy")]
+  public void SevenZip_SmallDictionaries(string method) {
+    var target = Path.Combine(_root, $"small-{method}.7z");
+    var settings = new CreateSettings(method, null, 0, 0, 1, false, false, null, new Dictionary<string, string> { ["DictSize"] = "65536" });
+    Commands.Add(target, [new(File("a.txt", "alpha alpha alpha"), "a.txt")], null, "SevenZip", settings);
+    Assert.That(Names(target), Is.EqualTo(new[] { "a.txt" }));
+  }
+
+  /// <summary>Settings for a new archive: the RAR generation and the ZIP method are written as asked.</summary>
+  [Test]
+  public void NewArchivesFollowTheSettings() {
+    var rar = Path.Combine(_root, "old.rar");
+    Commands.Add(rar, [new(File("a.txt", "alpha"), "a.txt")], null, "Rar",
+      new CreateSettings(null, null, 0, 0, 1, false, false, null, new Dictionary<string, string> { ["TargetCompatibility"] = "Rar4" }));
+    Assert.That(System.IO.File.ReadAllBytes(rar)[..7], Is.EqualTo("Rar!\x1a\x07\0"u8.ToArray()));
+    var zip = Path.Combine(_root, "packed.zip");
+    Commands.Add(zip, [new(File("b.txt", new string('b', 5000)), "b.txt")], null, "Zip",
+      new CreateSettings("bzip2", 9, 0, 0, 1, false, false, null, null));
+    Assert.That(System.IO.File.ReadAllBytes(zip)[8], Is.EqualTo(12));
+    Assert.That(Names(zip), Is.EqualTo(new[] { "b.txt" }));
+  }
+
+  /// <summary>A 7z cut into .001, .002, … opens from its first part as the 7z, read-only.</summary>
+  [Test]
+  public void SplitSet_OpensAsTheArchiveInside() {
+    var whole = Path.Combine(_root, "set.7z");
+    Commands.Add(whole, [new(File("a.txt", new string('a', 3000)), "a.txt"), new(File("b.txt", "beta"), "b.txt")], null, "SevenZip",
+      new CreateSettings("copy", null, 0, 0, 1, false, false, null, null));
+    var bytes = System.IO.File.ReadAllBytes(whole);
+    var parts = new List<string>();
+    for (var i = 0; i * 1000 < bytes.Length; ++i) {
+      parts.Add($"{whole}.{i + 1:D3}");
+      System.IO.File.WriteAllBytes(parts[^1], bytes[(i * 1000)..Math.Min(bytes.Length, (i + 1) * 1000)]);
+    }
+    System.IO.File.Delete(whole);
+    Assert.That(SplitSet.Parts(parts[0]), Is.EqualTo(parts));
+    Assert.That(SplitSet.Parts(parts[1]), Is.Null);
+    Assert.That(Names(parts[0]).Count, Is.EqualTo(1), "the library alone sees one joined file");
+    Assert.That(SplitSet.List(parts.ToArray(), null, out var format).Select(e => e.Name).Order(), Is.EqualTo(new[] { "a.txt", "b.txt" }));
+    Assert.That(format, Is.EqualTo(FormatDetector.Format.SevenZip));
+    var dest = Path.Combine(_root, "out");
+    Commands.Extract(parts[0], dest, ["b.txt"], null);
+    Assert.That(System.IO.File.ReadAllText(Path.Combine(dest, "b.txt")), Is.EqualTo("beta"));
+    Assert.Throws<NotSupportedException>(() => Commands.Remove(parts[0], ["a.txt"], null));
+  }
+
   /// <summary>Formats whose files do not read back are not offered for new archives.</summary>
   [TestCase("StuffItX", ".sitx")]
   [TestCase("Mtree", ".mtree")]

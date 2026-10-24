@@ -220,7 +220,25 @@ save, and the file is compressed again. *Extract Here* gives `notes.txt` itself.
 **Compress…** offers ZIP, 7-Zip and the tar formats first, then every other format the
 library can write in submenus: *Compressed File* (for a single file), *Archives* and *Disk
 Images* (FAT, ext4, NTFS, ISO, VHD, …, with folders and long names). The password fields
-are active for formats that encrypt.
+are active for formats that encrypt. Below the format, the dialog shows what it offers:
+
+- **Version**, for formats written in more than one generation: RAR 5, RAR 4 (what WinRAR
+  2.9 – 4.x, so also 3.5, reads) or RAR 1.5; tar as POSIX ustar, GNU or pax.
+- **Method**: Deflate, LZMA, BZip2, Zstandard, PPMd, Store, … as the format has them. ZIP
+  methods say which ZIP version a program needs to open them (Deflate: ZIP 2.0, every unzip
+  program; LZMA: ZIP 6.3; …). RAR compresses or stores; the version decides how.
+- **Level**, from store to ultra (RAR names its steps like WinRAR: Fastest … Best).
+- **Split into parts**: 10 MB to Blu-ray size, or a size typed in (“250 MB”). The archive is
+  cut into `name.7z.001`, `.002`, …, the way 7-Zip does it, for any format; an archive that
+  fits into one part stays whole. 7-Zip opens such a set, and so does failBrauwser: the first
+  part opens as the archive inside, read-only.
+
+*Advanced settings* folds away the rest: encrypting file names too (7-Zip, RAR 5), AES-256 or
+ZipCrypto for ZIP, dictionary size and solid archive (RAR), threads, compressing files that do
+not shrink, and every setting the format describes itself — dictionary and solid block size
+for 7-Zip, block size for BZip2 and LZ4, FAT type, cluster size and volume label for FAT
+images, volume label and Joliet for ISO, and so on. Settings that depend on another (a journal
+for ext3/ext4 only) show up when they apply.
 
 **Passwords:** encrypted archives ask for their password when you enter them, open a file or
 extract, and ask again if it was wrong. *Compress…* can create password-protected `.zip`
@@ -377,6 +395,7 @@ listed in `vendor/compressionworkbench/VENDORED.md`:
   shared rebuild path matched leaf names, and MFS-1 cut other files' names down to their
   extension.
 - Two formats (xDisk, xMash) were never recognised, because their names differ in case.
+- 7-Zip archives with a dictionary below 1 MB (the format offers 64 KB) could not be written.
 - Regression tests: `helper/FbArchive.Tests` (run by `make test`), among them a round trip of
   every format failBrauwser can write — create, recognise, list, extract, add, remove —
   against a baseline of known outcomes (`format-baseline.tsv`), and checks of the results

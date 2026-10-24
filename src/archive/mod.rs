@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod formats;
+pub mod options;
 pub mod tree;
 pub mod vfs;
 
@@ -108,9 +109,22 @@ impl Helper {
     /// Creates a new archive in the format with this id (see [`formats`]) from files or
     /// folders on disk, whatever its name suggests.
     pub fn create(&self, archive: &Path, format: &str, items: &[(std::path::PathBuf, String)], password: Option<&str>) -> Result<()> {
+        self.create_with(archive, format, items, password, None)
+    }
+
+    /// Like [`Helper::create`], written with these settings (method, level, version, …).
+    pub fn create_with(&self, archive: &Path, format: &str, items: &[(std::path::PathBuf, String)], password: Option<&str>, settings: Option<&options::CreateSettings>) -> Result<()> {
         let items: Vec<Value> = items.iter().map(|(src, name)| json!({"src": path_str(src), "name": name})).collect();
-        let req = json!({"cmd": "add", "archive": path_str(archive), "items": items, "format": format});
+        let mut req = json!({"cmd": "add", "archive": path_str(archive), "items": items, "format": format});
+        if let Some(s) = settings {
+            req["settings"] = s.to_json();
+        }
         self.request(with_password(req, password)).map(|_| ())
+    }
+
+    /// The methods and settings a new archive of this format offers.
+    pub fn options(&self, format: &str) -> Result<options::FormatOptions> {
+        self.request(json!({"cmd": "options", "format": format})).map(|v| options::FormatOptions::from_json(&v))
     }
 
     pub fn remove(&self, archive: &Path, names: &[String], password: Option<&str>) -> Result<()> {
@@ -176,6 +190,10 @@ const NOT_BY_NAME: &[&str] = &[
 /// compressed file or disk image that no other program owns (see [`NOT_BY_NAME`]).
 pub fn is_browsable_name(name: &str) -> bool {
     let lower = name.to_lowercase();
+    // The first part of a split archive ("x.7z.001") opens as the archive.
+    if let Some(stem) = lower.strip_suffix(".001") {
+        return stem.contains('.') && is_browsable_name(stem);
+    }
     let ends = |s: &&str| lower.len() > s.len() && lower.ends_with(*s);
     if BROWSABLE_SUFFIXES.iter().any(ends) {
         return true;
@@ -190,6 +208,10 @@ mod tests {
     #[test]
     fn browsable_names() {
         assert!(is_browsable_name("a.ZIP"));
+        assert!(is_browsable_name("backup.7z.001"));
+        assert!(is_browsable_name("photos.tar.gz.001"));
+        assert!(!is_browsable_name("film.001"));
+        assert!(!is_browsable_name("notes.txt.001"));
         assert!(is_browsable_name("x.tar.gz"));
         assert!(is_browsable_name("ubuntu-26.04-desktop-amd64.ISO"));
         assert!(!is_browsable_name(".zip"));

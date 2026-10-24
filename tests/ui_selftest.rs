@@ -391,6 +391,42 @@ fn encrypted_archives() {
 }
 
 #[test]
+fn compress_settings() {
+    let helper = failbrauwser::archive::client::locate_helper();
+    if !helper.is_file() {
+        eprintln!("fb-archive helper not built, skipping");
+        return;
+    }
+    run_checked(
+        "compress_options.fbt",
+        &[],
+        |t| {
+            std::fs::create_dir_all(t.join("w/pack")).unwrap();
+            std::fs::write(t.join("w/pack/a.txt"), "alpha ".repeat(2000)).unwrap();
+            // Random bytes: stored as they are, so the size of the parts is known.
+            let mut x = 0x2545F491u32;
+            let big: Vec<u8> = (0..10_000).map(|_| { x ^= x << 13; x ^= x >> 17; x ^= x << 5; x as u8 }).collect();
+            std::fs::write(t.join("w/big.bin"), big).unwrap();
+        },
+        |t| {
+            let h = failbrauwser::archive::Helper::new(helper);
+            let w = t.join("w");
+            assert_eq!(&std::fs::read(w.join("old.rar")).unwrap()[..7], b"Rar!\x1a\x07\x00");
+            let zip = std::fs::read(w.join("packed.zip")).unwrap();
+            assert!(zip.windows(4).enumerate().any(|(i, x)| x == b"PK\x03\x04" && zip[i + 8] == 14), "no LZMA entry");
+            let parts: Vec<u64> = (1..=3).map(|n| std::fs::metadata(w.join(format!("big.7z.{n:03}"))).unwrap().len()).collect();
+            assert_eq!(parts[..2], [4096, 4096]);
+            let names: Vec<String> = h.list(&w.join("big.7z.001"), None).unwrap().entries.into_iter().map(|e| e.name).collect();
+            assert_eq!(names, ["big.bin"]);
+            let fat = h.list(&w.join("floppy.img"), None).unwrap();
+            assert!(fat.entries.iter().any(|e| e.name.ends_with("a.txt")), "{fat:?}");
+            let img = std::fs::read(w.join("floppy.img")).unwrap();
+            assert!(img.windows(7).any(|x| x == b"HOLIDAY"), "volume label missing");
+        },
+    );
+}
+
+#[test]
 fn more_formats_open_as_folders() {
     let helper = failbrauwser::archive::client::locate_helper();
     if !helper.is_file() {
