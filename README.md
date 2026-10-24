@@ -177,6 +177,8 @@ GNOME (with the Desktop Icons extension), KDE Plasma, Xfce, Cinnamon, MATE, LXQt
 show it as an icon that opens the folder, file or drive. The file is marked executable, which
 some desktops want before they trust it; a second link of the same name gets a number
 (`Music (2).desktop`). A link to a phone that is not open points to its `mtp://` address.
+The Drives entry has no address other programs know, so its link is an entry of type
+`Application` that starts `failbrauwser drives:///` and opens the drives page.
 
 **Thumbnails:** *View → Show Thumbnails*. failBrauwser uses the freedesktop.org thumbnail
 cache (`~/.cache/thumbnails`), so thumbnails made by Thunar, Nautilus or Dolphin are reused

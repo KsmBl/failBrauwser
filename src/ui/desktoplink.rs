@@ -11,10 +11,44 @@ use gtk::gio;
 use std::path::Path;
 
 /// What a link is made of: the name under the icon, the address and a themed icon name.
+/// Without an address it starts failBrauwser with `args` (pages only it can show).
 pub struct Link {
     pub name: String,
     pub url: String,
     pub icon: String,
+    pub args: Vec<String>,
+}
+
+impl Link {
+    fn text(&self) -> String {
+        if !self.url.is_empty() {
+            return desktoplink::entry_text(&self.name, &self.url, &self.icon);
+        }
+        let mut command = vec![program()];
+        command.extend(self.args.iter().cloned());
+        desktoplink::app_entry_text(&self.name, &command.iter().map(String::as_str).collect::<Vec<_>>(), &self.icon)
+    }
+}
+
+/// How to start failBrauwser: by name when that finds this program, else its full path.
+fn program() -> String {
+    let me = std::env::current_exe().ok();
+    let by_name = gtk::glib::find_program_in_path("failbrauwser");
+    match (me, by_name) {
+        (Some(me), Some(found)) if found.canonicalize().ok() == me.canonicalize().ok() => "failbrauwser".into(),
+        (Some(me), _) => me.display().to_string(),
+        (None, _) => "failbrauwser".into(),
+    }
+}
+
+/// A link to the drives page.
+pub fn for_drives_page(name: &str) -> Link {
+    Link { name: name.into(), url: String::new(), icon: known_icon(&["drive-harddisk", "computer"]), args: vec![failbrauwser::location::DRIVES_URI.into()] }
+}
+
+/// A link to the trash.
+pub fn for_trash(name: &str) -> Link {
+    Link { name: name.into(), url: failbrauwser::location::TRASH_URI.into(), icon: "user-trash".into(), args: Vec::new() }
 }
 
 /// The first of `names` the icon theme has (the last one otherwise).
@@ -37,7 +71,7 @@ fn icon_of(icon: &gio::Icon) -> String {
 /// A link to a local folder (with the icon of Music, Documents… for those).
 pub fn for_dir(path: &Path, name: Option<&str>) -> Option<Link> {
     let name = name.map(str::to_string).or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| path.display().to_string());
-    Some(Link { name, url: desktoplink::file_url(path)?, icon: icon_of(&util::place_icon(path)) })
+    Some(Link { name, url: desktoplink::file_url(path)?, icon: icon_of(&util::place_icon(path)), args: Vec::new() })
 }
 
 /// A link to a file or folder in the file view.
@@ -46,7 +80,7 @@ pub fn for_item(item: &Item) -> Option<Link> {
     if item.is_dir_like() {
         return for_dir(path, Some(&item.display_name()));
     }
-    Some(Link { name: item.display_name(), url: desktoplink::file_url(path)?, icon: icon_of(&util::icon_for_type(&item.content_type())) })
+    Some(Link { name: item.display_name(), url: desktoplink::file_url(path)?, icon: icon_of(&util::icon_for_type(&item.content_type())), args: Vec::new() })
 }
 
 /// A link to a drive: its mount point, or for a phone that is not open, its address (the
@@ -58,19 +92,19 @@ pub fn for_volume(v: &Volume) -> Option<Link> {
         None => return None,
     };
     let name = if v.is_device() && !v.label.is_empty() { format!("{} – {}", v.title(), v.label) } else { v.title() };
-    Some(Link { name, url, icon: known_icon(&v.icon_names()) })
+    Some(Link { name, url, icon: known_icon(&v.icon_names()), args: Vec::new() })
 }
 
 /// A link to a mounted volume that is not a drive (a network share).
 pub fn for_mount(m: &gio::Mount) -> Link {
-    Link { name: m.name().to_string(), url: m.root().uri().to_string(), icon: icon_of(&m.icon()) }
+    Link { name: m.name().to_string(), url: m.root().uri().to_string(), icon: icon_of(&m.icon()), args: Vec::new() }
 }
 
 /// Puts the links on the desktop; says so in the status bar, or what went wrong.
 pub fn create(w: &Window, links: &[Link]) {
     let mut made = Vec::new();
     for l in links {
-        match desktoplink::create(&l.name, &l.url, &l.icon) {
+        match desktoplink::write(&l.name, &l.text()) {
             Ok(_) => made.push(l.name.as_str()),
             Err(e) => {
                 util::show_error(&w.win, "Cannot create the link on the desktop", &format!("{}: {e}", desktoplink::desktop_dir().display()));
