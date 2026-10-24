@@ -22,6 +22,11 @@ fake-phone Pixel 7 = $T/phone
 wait-side-drive Pixel 7 : SD card
 side-drive-menu Pixel 7 : SD card : Create Link on Desktop
 wait-exists $T/Desktop/Pixel 7 – SD card.desktop
+# The same from the drives page.
+action win.drives
+wait-drive-text Pixel 7 : Internal shared storage
+drive-menu Pixel 7 : Internal shared storage : Create Link on Desktop
+wait-exists $T/Desktop/Pixel 7 – Internal shared storage.desktop
 # A folder in the tree.
 action win.tree-root current
 open $T/files

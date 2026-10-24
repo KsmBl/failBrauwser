@@ -295,6 +295,28 @@ pub fn click_button(pane: &Rc<Pane>, title: &str, row_text: &str, button: &str) 
     Ok(())
 }
 
+/// Picks an item of the right-click menu of the first row of the drive with this title
+/// whose texts contain `row_text` (tests).
+pub fn menu_item(pane: &Rc<Pane>, title: &str, row_text: &str, item: &str) -> Result<(), String> {
+    let page = page_for(pane).ok_or("no drives page")?;
+    let rows = page.list.children();
+    let i = {
+        let vols = page.volumes.borrow();
+        (0..rows.len())
+            .find(|&i| vols.get(i).is_some_and(|v| v.title() == title) && labels_in(&rows[i]).join(" | ").contains(row_text))
+            .ok_or_else(|| format!("no drive {title:?} showing {row_text:?}"))?
+    };
+    let menu = page.menu(i).ok_or("no menu")?;
+    let found = menu
+        .children()
+        .into_iter()
+        .filter_map(|c| c.downcast::<gtk::MenuItem>().ok())
+        .find(|m| m.label().is_some_and(|l| l.replace('_', "") == item))
+        .ok_or_else(|| format!("no menu item {item:?}"))?;
+    found.activate();
+    Ok(())
+}
+
 /// Selects the drive with this title (tests).
 pub fn select(pane: &Rc<Pane>, title: &str) -> bool {
     let Some(page) = page_for(pane) else { return false };
@@ -485,7 +507,14 @@ impl DrivesPage {
     }
 
     fn context_menu(&self, index: usize, ev: &gtk::gdk::EventButton) {
-        let Some(v) = self.volumes.borrow().get(index).cloned() else { return };
+        if let Some(menu) = self.menu(index) {
+            menu.popup_at_pointer(Some(ev));
+        }
+    }
+
+    /// The right-click menu of the drive in row `index`.
+    fn menu(&self, index: usize) -> Option<gtk::Menu> {
+        let v = self.volumes.borrow().get(index).cloned()?;
         let u = self.usages.borrow().get(index).copied().flatten();
         let menu = gtk::Menu::new();
         let add = |label: &str, f: Box<dyn Fn(&DrivesPage)>| {
@@ -514,12 +543,20 @@ impl DrivesPage {
             let vol = v.clone();
             add("_Eject", Box::new(move |p| p.unmount(&vol, true)));
         }
+        if let Some(link) = super::desktoplink::for_volume(&v) {
+            menu.append(&gtk::SeparatorMenuItem::new());
+            add("Create _Link on Desktop", Box::new(move |p| {
+                if let Some((w, _)) = p.context() {
+                    super::desktoplink::create(&w, std::slice::from_ref(&link));
+                }
+            }));
+        }
         menu.append(&gtk::SeparatorMenuItem::new());
         let vol = v.clone();
         add("_Properties…", Box::new(move |p| p.show_properties(&vol, u)));
         menu.set_attach_widget(Some(&self.list));
         menu.show_all();
-        menu.popup_at_pointer(Some(ev));
+        Some(menu)
     }
 
     fn context(&self) -> Option<(Rc<Window>, Rc<Pane>)> {

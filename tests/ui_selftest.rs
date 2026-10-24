@@ -172,6 +172,7 @@ fn links_on_the_desktop() {
             assert!(read("notes.txt.desktop").contains("\nName=notes.txt\n"));
             assert!(read("Projects.desktop").contains(&format!("\nURL=file://{}/projects\n", t.display())));
             assert!(read("Pixel 7 – SD card.desktop").contains("/phone/SD%20card\n"));
+            assert!(read("Pixel 7 – Internal shared storage.desktop").contains("/phone/Internal%20shared%20storage\n"));
         },
     );
 }

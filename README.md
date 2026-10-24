@@ -24,7 +24,7 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
   storage with its fill level; open and eject them there, and a locked phone tells you what
   to tap.
 - **Links on the desktop** from the right-click menu of files, folders, side panel entries,
-  drives and the folder tree: standard `.desktop` links every desktop understands.
+  drives (in the side panel and on the drives page) and the folder tree: standard `.desktop` links every desktop understands.
 - **Trash shared with Thunar** and other file managers (freedesktop.org spec): browse it,
   restore to the original place, delete permanently, empty.
 - **Thumbnails** for pictures, videos and documents (shared with other file managers), and
@@ -160,8 +160,8 @@ tab, right-click to unmount, eject or see its properties. A drive plugged in mov
 down so the list fits; the bars follow as drives fill up.
 
 **Links on the desktop:** *Create Link on Desktop* in the right-click menu of files and
-folders (on the empty space: the folder shown), of side panel entries, drives and phones, and
-of folders in the tree. It writes a freedesktop.org Desktop Entry of type `Link` into your
+folders (on the empty space: the folder shown), of side panel entries, of drives and phones
+in the side panel and on the drives page, and of folders in the tree. It writes a freedesktop.org Desktop Entry of type `Link` into your
 desktop folder (`XDG_DESKTOP_DIR`, usually `~/Desktop`), e.g. `Music.desktop`:
 
 ```ini
