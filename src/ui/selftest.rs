@@ -557,6 +557,13 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let (name, dir) = arg.split_once(" = ").ok_or("usage: fake-phone <name> = <folder>")?;
             super::phones::add_fake(name.trim(), PathBuf::from(dir.trim()));
         }
+        "fake-stick" => {
+            // fake-stick <label> = <folder> [: <passphrase>]: a USB stick that mounts on the
+            // folder, encrypted when a passphrase is given.
+            let (label, rest) = arg.split_once(" = ").ok_or("usage: fake-stick <label> = <folder> [: <passphrase>]")?;
+            let (dir, pass) = rest.split_once(" : ").map_or((rest, None), |(d, p)| (d, Some(p.trim().to_string())));
+            super::drives::add_fake(label.trim(), PathBuf::from(dir.trim()), pass);
+        }
         "wait-drive-text" => {
             // wait-drive-text <title> : <text>  (a row of that drive shows the text)
             let (title, text) = arg.split_once(" : ").ok_or("usage: wait-drive-text <title> : <text>")?;

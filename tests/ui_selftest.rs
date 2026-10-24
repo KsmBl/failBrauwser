@@ -138,6 +138,16 @@ fn phones_with_the_drives() {
 }
 
 #[test]
+fn unmounted_drives_in_the_side_panel() {
+    run("unmounted_drives.fbt", |t| {
+        std::fs::create_dir_all(t.join("photos")).unwrap();
+        std::fs::write(t.join("photos/holiday.jpg"), "jpg").unwrap();
+        std::fs::create_dir_all(t.join("vault")).unwrap();
+        std::fs::write(t.join("vault/secret.txt"), "s").unwrap();
+    });
+}
+
+#[test]
 fn drives_in_the_side_panel() {
     run("side_drives.fbt", |t| {
         for d in ["phone/Internal shared storage/DCIM", "phone/SD card/Music", "locked", "elsewhere"] {
