@@ -1,0 +1,37 @@
+# Compress offers the version, method, level and splitting of the format picked; the rest
+# sits under Advanced settings.
+open $T/w
+select pack
+text old.rar
+text
+text with Version=RAR 4; Level=Best; Solid archive=off
+action win.compress
+wait-exists $T/w/old.rar
+wait-row old.rar
+# ZIP with LZMA at the highest level.
+select pack
+text packed.zip
+text
+text with Method=LZMA; Level=9
+action win.compress
+wait-exists $T/w/packed.zip
+# Split into parts of 4 KB: numbered parts, no whole archive; the first opens as the set.
+select big.bin
+text big.7z
+text
+text with Method=Store; Split into parts=4 KB; Dictionary size=64 KB
+action win.compress
+wait-exists $T/w/big.7z.003
+wait-missing $T/w/big.7z
+select big.7z.001
+activate
+wait-location $T/w/big.7z.001
+wait-row big.bin
+open $T/w
+# A format's own settings: a FAT image with a volume label.
+select pack
+text floppy|Fat
+text
+text with Volume label=HOLIDAY; FAT type=FAT12
+action win.compress
+wait-exists $T/w/floppy.img
