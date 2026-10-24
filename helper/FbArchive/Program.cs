@@ -58,7 +58,8 @@ public static class Program {
           case "extract":
             Commands.Extract(Str(req, "archive"), Str(req, "dest"), OptStrArray(req, "entries"), OptStr(req, "password"));
             break;
-          case "add": Commands.Add(Str(req, "archive"), Items(req), OptStr(req, "password"), OptStr(req, "format")); break;
+          case "options": Commands.Options(w, Str(req, "format")); break;
+          case "add": Commands.Add(Str(req, "archive"), Items(req), OptStr(req, "password"), OptStr(req, "format"), Settings(req)); break;
           case "remove": Commands.Remove(Str(req, "archive"), OptStrArray(req, "names") ?? [], OptStr(req, "password")); break;
           case "rename": Commands.Rename(Str(req, "archive"), Str(req, "from"), Str(req, "to"), OptStr(req, "password")); break;
           case "mkdir": Commands.Mkdir(Str(req, "archive"), Str(req, "name"), OptStr(req, "password")); break;
@@ -112,6 +113,19 @@ public static class Program {
     return el.EnumerateArray().Select(e => e.GetString() ?? "").ToArray();
   }
 
+  /// <summary>How a new archive is written ("settings" object), if given.</summary>
+  private static CreateSettings? Settings(JsonElement req) {
+    if (!req.TryGetProperty("settings", out var s) || s.ValueKind != JsonValueKind.Object) return null;
+    int? Int(string name) => s.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.Number ? e.GetInt32() : null;
+    long Long(string name) => s.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.Number ? e.GetInt64() : 0;
+    bool Bool(string name) => s.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.True;
+    Dictionary<string, string>? specific = null;
+    if (s.TryGetProperty("specific", out var sp) && sp.ValueKind == JsonValueKind.Object)
+      specific = sp.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString()! : p.Value.ToString());
+    return new CreateSettings(OptStr(s, "method"), Int("level"), Long("dict_size"), Long("solid_size"), Int("threads") ?? 1,
+      Bool("force_compress"), Bool("encrypt_names"), OptStr(s, "zip_encryption"), specific);
+  }
+
   private static List<AddItem> Items(JsonElement req) {
     if (!req.TryGetProperty("items", out var el) || el.ValueKind != JsonValueKind.Array)
       throw new ProtocolException("missing array field 'items'");
@@ -124,3 +138,10 @@ public sealed class ProtocolException(string message) : Exception(message);
 /// <summary>A file or directory on disk (<see cref="Src"/>) to be stored under <see cref="Name"/>.
 /// An empty <see cref="Src"/> with a name ending in '/' creates an empty directory.</summary>
 public readonly record struct AddItem(string Src, string Name);
+
+/// <summary>How a new archive is written: method (empty: the format's own), level 0–9,
+/// dictionary and solid block size in bytes (0: the format's default), threads, whether files
+/// that do not shrink are compressed anyway, whether names are encrypted too (7z, RAR 5), the
+/// ZIP encryption ("aes256", "zipcrypto") and the format's own settings by key.</summary>
+public sealed record CreateSettings(string? Method, int? Level, long DictSize, long SolidSize, int Threads,
+  bool ForceCompress, bool EncryptNames, string? ZipEncryption, IReadOnlyDictionary<string, string>? Specific);

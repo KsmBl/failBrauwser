@@ -63,6 +63,14 @@ pub fn scripted_text() -> Option<String> {
     TEXT.with(|t| t.borrow_mut().pop_front())
 }
 
+/// The next scripted reply, only if it is one for this (`f` says so).
+pub fn scripted_text_if(f: impl Fn(&str) -> bool) -> Option<String> {
+    TEXT.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.front().is_some_and(|x| f(x)) { t.pop_front() } else { None }
+    })
+}
+
 pub fn script_path() -> Option<String> {
     std::env::var("FB_SELFTEST").ok().filter(|s| !s.is_empty())
 }

@@ -10,7 +10,7 @@ use super::pane::Pane;
 use super::util;
 use super::window::Window;
 use failbrauwser::archive::vfs::Vfs;
-use failbrauwser::archive::{ArchiveError, formats, is_browsable_name};
+use failbrauwser::archive::{ArchiveError, is_browsable_name};
 use failbrauwser::location::{ArchiveLoc, Location};
 use failbrauwser::ops::copy::{self, Mode};
 use failbrauwser::ops::job::{Answer, JobCtx, Question};
@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-fn io(e: ArchiveError) -> std::io::Error {
+pub(super) fn io(e: ArchiveError) -> std::io::Error {
     std::io::Error::other(e.message)
 }
 
@@ -67,7 +67,7 @@ fn ask_and_retry(w: &Window, loc: ArchiveLoc, wrong: bool, retry: impl Fn(&Windo
 }
 
 /// Runs archive work with the helper's progress shown in the job.
-fn tracked<T>(ctx: &JobCtx, f: impl FnOnce() -> T) -> T {
+pub(super) fn tracked<T>(ctx: &JobCtx, f: impl FnOnce() -> T) -> T {
     use std::sync::atomic::{AtomicBool, Ordering};
     // Cancel stops the helper itself: it may be busy (or stuck) without reporting progress.
     let finished = AtomicBool::new(false);
@@ -585,142 +585,7 @@ pub fn extract_to(w: &Window) {
 }
 
 pub fn compress(w: &Window) {
-    let pane = w.current_pane();
-    let Location::Dir(dir) = pane.location() else { return };
-    let items: Vec<PathBuf> = pane.selected_items().iter().filter_map(|i| i.path().cloned()).collect();
-    if items.is_empty() {
-        return;
-    }
-    let base = if items.len() == 1 {
-        items[0].file_name().unwrap_or_default().to_string_lossy().into_owned()
-    } else {
-        dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Archive".into())
-    };
-    let d = gtk::Dialog::with_buttons(Some("Compress"), Some(&w.win), gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT, &[("_Cancel", gtk::ResponseType::Cancel), ("C_reate", gtk::ResponseType::Ok)]);
-    d.set_default_response(gtk::ResponseType::Ok);
-    let area = d.content_area();
-    area.set_spacing(6);
-    area.set_border_width(12);
-    let grid = gtk::Grid::new();
-    grid.set_column_spacing(8);
-    grid.set_row_spacing(6);
-    let name_label = gtk::Label::with_mnemonic("Archive _name:");
-    name_label.set_xalign(1.0);
-    let entry = gtk::Entry::new();
-    entry.set_text(&base);
-    entry.set_activates_default(true);
-    entry.set_width_chars(32);
-    name_label.set_mnemonic_widget(Some(&entry));
-    let fmt_label = gtk::Label::with_mnemonic("_Format:");
-    fmt_label.set_xalign(1.0);
-    // The common formats, then every other one the library can write, in submenus.
-    let single_file = items.len() == 1 && items[0].is_file();
-    let store = gtk::TreeStore::new(&[glib::Type::STRING, glib::Type::STRING]);
-    let label_of = |f: &formats::Format| format!("{} ({})", f.name, formats::default_ext(f));
-    for id in formats::COMMON {
-        if let Some(f) = formats::by_id(id) {
-            store.insert_with_values(None, None, &[(0, &label_of(f)), (1, &f.id)]);
-        }
-    }
-    store.insert_with_values(None, None, &[(0, &"-"), (1, &"")]);
-    for (group, list) in formats::create_groups(single_file) {
-        let parent = store.insert_with_values(None, None, &[(0, &group), (1, &"")]);
-        for f in list {
-            store.insert_with_values(Some(&parent), None, &[(0, &label_of(f)), (1, &f.id)]);
-        }
-    }
-    let combo = gtk::ComboBox::with_model(&store);
-    combo.set_id_column(1);
-    let cell = gtk::CellRendererText::new();
-    combo.pack_start(&cell, true);
-    combo.add_attribute(&cell, "text", 0);
-    combo.set_row_separator_func(|m, it| m.value(it, 0).get::<String>().is_ok_and(|s| s == "-"));
-    combo.set_active_id(Some("Zip"));
-    fmt_label.set_mnemonic_widget(Some(&combo));
-    grid.attach(&name_label, 0, 0, 1, 1);
-    grid.attach(&entry, 1, 0, 1, 1);
-    grid.attach(&fmt_label, 0, 1, 1, 1);
-    grid.attach(&combo, 1, 1, 1, 1);
-    // Encryption, for the formats that have it (ZIP with AES-256, 7-Zip, …).
-    let pw_label = gtk::Label::with_mnemonic("_Password:");
-    pw_label.set_xalign(1.0);
-    let pw = gtk::Entry::new();
-    pw.set_visibility(false);
-    pw.set_input_purpose(gtk::InputPurpose::Password);
-    pw.set_placeholder_text(Some("optional, encrypts the archive"));
-    pw_label.set_mnemonic_widget(Some(&pw));
-    let pw2_label = gtk::Label::with_mnemonic("Re_peat:");
-    pw2_label.set_xalign(1.0);
-    let pw2 = gtk::Entry::new();
-    pw2.set_visibility(false);
-    pw2.set_input_purpose(gtk::InputPurpose::Password);
-    pw2_label.set_mnemonic_widget(Some(&pw2));
-    grid.attach(&pw_label, 0, 2, 1, 1);
-    grid.attach(&pw, 1, 2, 1, 1);
-    grid.attach(&pw2_label, 0, 3, 1, 1);
-    grid.attach(&pw2, 1, 3, 1, 1);
-    let (p1, p2) = (pw.clone(), pw2.clone());
-    combo.connect_changed(move |c| {
-        let can = c.active_id().and_then(|id| formats::by_id(&id)).is_some_and(|f| f.password);
-        p1.set_sensitive(can);
-        p2.set_sensitive(can);
-    });
-    area.add(&grid);
-    d.show_all();
-    let weak = Rc::downgrade(&w.me());
-    let reply = super::selftest::scripted_text();
-    let run = move |name: String, format: &'static formats::Format, password: Option<String>| {
-        let Some(w) = weak.upgrade() else { return };
-        if !util::valid_file_name(&name) {
-            util::show_error(&w.win, "Invalid name", "A name cannot be empty or contain “/”.");
-            return;
-        }
-        let file = formats::file_name_for(&name, format);
-        let target = dir.join(&file);
-        if target.exists() {
-            util::show_error(&w.win, "Cannot create archive", &format!("“{file}” already exists."));
-            return;
-        }
-        let items: Vec<(PathBuf, String)> = items.iter().map(|p| (p.clone(), p.file_name().unwrap_or_default().to_string_lossy().into_owned())).collect();
-        let loc = Location::Dir(dir.clone());
-        let w2 = Rc::downgrade(&w);
-        w.app.jobs.start(
-            w.win.upcast_ref(),
-            format!("Creating “{file}”"),
-            move |ctx| tracked(ctx, || Vfs::global().helper().create(&target, format.id, &items, password.as_deref())).map(|_| vec![target.clone()]).map_err(io),
-            move |outcome| {
-                if let (Some(w), Outcome::Done(made)) = (w2.upgrade(), outcome) {
-                    fileops::select_created(&w, &loc, made);
-                }
-            },
-        );
-    };
-    if let Some(r) = reply {
-        // Self-test: "name.ext" picks the format by its extension, "name|Id" by its id.
-        let (name, format) = match r.split_once('|') {
-            Some((n, id)) => (n.to_string(), formats::by_id(id)),
-            None => (r.clone(), formats::by_name(&r).filter(|f| f.create)),
-        };
-        let format = format.unwrap_or_else(|| formats::by_id("Zip").expect("zip"));
-        // A second scripted reply is the password.
-        let password = super::selftest::scripted_text();
-        run(name, format, password);
-        d.close();
-        return;
-    }
-    d.connect_response(move |d, resp| {
-        if resp == gtk::ResponseType::Ok {
-            let Some(format) = combo.active_id().and_then(|id| formats::by_id(&id)) else { return };
-            let (a, b) = (pw.text().to_string(), pw2.text().to_string());
-            if a != b {
-                util::show_error(d, "Passwords differ", "Type the same password twice.");
-                return;
-            }
-            let password = (!a.is_empty() && pw.is_sensitive()).then_some(a);
-            run(entry.text().to_string(), format, password);
-        }
-        d.close();
-    });
+    super::compress::show(w);
 }
 
 /// Opens a file as a folder when the archive library can read it, else with an application.
