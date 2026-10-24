@@ -17,6 +17,9 @@ expect-disabled win.link-on-desktop
 # A shortcut, under the name it has in the side panel.
 shortcut-menu Projects : Create Link on Desktop
 wait-exists $T/Desktop/Projects.desktop
+# The drives page has no address outside failBrauwser: its link starts failBrauwser there.
+shortcut-menu Drives : Create Link on Desktop
+wait-exists $T/Desktop/Drives.desktop
 # A drive: a phone's storage, named after the phone and the storage.
 fake-phone Pixel 7 = $T/phone
 wait-side-drive Pixel 7 : SD card

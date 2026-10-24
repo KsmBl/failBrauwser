@@ -160,7 +160,7 @@ fn links_on_the_desktop() {
             std::fs::create_dir_all(t.join("config/failbrauwser")).unwrap();
             std::fs::write(t.join("config/user-dirs.dirs"), format!("XDG_DESKTOP_DIR=\"{}/Desktop\"\n", t.display())).unwrap();
             let projects = format!("file://{}", t.join("projects").display());
-            std::fs::write(t.join("config/failbrauwser/shortcuts"), format!("0\thome\t\n0\t{projects}\tProjects\n0\ttrash\t\n")).unwrap();
+            std::fs::write(t.join("config/failbrauwser/shortcuts"), format!("0\tdrives\t\n0\thome\t\n0\t{projects}\tProjects\n0\ttrash\t\n")).unwrap();
         },
         |t| {
             let read = |name: &str| std::fs::read_to_string(t.join("Desktop").join(name)).unwrap();
@@ -172,6 +172,8 @@ fn links_on_the_desktop() {
             assert!(read("notes.txt.desktop").contains("\nName=notes.txt\n"));
             assert!(read("Projects.desktop").contains(&format!("\nURL=file://{}/projects\n", t.display())));
             assert!(read("Pixel 7 – SD card.desktop").contains("/phone/SD%20card\n"));
+            let drives = read("Drives.desktop");
+            assert!(drives.contains("\nType=Application\n") && drives.lines().any(|l| l.starts_with("Exec=") && l.ends_with(" drives:///")), "{drives}");
             assert!(read("Pixel 7 – Internal shared storage.desktop").contains("/phone/Internal%20shared%20storage\n"));
         },
     );
