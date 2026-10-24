@@ -645,7 +645,8 @@ impl Sidebar {
             }));
             let link = match &target {
                 Target::Place(Location::Dir(p)) => desktoplink::for_dir(p, Some(&entry.label())),
-                Target::Place(Location::Trash) => Some(desktoplink::Link { name: entry.label(), url: "trash:///".into(), icon: "user-trash".into() }),
+                Target::Place(Location::Trash) => Some(desktoplink::for_trash(&entry.label())),
+                Target::Place(Location::Drives) => Some(desktoplink::for_drives_page(&entry.label())),
                 Target::Place(_) => None,
                 Target::Mount(m) => Some(desktoplink::for_mount(m)),
             };
