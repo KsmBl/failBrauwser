@@ -38,6 +38,92 @@ thread_local! {
     /// Change notifications from UDisks2 (dropped = unsubscribed).
     static SUBSCRIPTION: RefCell<Option<gio::SignalSubscription>> = const { RefCell::new(None) };
     static PENDING: Cell<bool> = const { Cell::new(false) };
+    /// Stand-ins for USB sticks in the self-test, answering in place of UDisks2.
+    static FAKES: RefCell<Vec<FakeDrive>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A stick in the self-test: a folder it "mounts" on, maybe a passphrase it is locked with.
+struct FakeDrive {
+    label: String,
+    dir: PathBuf,
+    passphrase: Option<String>,
+    unlocked: bool,
+    mounted: bool,
+}
+
+impl FakeDrive {
+    fn object(&self) -> String {
+        format!("/fake/{}", self.label)
+    }
+
+    fn volumes(&self) -> Vec<Volume> {
+        let base = Volume {
+            drive_name: "Fake Stick".into(),
+            drive_object: format!("/fake-drive/{}", self.label),
+            removable: true,
+            usb: true,
+            ejectable: true,
+            bus: "usb".into(),
+            size: 8_000_000_000,
+            rotation_rate: -1,
+            ..Default::default()
+        };
+        let contents = |object: String, backing: String| Volume {
+            device: format!("/dev/fake-{}", self.label),
+            label: self.label.clone(),
+            fs_type: "ext4".into(),
+            mountable: true,
+            block_object: object,
+            crypto_backing: backing,
+            mount_points: if self.mounted { vec![self.dir.clone()] } else { Vec::new() },
+            ..base.clone()
+        };
+        if self.passphrase.is_none() {
+            return vec![contents(self.object(), String::new())];
+        }
+        let container = Volume { device: format!("/dev/fake-{}-luks", self.label), label: self.label.clone(), fs_type: "crypto_LUKS".into(), block_object: self.object(), unlocked: self.unlocked, ..base.clone() };
+        if self.unlocked { vec![container, contents(format!("{}/clear", self.object()), self.object())] } else { vec![container] }
+    }
+}
+
+/// A stand-in USB stick (self-test), not mounted; with a passphrase it is encrypted and locked.
+pub fn add_fake(label: &str, dir: PathBuf, passphrase: Option<String>) {
+    FAKES.with(|f| f.borrow_mut().push(FakeDrive { label: label.into(), dir, passphrase, unlocked: false, mounted: false }));
+    changed();
+}
+
+/// Answers a UDisks2 call on a stand-in stick like UDisks2 would.
+fn fake_call(object: &str, method: &str, args: &glib::Variant) -> Result<glib::Variant, String> {
+    let reply = FAKES.with(|f| {
+        let mut f = f.borrow_mut();
+        let d = f.iter_mut().find(|d| object == d.object() || object == format!("{}/clear", d.object()) || object == format!("/fake-drive/{}", d.label)).ok_or("No such object")?;
+        match method {
+            "Mount" if d.mounted => Err(format!("Device is already mounted at `{}'.", d.dir.display())),
+            "Mount" => {
+                d.mounted = true;
+                Ok(glib::Variant::tuple_from_iter([d.dir.display().to_string().to_variant()]))
+            }
+            "Unmount" => {
+                d.mounted = false;
+                Ok(glib::Variant::tuple_from_iter(std::iter::empty::<glib::Variant>()))
+            }
+            "Unlock" => {
+                let given: String = args.child_value(0).get().unwrap_or_default();
+                if d.passphrase.as_deref() != Some(given.as_str()) {
+                    return Err("Error unlocking: Failed to activate device: Incorrect passphrase".to_string());
+                }
+                d.unlocked = true;
+                Ok(glib::Variant::tuple_from_iter([format!("{}/clear", d.object()).to_variant()]))
+            }
+            "Lock" => {
+                d.unlocked = false;
+                Ok(glib::Variant::tuple_from_iter(std::iter::empty::<glib::Variant>()))
+            }
+            _ => Ok(glib::Variant::tuple_from_iter(std::iter::empty::<glib::Variant>())),
+        }
+    });
+    changed();
+    reply
 }
 
 /// Calls `f` when drives or phones come, go, mount, unmount or get busy (a burst of changes
@@ -108,6 +194,14 @@ pub async fn gather() -> Vec<(Volume, Option<Usage>)> {
     .unwrap_or_default();
     // Phones next to the USB sticks (their fill levels asked of GVfs, not statvfs).
     with_usage.extend(super::phones::volumes().await);
+    FAKES.with(|f| {
+        for d in f.borrow().iter() {
+            with_usage.extend(d.volumes().into_iter().map(|v| {
+                let u = v.mount_point().and_then(|m| drives::usage(m));
+                (v, u)
+            }));
+        }
+    });
     with_usage
 }
 
@@ -476,6 +570,8 @@ impl DrivesPage {
             add("_Open", "Connect and show the files on this device", Box::new(move |p| p.open(&vol)));
         } else if v.mountable && !v.block_object.is_empty() {
             add("_Mount", "Mount and open this drive", Box::new(move |p| p.open(&vol)));
+        } else if v.is_locked() {
+            add("_Unlock", "Unlock with the passphrase, mount and open this drive", Box::new(move |p| p.open(&vol)));
         }
         if can_unmount(v) {
             let vol = v.clone();
@@ -534,6 +630,8 @@ impl DrivesPage {
             add("_Open", Box::new(move |p| p.open(&vol)));
         } else if v.mountable {
             add("_Mount", Box::new(move |p| p.open(&vol)));
+        } else if v.is_locked() {
+            add("_Unlock", Box::new(move |p| p.open(&vol)));
         }
         if can_unmount(&v) {
             let vol = v.clone();
@@ -764,6 +862,10 @@ pub fn open_volume(w: &Rc<Window>, pane: &Rc<Pane>, v: &Volume, new_tab: bool) {
         show(Location::Dir(m.clone()));
         return;
     }
+    if v.is_locked() {
+        unlock_and_open(w, v, Rc::new(show));
+        return;
+    }
     if !v.mountable || v.block_object.is_empty() {
         return;
     }
@@ -771,15 +873,57 @@ pub fn open_volume(w: &Rc<Window>, pane: &Rc<Pane>, v: &Volume, new_tab: bool) {
     let obj = v.block_object.clone();
     set_busy(&obj, true);
     glib::spawn_future_local(async move {
-        let res = call(&obj, "org.freedesktop.UDisks2.Filesystem", "Mount", empty_options()).await;
+        let res = mount(&obj).await;
         set_busy(&obj, false);
         match res {
-            Ok(reply) => {
-                let path: String = reply.child_value(0).get().unwrap_or_default();
-                show(Location::Dir(PathBuf::from(path)));
-            }
+            Ok(path) => show(Location::Dir(path)),
             Err(e) => error(&win, "Cannot mount drive", &e),
         }
+    });
+}
+
+async fn mount(block_object: &str) -> Result<PathBuf, String> {
+    let reply = call(block_object, "org.freedesktop.UDisks2.Filesystem", "Mount", empty_options()).await?;
+    Ok(PathBuf::from(reply.child_value(0).get::<String>().unwrap_or_default()))
+}
+
+/// An encrypted drive: asks for its passphrase, unlocks it and mounts what is inside. A wrong
+/// passphrase asks again.
+fn unlock_and_open(w: &Rc<Window>, v: &Volume, show: Rc<dyn Fn(Location)>) {
+    let win = Rc::downgrade(w);
+    let obj = v.block_object.clone();
+    let v2 = v.clone();
+    util::ask_secret(&w.win, "Encrypted Drive", &format!("Passphrase for “{}”:", v.title()), move |pass| {
+        let (win, obj, show, v2) = (win.clone(), obj.clone(), show.clone(), v2.clone());
+        set_busy(&obj, true);
+        glib::spawn_future_local(async move {
+            let opts = glib::VariantDict::new(None).end();
+            let res = call(&obj, "org.freedesktop.UDisks2.Encrypted", "Unlock", glib::Variant::tuple_from_iter([pass.to_variant(), opts])).await;
+            let opened = match res {
+                Ok(reply) => {
+                    let clear = reply.child_value(0).str().unwrap_or_default().to_string();
+                    // GNOME and others may already have mounted it on unlocking.
+                    match mount(&clear).await {
+                        Ok(p) => Ok(Some(p)),
+                        Err(e) if e.contains("already mounted") => Ok(None),
+                        Err(e) => Err(("Unlocked, but cannot mount it", e)),
+                    }
+                }
+                Err(e) => Err(("Cannot unlock the drive", e)),
+            };
+            set_busy(&obj, false);
+            match opened {
+                Ok(Some(p)) => show(Location::Dir(p)),
+                Ok(None) => {}
+                Err((_, e)) if e.to_lowercase().contains("passphrase") || e.contains("No key available") => {
+                    if let Some(w) = win.upgrade() {
+                        util::show_error(&w.win, "Wrong passphrase", "The drive stays locked. Try again.");
+                        unlock_and_open(&w, &v2, show);
+                    }
+                }
+                Err((title, e)) => error(&win, title, &e),
+            }
+        });
     });
 }
 
@@ -846,19 +990,36 @@ pub fn unmount_volume(w: &Rc<Window>, v: &Volume, eject: bool, all: &[Volume]) {
         v.mount_points.clone()
     };
     leave(w, &mounts);
-    let targets: Vec<String> = if eject {
-        all.iter().filter(|x| x.drive_object == v.drive_object && !x.mount_points.is_empty()).map(|x| x.block_object.clone()).collect()
+    // Unmounted, and encrypted ones locked again (as other file managers do).
+    let targets: Vec<(String, String)> = if eject {
+        all.iter().filter(|x| x.drive_object == v.drive_object && !x.mount_points.is_empty()).map(|x| (x.block_object.clone(), x.crypto_backing.clone())).collect()
     } else {
-        vec![v.block_object.clone()]
+        vec![(v.block_object.clone(), v.crypto_backing.clone())]
+    };
+    // Unlocked but not mounted: still to be locked before powering off.
+    let mut lock: Vec<String> = if eject {
+        all.iter().filter(|x| x.drive_object == v.drive_object && x.unlocked && !targets.iter().any(|(_, b)| b == &x.block_object)).map(|x| x.block_object.clone()).collect()
+    } else {
+        Vec::new()
     };
     let win = Rc::downgrade(w);
     let v = v.clone();
     set_busy(&v.block_object, true);
     glib::spawn_future_local(async move {
-        for obj in &targets {
+        for (obj, backing) in &targets {
             if let Err(e) = call(obj, "org.freedesktop.UDisks2.Filesystem", "Unmount", empty_options()).await {
                 set_busy(&v.block_object, false);
                 error(&win, "Cannot unmount drive", &e);
+                return;
+            }
+            if !backing.is_empty() {
+                lock.push(backing.clone());
+            }
+        }
+        for obj in &lock {
+            if let Err(e) = call(obj, "org.freedesktop.UDisks2.Encrypted", "Lock", empty_options()).await {
+                set_busy(&v.block_object, false);
+                error(&win, "Unmounted, but the encrypted drive could not be locked", &e);
                 return;
             }
         }
@@ -928,6 +1089,9 @@ fn empty_options() -> glib::Variant {
 }
 
 async fn call(object: &str, iface: &str, method: &str, args: glib::Variant) -> Result<glib::Variant, String> {
+    if object.starts_with("/fake") {
+        return fake_call(object, method, &args);
+    }
     let conn = gio::bus_get_future(gio::BusType::System).await.map_err(|e| e.to_string())?;
     conn.call_future(Some(UDISKS), object, iface, method, Some(&args), None, gio::DBusCallFlags::ALLOW_INTERACTIVE_AUTHORIZATION, -1)
         .await

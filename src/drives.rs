@@ -31,6 +31,9 @@ pub struct Volume {
     pub system: bool,
     /// An encrypted container that is unlocked: its contents are a volume of their own.
     pub unlocked: bool,
+    /// For the contents of an unlocked container: the container's UDisks2 object, locked
+    /// again after unmounting.
+    pub crypto_backing: String,
     pub uuid: String,
     /// File system version ("1.0" for ext4, "FAT32", …).
     pub fs_version: String,
@@ -113,6 +116,11 @@ impl Volume {
 
     pub fn mount_point(&self) -> Option<&PathBuf> {
         self.mount_points.first()
+    }
+
+    /// An encrypted container that is locked: opening it asks for the passphrase.
+    pub fn is_locked(&self) -> bool {
+        self.fs_type.starts_with("crypto") && !self.unlocked && !self.block_object.is_empty()
     }
 
     /// A phone or camera rather than a block device.
@@ -271,7 +279,12 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
         if b(block, "HintIgnore") && mount_points.is_empty() {
             continue;
         }
-        let drive_object = o(block, "Drive");
+        // The contents of an unlocked container are on the container's drive.
+        let crypto_backing = Some(o(block, "CryptoBackingDevice")).filter(|b| !b.is_empty() && b != "/").unwrap_or_default();
+        let mut drive_object = o(block, "Drive");
+        if (drive_object.is_empty() || drive_object == "/") && !crypto_backing.is_empty() {
+            drive_object = all.get(&crypto_backing).and_then(|b| b.get("org.freedesktop.UDisks2.Block")).map(|b| o(b, "Drive")).unwrap_or_default();
+        }
         let drive = all.get(&drive_object).and_then(|d| d.get("org.freedesktop.UDisks2.Drive"));
         let empty = Props::new();
         let d = drive.unwrap_or(&empty);
@@ -306,6 +319,7 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
             mountable: fs.is_some(),
             system: b(block, "HintSystem"),
             unlocked: !cleartext.is_empty() && cleartext != "/",
+            crypto_backing,
             uuid: s(block, "IdUUID"),
             fs_version: s(block, "IdVersion"),
             read_only: b(block, "ReadOnly"),
@@ -525,6 +539,24 @@ mod tests {
         let unlocked = |dev: &str| vols.iter().find(|v| v.device == dev).unwrap().unlocked;
         assert!(unlocked("/dev/sda2"));
         assert!(!unlocked("/dev/sdb1"));
+    }
+
+    #[test]
+    fn an_unlocked_stick_is_on_its_drive() {
+        // A LUKS stick: the container on the USB drive, its contents a mapper device that
+        // UDisks2 puts on no drive.
+        let text = "({objectpath '/o/b/sdb1': {'org.freedesktop.UDisks2.Block': {'Device': <b'/dev/sdb1'>, 'IdUsage': <'crypto'>, 'IdType': <'crypto_LUKS'>, 'HintIgnore': <false>, 'Drive': <objectpath '/o/d/stick'>}, 'org.freedesktop.UDisks2.Encrypted': {'CleartextDevice': <objectpath '/o/b/dm_2d1'>}}, objectpath '/o/b/dm_2d1': {'org.freedesktop.UDisks2.Block': {'Device': <b'/dev/dm-1'>, 'IdUsage': <'filesystem'>, 'IdType': <'ext4'>, 'IdLabel': <'Vault'>, 'HintIgnore': <false>, 'Drive': <objectpath '/'>, 'CryptoBackingDevice': <objectpath '/o/b/sdb1'>}, 'org.freedesktop.UDisks2.Filesystem': {'MountPoints': <[b'/run/media/me/Vault']>}}, objectpath '/o/d/stick': {'org.freedesktop.UDisks2.Drive': {'Vendor': <'Kingston'>, 'Model': <'DataTraveler'>, 'Removable': <true>, 'ConnectionBus': <'usb'>, 'Ejectable': <true>}}, objectpath '/o/b/sdc1': {'org.freedesktop.UDisks2.Block': {'Device': <b'/dev/sdc1'>, 'IdUsage': <'crypto'>, 'IdType': <'crypto_LUKS'>, 'HintIgnore': <false>, 'Drive': <objectpath '/o/d/stick'>}, 'org.freedesktop.UDisks2.Encrypted': {'CleartextDevice': <objectpath '/'>}}},)";
+        let v = glib::Variant::parse(Some(glib::VariantTy::new("(a{oa{sa{sv}}})").unwrap()), text).unwrap();
+        let vols = parse_udisks(&v);
+        let vault = vols.iter().find(|v| v.device == "/dev/dm-1").unwrap();
+        assert_eq!((vault.drive_object.as_str(), vault.drive_name.as_str()), ("/o/d/stick", "Kingston DataTraveler"));
+        assert!(vault.usb && vault.removable && vault.ejectable);
+        assert_eq!(vault.crypto_backing, "/o/b/sdb1");
+        assert!(!vault.is_locked());
+        assert!(vols.iter().find(|v| v.device == "/dev/sdc1").unwrap().is_locked());
+        assert!(!vols.iter().find(|v| v.device == "/dev/sdb1").unwrap().is_locked());
+        // The side panel shows the contents and the locked one, not the open container.
+        assert_eq!(user_volumes(&vols, Path::new("/home/me")).iter().map(|v| v.device.as_str()).collect::<Vec<_>>().len(), 2);
     }
 
     fn mounted(device: &str, at: &[&str]) -> Volume {
