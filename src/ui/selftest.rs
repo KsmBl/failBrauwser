@@ -566,6 +566,14 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let [title, row, button] = parts[..] else { return Err("usage: drive-button <title> : <row text> : <button>".into()) };
             super::drives::click_button(&w.current_pane(), title, row, button)?;
         }
+        "drive-menu" => {
+            // drive-menu <title> : <row text> : <item>
+            let mut parts = arg.splitn(3, " : ");
+            let (Some(title), Some(text), Some(item)) = (parts.next(), parts.next(), parts.next()) else {
+                return Err("usage: drive-menu <title> : <row text> : <item>".into());
+            };
+            super::drives::menu_item(&w.current_pane(), title, text, item)?;
+        }
         "expect-tabs" => {
             // expect-tabs <title> | <title>  (the tabs of the window, in order)
             let got = w.panes().iter().map(|p| p.location().title()).collect::<Vec<_>>().join(" | ");
