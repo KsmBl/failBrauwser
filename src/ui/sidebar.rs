@@ -227,7 +227,8 @@ fn drive_place(v: &Volume) -> String {
                 Err(_) => m.display().to_string(),
             }
         }
-        None if v.fs_type.starts_with("crypto") => "Encrypted, locked".into(),
+        None if v.is_locked() => "Encrypted — click to unlock".into(),
+        None if v.mountable => "Not mounted — click to mount".into(),
         None => "Not mounted".into(),
     }
 }
@@ -565,7 +566,7 @@ impl Sidebar {
         let vol = v.clone();
         if super::drives::no_storage(v) {
             add("_Retry", Box::new(move |_, w| super::drives::reconnect_device(w, &w.current_pane(), &vol)));
-        } else if v.mount_point().is_some() || v.is_device() || v.mountable {
+        } else if v.mount_point().is_some() || v.is_device() || v.mountable || v.is_locked() {
             add("_Open", Box::new(move |sb, _| sb.open_drive(&vol, false)));
             let vol = v.clone();
             add("Open in New _Tab", Box::new(move |sb, _| sb.open_drive(&vol, true)));
@@ -898,7 +899,17 @@ impl Sidebar {
 
     /// The drive rows as `name : place` (tests).
     pub fn drive_texts(&self) -> Vec<String> {
-        self.drive_rows.borrow().iter().map(|(v, _)| format!("{} : {}", v.title(), drive_place(v))).collect()
+        // "~" written out, so a script can name the folder whichever home it runs under.
+        let home = format!("{}/", glib::home_dir().display());
+        self.drive_rows
+            .borrow()
+            .iter()
+            .map(|(v, _)| {
+                let place = drive_place(v);
+                let place = if place == "~" { home.trim_end_matches('/').to_string() } else { place.strip_prefix("~/").map_or(place.clone(), |rest| format!("{home}{rest}")) };
+                format!("{} : {}", v.title(), place)
+            })
+            .collect()
     }
 
     /// The drives shown, with where they are mounted (tests).

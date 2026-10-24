@@ -154,10 +154,14 @@ partition and phone that holds your files, each with the folder it is mounted on
 phone's storage) and a bar showing how full it is. The system's own partitions are left out:
 `/boot`, the EFI partition, swap, `/usr`, `/var` and the like, and `/` when your home folder
 is on a partition of its own (then that one shows, as *Home*). A volume without a label is
-called after the folder it is mounted on (*Downloads* for one mounted on `~/Downloads`). Click
-a drive to open it (mounting it or connecting to the phone first), middle-click for a new
-tab, right-click to unmount, eject or see its properties. A drive plugged in moves the split
-down so the list fits; the bars follow as drives fill up.
+called after the folder it is mounted on (*Downloads* for one mounted on `~/Downloads`).
+Drives that are not mounted are listed too (*Not mounted — click to mount*): click a drive to
+open it, mounting it or connecting to the phone first; middle-click for a new tab, right-click
+to unmount, eject or see its properties. An encrypted (LUKS) stick says *Encrypted — click to
+unlock*: a click asks for its passphrase (again if it was wrong), unlocks and mounts it.
+Unmounting or ejecting it locks it again, as other file managers do; the drives page has an
+*Unlock* button for it. A drive plugged in moves the split down so the list fits; the bars
+follow as drives fill up.
 
 **Links on the desktop:** *Create Link on Desktop* in the right-click menu of files and
 folders (on the empty space: the folder shown), of side panel entries, of drives and phones

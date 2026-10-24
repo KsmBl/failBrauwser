@@ -1,0 +1,42 @@
+# Drives that are not mounted are listed in the side panel; a click mounts and opens them,
+# the menu unmounts them again.
+fake-stick Photos = $T/photos
+wait-side-drive Photos : Not mounted — click to mount
+side-drive-click Photos : Not mounted — click to mount
+wait-location $T/photos
+wait-row holiday.jpg
+wait-side-drive Photos : $T/photos
+expect-side-drive-marked Photos : $T/photos
+side-drive-menu Photos : $T/photos : Unmount
+wait-side-drive Photos : Not mounted — click to mount
+expect-tabs Drives
+# The menu has Open (mounting first) for one that is not mounted, and no Unmount.
+side-drive-menu Photos : Not mounted — click to mount : Open in New Tab
+wait-location $T/photos
+expect-tabs Drives | photos
+# An encrypted stick asks for its passphrase: a wrong one asks again, the right one opens it.
+fake-stick Vault = $T/vault : opensesame
+wait-side-drive Vault : Encrypted — click to unlock
+text wrong
+text opensesame
+side-drive-click Vault : Encrypted — click to unlock
+wait-dialog Wrong passphrase
+dialog-button Wrong passphrase : Close
+wait-location $T/vault
+wait-row secret.txt
+wait-side-drive Vault : $T/vault
+wait-no-side-drive Vault : Encrypted — click to unlock
+# Unmounting locks it again.
+side-drive-menu Vault : $T/vault : Unmount
+wait-side-drive Vault : Encrypted — click to unlock
+# The drives page offers Unlock for it, and Eject locks it and powers the stick off.
+action win.drives
+wait-drive-text Vault : Encrypted, locked
+text opensesame
+drive-button Vault : Encrypted, locked : Unlock
+wait-location $T/vault
+wait-row secret.txt
+action win.drives
+wait-drive-text Vault : % used
+drive-button Vault : % used : Eject
+wait-drive-text Vault : Encrypted, locked
