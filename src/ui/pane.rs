@@ -545,6 +545,11 @@ impl Pane {
         // Detached views do not react to every single insert.
         self.tree.set_model(None::<&gtk::ListStore>);
         self.icons.set_model(None::<&gtk::ListStore>);
+        // Filled unsorted and sorted once: a sorted store moves every row filled in, and
+        // rebuilds its position table of all rows for each move.
+        self.applying_sort.set(true);
+        self.store.set_unsorted();
+        self.applying_sort.set(false);
         self.clear_rows();
         let now = glib::real_time() / 1_000_000;
         {
@@ -563,6 +568,7 @@ impl Pane {
             }
         }
         self.thumbs.borrow_mut().clear();
+        self.apply_sort();
         self.tree.set_model(Some(&self.store));
         self.icons.set_model(Some(&self.store));
         // An empty list must not cancel a selection waiting for these rows.
