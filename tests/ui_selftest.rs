@@ -65,7 +65,7 @@ fn side_panel_entries() {
             std::fs::create_dir_all(t.join("config/failbrauwser")).unwrap();
             std::fs::write(
                 t.join("config/failbrauwser/shortcuts"),
-                format!("0\tdrives\t\n0\thome\t\n0\tdesktop\t\n0\t{projects}\tProjects\n0\ttrash\t\n1\tmounts\t\n"),
+                format!("0\tdrives\t\n0\thome\t\n0\tdesktop\t\n0\t{projects}\tProjects\n0\ttrash\t\n1\tmounts\t\n1\tnetwork\t\n"),
             )
             .unwrap();
         },
@@ -145,6 +145,27 @@ fn unmounted_drives_in_the_side_panel() {
         std::fs::create_dir_all(t.join("vault")).unwrap();
         std::fs::write(t.join("vault/secret.txt"), "s").unwrap();
     });
+}
+
+#[test]
+fn network_page() {
+    run_checked(
+        "network.fbt",
+        &[],
+        |t| {
+            for (d, f) in [("music", "song.mp3"), ("photos", "beach.jpg"), ("secret", "diary.txt")] {
+                std::fs::create_dir_all(t.join(d)).unwrap();
+                std::fs::write(t.join(d).join(f), "x").unwrap();
+            }
+            std::fs::create_dir_all(t.join("config/failbrauwser")).unwrap();
+            std::fs::write(t.join("config/failbrauwser/shortcuts"), "0\tdrives\t\n0\thome\t\n0\tdesktop\t\n0\ttrash\t\n1\tmounts\t\n").unwrap();
+        },
+        |t| {
+            // Pinned places are kept by their address.
+            let saved = std::fs::read_to_string(t.join("config/failbrauwser/shortcuts")).unwrap();
+            assert!(saved.contains("\tsmb://nas/Photos\t") && saved.contains("\tnetwork:///nas\t"), "{saved}");
+        },
+    );
 }
 
 #[test]

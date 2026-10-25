@@ -1,0 +1,45 @@
+# The Network entry of the side panel lists the computers sharing files; a double click shows
+# the folders one shares, entering one opens it (asking for a password where needed).
+fake-host nas = Music:$T/music, Photos:$T/photos
+fake-host vault = Secret:$T/secret : letmein
+expect-shortcuts Drives | Home | Desktop | Network | Trash
+shortcut-click Network
+wait-location network:///
+expect-shortcut-marked Network
+expect-crumbs Network
+wait-network-row nas
+wait-network-row vault
+network-open nas
+wait-location network:///nas
+expect-crumbs Network > nas
+expect-title nas
+wait-network-row Music
+expect-network-rows Music | Photos
+network-open Music
+wait-location $T/music
+wait-row song.mp3
+# A folder behind a password asks for it.
+open network:///vault
+wait-network-row Secret
+text letmein
+network-open Secret
+wait-location $T/secret
+wait-row diary.txt
+# Pinned to the side panel: a shared folder and a computer, right below Network.
+open network:///nas
+wait-network-row Photos
+network-menu Photos : Pin to Side Panel
+expect-shortcuts Drives | Home | Desktop | Network | Photos on nas | Trash
+open network:///
+wait-network-row nas
+network-menu nas : Pin to Side Panel
+expect-shortcuts Drives | Home | Desktop | Network | Photos on nas | nas | Trash
+shortcut-click Photos on nas
+wait-location $T/photos
+shortcut-click nas
+wait-location network:///nas
+expect-shortcut-marked nas
+# Alt+N, Go > Network.
+open $T
+action win.network
+wait-location network:///
