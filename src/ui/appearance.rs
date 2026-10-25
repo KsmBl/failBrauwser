@@ -1,0 +1,118 @@
+//! Follows the desktop's light or dark mode while running (see [`failbrauwser::appearance`]):
+//! the portal's colour scheme and GNOME's `color-scheme` and `gtk-theme` are watched, and
+//! every window restyles the moment they change.
+
+use failbrauwser::appearance::{self, Look, Scheme};
+use gtk::prelude::*;
+use gtk::{gio, glib};
+use std::cell::RefCell;
+
+const INTERFACE: &str = "org.gnome.desktop.interface";
+
+struct State {
+    /// The colour scheme last heard of.
+    scheme: Scheme,
+    /// GTK's theme before anything was changed, for desktops without GNOME's settings.
+    startup_theme: String,
+    gsettings: Option<gio::Settings>,
+    _portal: Option<gio::SignalSubscription>,
+}
+
+thread_local! {
+    static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+}
+
+/// GNOME's interface settings, when installed.
+fn interface_settings() -> Option<gio::Settings> {
+    let schema = gio::SettingsSchemaSource::default()?.lookup(INTERFACE, true)?;
+    schema.has_key("color-scheme").then(|| gio::Settings::new(INTERFACE))
+}
+
+/// Starts following the desktop (once per process).
+pub fn follow() {
+    if STATE.with(|s| s.borrow().is_some()) {
+        return;
+    }
+    let Some(settings) = gtk::Settings::default() else { return };
+    let startup_theme = settings.gtk_theme_name().map(|s| s.to_string()).unwrap_or_else(|| "Adwaita".into());
+    let gsettings = interface_settings();
+    let scheme = gsettings.as_ref().map_or(Scheme::Default, |g| Scheme::from_gsettings(&g.string("color-scheme")));
+    if let Some(g) = &gsettings {
+        g.connect_changed(Some("color-scheme"), |g, _| set_scheme(Scheme::from_gsettings(&g.string("color-scheme"))));
+        g.connect_changed(Some("gtk-theme"), |_, _| apply());
+    }
+    // The portal tells sandboxed and non-GNOME desktops' changes too.
+    let portal = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok().map(|conn| {
+        conn.subscribe_to_signal(
+            Some("org.freedesktop.portal.Desktop"),
+            Some("org.freedesktop.portal.Settings"),
+            Some("SettingChanged"),
+            Some("/org/freedesktop/portal/desktop"),
+            None,
+            gio::DBusSignalFlags::NONE,
+            |signal| {
+                let p = signal.parameters;
+                let (ns, key) = (p.child_value(0).str().unwrap_or_default().to_string(), p.child_value(1).str().unwrap_or_default().to_string());
+                if ns == "org.freedesktop.appearance" && key == "color-scheme" {
+                    if let Some(v) = p.child_value(2).as_variant().and_then(|v| v.get::<u32>()) {
+                        set_scheme(Scheme::from_portal(v));
+                    }
+                }
+            },
+        )
+    });
+    STATE.with(|s| *s.borrow_mut() = Some(State { scheme, startup_theme, gsettings, _portal: portal }));
+    apply();
+    // The portal knows the scheme where GNOME's settings do not.
+    glib::spawn_future_local(async {
+        let Ok(conn) = gio::bus_get_future(gio::BusType::Session).await else { return };
+        let args = ("org.freedesktop.appearance", "color-scheme").to_variant();
+        let reply = conn
+            .call_future(Some("org.freedesktop.portal.Desktop"), "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "ReadOne", Some(&args), None, gio::DBusCallFlags::NONE, 2000)
+            .await;
+        if let Some(v) = reply.ok().and_then(|r| r.child_value(0).as_variant()).and_then(|v| v.as_variant().or(Some(v))).and_then(|v| v.get::<u32>()) {
+            set_scheme(Scheme::from_portal(v));
+        }
+    });
+}
+
+/// A new colour scheme (from the desktop, or the self-test).
+pub fn set_scheme(scheme: Scheme) {
+    let changed = STATE.with(|s| s.borrow_mut().as_mut().is_some_and(|st| std::mem::replace(&mut st.scheme, scheme) != scheme));
+    if changed {
+        apply();
+    }
+}
+
+/// The theme the desktop sets.
+fn desktop_theme(st: &State) -> String {
+    st.gsettings.as_ref().map(|g| g.string("gtk-theme").to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| st.startup_theme.clone())
+}
+
+fn apply() {
+    let Some(settings) = gtk::Settings::default() else { return };
+    let look = STATE.with(|s| {
+        let s = s.borrow();
+        let st = s.as_ref()?;
+        (st.scheme != Scheme::Default).then(|| appearance::look_for(&desktop_theme(st), st.scheme, appearance::theme_exists, appearance::theme_has_dark))
+    });
+    match look {
+        Some(Look { theme, prefer_dark }) => {
+            if settings.gtk_theme_name().as_deref() != Some(theme.as_str()) {
+                settings.set_gtk_theme_name(Some(&theme));
+            }
+            settings.set_gtk_application_prefer_dark_theme(prefer_dark);
+        }
+        // No preference: what GTK takes from the desktop and its settings files.
+        None => {
+            settings.reset_property("gtk-theme-name");
+            settings.reset_property("gtk-application-prefer-dark-theme");
+        }
+    }
+}
+
+/// Whether a window is drawn dark now: its background as the theme paints it (tests).
+pub fn window_is_dark(win: &gtk::Window) -> Option<bool> {
+    let bg = win.style_context().lookup_color("theme_bg_color")?;
+    Some(0.2126 * bg.red() + 0.7152 * bg.green() + 0.0722 * bg.blue() < 0.5)
+}

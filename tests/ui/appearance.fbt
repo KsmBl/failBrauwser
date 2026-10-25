@@ -1,0 +1,10 @@
+# Switching the desktop between light and dark restyles the window at once.
+color-scheme light
+wait-light
+color-scheme dark
+wait-dark
+color-scheme light
+wait-light
+open $T
+color-scheme dark
+wait-dark
