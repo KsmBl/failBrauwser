@@ -18,6 +18,7 @@ pub const ACCELS: &[(&str, &[&str])] = &[
     ("win.up", &["<Alt>Up"]),
     ("win.home", &["<Alt>Home"]),
     ("win.drives", &["<Alt>d"]),
+    ("win.network", &["<Alt>n"]),
     ("win.location", &["<Control>l", "F6"]),
     ("win.reload", &["F5", "<Control>r"]),
     ("win.show-hidden", &["<Control>h"]),
@@ -227,6 +228,7 @@ pub fn menubar_model() -> gio::Menu {
     section(&go, |s| {
         item(s, "_Home", "win.home");
         item(s, "_Drives", "win.drives");
+        item(s, "_Network", "win.network");
         item(s, "Open _Location…", "win.location");
     });
     bar.append_submenu(Some("_Go"), &go);

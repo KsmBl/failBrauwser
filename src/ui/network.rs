@@ -1,0 +1,579 @@
+//! The Network page: the computers sharing files on the local network, and on a double click
+//! the folders one of them shares. Entering a folder mounts it through GVfs, which asks for a
+//! user name and password when the server wants them. Computers and folders can be pinned to
+//! the side panel and linked on the desktop.
+
+use super::pane::Pane;
+use super::util;
+use super::window::Window;
+use failbrauwser::location::Location;
+use failbrauwser::network::{self, Computer, Share};
+use gtk::prelude::*;
+use gtk::{gdk, gio, glib};
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
+use std::rc::{Rc, Weak};
+use std::time::{Duration, Instant};
+
+/// A row of the page.
+#[derive(Clone, Debug)]
+enum Entry {
+    Computer(Computer),
+    /// A folder shared by the computer at this address.
+    Share(String, Share),
+}
+
+impl Entry {
+    fn title(&self) -> String {
+        match self {
+            Entry::Computer(c) => c.name.clone(),
+            Entry::Share(_, s) => s.name.clone(),
+        }
+    }
+
+    fn subtitle(&self) -> String {
+        match self {
+            // The address where it says more than the name.
+            Entry::Computer(c) => match (&c.ip, c.address.eq_ignore_ascii_case(&c.name)) {
+                (Some(ip), true) => ip.clone(),
+                (Some(ip), false) => format!("{} — {ip}", c.address),
+                (None, false) => c.address.clone(),
+                (None, true) => "Shares files".into(),
+            },
+            Entry::Share(_, s) if !s.comment.is_empty() => s.comment.clone(),
+            Entry::Share(..) => "Shared folder".into(),
+        }
+    }
+
+    /// Its address: `network:///nas` for a computer, `smb://nas/Music` for a folder.
+    fn uri(&self) -> String {
+        match self {
+            Entry::Computer(c) => Location::Network(c.address.clone()).display(),
+            Entry::Share(host, s) => network::share_uri(host, &s.name),
+        }
+    }
+}
+
+struct NetworkPage {
+    root: gtk::Box,
+    list: gtk::ListBox,
+    heading: gtk::Label,
+    status: gtk::Label,
+    spinner: gtk::Spinner,
+    pane: Weak<Pane>,
+    window: Weak<Window>,
+    entries: RefCell<Vec<Entry>>,
+    /// Bumped on every refresh: answers for an older one are dropped.
+    generation: Cell<u64>,
+    weak: RefCell<Weak<NetworkPage>>,
+}
+
+/// A computer in the self-test: its folders are local folders, maybe behind a password.
+struct FakeHost {
+    name: String,
+    shares: Vec<(String, PathBuf)>,
+    password: Option<String>,
+}
+
+thread_local! {
+    static PAGES: RefCell<Vec<Rc<NetworkPage>>> = const { RefCell::new(Vec::new()) };
+    /// The computers found last, and when.
+    static FOUND: RefCell<Option<(Instant, Vec<Computer>)>> = const { RefCell::new(None) };
+    static FAKES: RefCell<Vec<FakeHost>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How long a search of the network is good for before the page searches again.
+const FRESH: Duration = Duration::from_secs(60);
+
+fn page_for(pane: &Rc<Pane>) -> Option<Rc<NetworkPage>> {
+    PAGES.with(|p| {
+        let mut p = p.borrow_mut();
+        p.retain(|x| x.pane.strong_count() > 0);
+        p.iter().find(|x| x.pane.upgrade().is_some_and(|q| Rc::ptr_eq(&q, pane))).cloned()
+    })
+}
+
+pub fn attach(w: &Window, pane: &Rc<Pane>) {
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::Single);
+    // Like folders: a double click (or Enter) opens.
+    list.set_activate_on_single_click(false);
+    let scroll = gtk::ScrolledWindow::new(gtk::Adjustment::NONE, gtk::Adjustment::NONE);
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_vexpand(true);
+    scroll.add(&list);
+    let heading = gtk::Label::new(None);
+    heading.set_xalign(0.0);
+    heading.set_hexpand(true);
+    heading.style_context().add_class("dim-label");
+    let spinner = gtk::Spinner::new();
+    let reload = gtk::Button::from_icon_name(Some("view-refresh-symbolic"), gtk::IconSize::Button);
+    reload.set_tooltip_text(Some("Search again"));
+    reload.set_relief(gtk::ReliefStyle::None);
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    bar.set_margin_start(12);
+    bar.set_margin_end(6);
+    bar.set_margin_top(6);
+    bar.set_margin_bottom(6);
+    bar.pack_start(&heading, true, true, 0);
+    bar.pack_start(&spinner, false, false, 0);
+    bar.pack_start(&reload, false, false, 0);
+    let status = gtk::Label::new(None);
+    status.set_line_wrap(true);
+    status.set_xalign(0.0);
+    status.set_margin_start(12);
+    status.set_margin_end(12);
+    status.set_margin_bottom(12);
+    status.style_context().add_class("dim-label");
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    root.pack_start(&bar, false, false, 0);
+    root.pack_start(&scroll, true, true, 0);
+    root.pack_start(&status, false, false, 0);
+    root.show_all();
+    status.set_visible(false);
+    pane.stack.add_named(&root, "network");
+    let page = Rc::new(NetworkPage {
+        root,
+        list,
+        heading,
+        status,
+        spinner,
+        pane: Rc::downgrade(pane),
+        window: Rc::downgrade(&w.me()),
+        entries: RefCell::new(Vec::new()),
+        generation: Cell::new(0),
+        weak: RefCell::new(Weak::new()),
+    });
+    *page.weak.borrow_mut() = Rc::downgrade(&page);
+    let weak = Rc::downgrade(&page);
+    reload.connect_clicked(move |_| {
+        if let Some(p) = weak.upgrade() {
+            p.refresh(true);
+        }
+    });
+    let weak = Rc::downgrade(&page);
+    page.list.connect_row_activated(move |_, row| {
+        let Some(p) = weak.upgrade() else { return };
+        // Opening lists the next page: the rows must not stay borrowed.
+        let e = p.entries.borrow().get(row.index() as usize).cloned();
+        if let Some(e) = e {
+            p.open(&e, false);
+        }
+    });
+    let weak = Rc::downgrade(&page);
+    page.list.connect_button_press_event(move |list, ev| {
+        let Some(p) = weak.upgrade() else { return glib::Propagation::Proceed };
+        if ev.event_type() != gdk::EventType::ButtonPress {
+            return glib::Propagation::Proceed;
+        }
+        let Some(row) = list.row_at_y(ev.position().1 as i32) else { return glib::Propagation::Proceed };
+        let Some(e) = p.entries.borrow().get(row.index() as usize).cloned() else { return glib::Propagation::Proceed };
+        match ev.button() {
+            3 => {
+                list.select_row(Some(&row));
+                p.menu(&e).popup_at_pointer(Some(ev));
+                glib::Propagation::Stop
+            }
+            2 => {
+                p.open(&e, true);
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    PAGES.with(|p| p.borrow_mut().push(page));
+}
+
+/// Shows or hides the page as the pane's location changes.
+pub fn location_changed(pane: &Rc<Pane>) {
+    let Some(page) = page_for(pane) else { return };
+    if matches!(pane.location(), Location::Network(_)) {
+        pane.stack.set_visible_child(&page.root);
+        page.refresh(false);
+        page.list.grab_focus();
+    } else if pane.stack.visible_child().as_ref() == Some(page.root.upcast_ref()) {
+        pane.apply_view_mode();
+    }
+}
+
+/// The status bar text while the page is shown.
+pub fn status_text(pane: &Rc<Pane>) -> String {
+    let Some(page) = page_for(pane) else { return String::new() };
+    let entries = page.entries.borrow();
+    let n = entries.len();
+    match (pane.location(), n) {
+        (Location::Network(h), 1) if h.is_empty() => "1 computer".into(),
+        (Location::Network(h), n) if h.is_empty() => format!("{n} computers"),
+        (_, 1) => "1 shared folder".into(),
+        (_, n) => format!("{n} shared folders"),
+    }
+}
+
+impl NetworkPage {
+    fn context(&self) -> Option<(Rc<Window>, Rc<Pane>)> {
+        Some((self.window.upgrade()?, self.pane.upgrade()?))
+    }
+
+    fn host(&self) -> Option<String> {
+        match self.pane.upgrade()?.location() {
+            Location::Network(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    fn show(&self, entries: Vec<Entry>) {
+        for c in self.list.children() {
+            self.list.remove(&c);
+        }
+        for e in &entries {
+            self.list.add(&row(e));
+        }
+        self.list.show_all();
+        *self.entries.borrow_mut() = entries;
+        if let Some(w) = self.window.upgrade() {
+            w.update_status();
+        }
+    }
+
+    fn say(&self, text: &str) {
+        self.status.set_text(text);
+        self.status.set_visible(!text.is_empty());
+    }
+
+    fn busy(&self, on: bool) {
+        if on {
+            self.spinner.start();
+        } else {
+            self.spinner.stop();
+        }
+    }
+
+    /// Lists the computers, or the shared folders of the one shown; `again` searches the
+    /// network even when the last search is recent.
+    fn refresh(self: &Rc<Self>, again: bool) {
+        let Some(host) = self.host() else { return };
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
+        self.say("");
+        if host.is_empty() {
+            self.heading.set_text("Computers sharing files on this network");
+            self.refresh_computers(generation, again);
+        } else {
+            self.heading.set_text(&format!("Folders shared by {}", network::short_name(&host)));
+            self.show(Vec::new());
+            self.refresh_shares(generation, host);
+        }
+    }
+
+    fn refresh_computers(self: &Rc<Self>, generation: u64, again: bool) {
+        let history = super::remote::history();
+        let fakes: Vec<(String, String)> = FAKES.with(|f| f.borrow().iter().map(|h| (h.name.clone(), h.name.clone())).collect());
+        let cached = FOUND.with(|f| f.borrow().clone());
+        // What is known shows at once; the search adds to it.
+        let known = match &cached {
+            Some((_, list)) => list.clone(),
+            None => network::merge(&[], &fakes, &history),
+        };
+        self.show(known.iter().cloned().map(Entry::Computer).collect());
+        let fresh = cached.as_ref().is_some_and(|(at, _)| at.elapsed() < FRESH);
+        // The self-test does not knock on the doors of the network it runs in.
+        if (fresh && !again) || super::selftest::active() {
+            self.after_search(&known);
+            return;
+        }
+        self.busy(true);
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let scan = gio::spawn_blocking(failbrauwser::remote::find_smb_servers);
+            let announced = announced().await;
+            let scanned = scan.await.unwrap_or_default();
+            let all = network::merge(&scanned, &[announced, fakes].concat(), &history);
+            FOUND.with(|f| *f.borrow_mut() = Some((Instant::now(), all.clone())));
+            let Some(p) = weak.upgrade() else { return };
+            if p.generation.get() != generation {
+                return;
+            }
+            p.busy(false);
+            p.show(all.iter().cloned().map(Entry::Computer).collect());
+            p.after_search(&all);
+        });
+    }
+
+    fn after_search(&self, found: &[Computer]) {
+        if found.is_empty() {
+            self.say("No computer sharing files answered. A NAS or a computer that shares folders (SMB, Windows file sharing) shows up here; one on another network can be opened by typing its address in the location bar, like smb://192.168.1.10/share.");
+        }
+    }
+
+    fn refresh_shares(self: &Rc<Self>, generation: u64, host: String) {
+        if let Some(shares) = FAKES.with(|f| f.borrow().iter().find(|h| h.name == host).map(|h| h.shares.iter().map(|(n, _)| Share { name: n.clone(), comment: String::new() }).collect::<Vec<_>>())) {
+            self.show(shares.into_iter().map(|s| Entry::Share(host.clone(), s)).collect());
+            return;
+        }
+        let Some((w, _)) = self.context() else { return };
+        self.busy(true);
+        let weak = Rc::downgrade(self);
+        let parent: gtk::Window = w.win.clone().upcast();
+        glib::spawn_future_local(async move {
+            let res = list_shares(&parent, &host).await;
+            let Some(p) = weak.upgrade() else { return };
+            if p.generation.get() != generation {
+                return;
+            }
+            p.busy(false);
+            match res {
+                Ok(shares) => {
+                    if shares.is_empty() {
+                        p.say(&format!("{} shares no folders, or none this user may see.", network::short_name(&host)));
+                    }
+                    p.show(shares.into_iter().map(|s| Entry::Share(host.clone(), s)).collect());
+                }
+                Err(e) if e.is_empty() => p.say("Cancelled. Search again to sign in."),
+                Err(e) => p.say(&format!("Cannot list the shared folders of {}: {e}", network::short_name(&host))),
+            }
+        });
+    }
+
+    /// Opens a computer (its folders) or a shared folder (mounted first).
+    fn open(&self, e: &Entry, new_tab: bool) {
+        let Some((w, pane)) = self.context() else { return };
+        match e {
+            Entry::Computer(c) => {
+                let loc = Location::Network(c.address.clone());
+                if new_tab {
+                    w.add_tab(loc, true);
+                } else {
+                    pane.navigate(loc);
+                }
+            }
+            Entry::Share(host, s) => {
+                if let Some((dir, password)) = FAKES.with(|f| f.borrow().iter().find(|h| h.name == *host).and_then(|h| Some((h.shares.iter().find(|(n, _)| *n == s.name)?.1.clone(), h.password.clone())))) {
+                    open_fake(&w, &pane, dir, password, new_tab);
+                    return;
+                }
+                super::shares::open_remote(&w, &e.uri(), new_tab);
+            }
+        }
+    }
+
+    fn menu(self: &Rc<Self>, e: &Entry) -> gtk::Menu {
+        let menu = gtk::Menu::new();
+        let add = |label: &str, f: Box<dyn Fn(&Rc<NetworkPage>)>| {
+            let item = gtk::MenuItem::with_mnemonic(label);
+            let weak = Rc::downgrade(self);
+            item.connect_activate(move |_| {
+                if let Some(p) = weak.upgrade() {
+                    f(&p);
+                }
+            });
+            menu.append(&item);
+        };
+        let e2 = e.clone();
+        add("_Open", Box::new(move |p| p.open(&e2, false)));
+        let e2 = e.clone();
+        add("Open in New _Tab", Box::new(move |p| p.open(&e2, true)));
+        menu.append(&gtk::SeparatorMenuItem::new());
+        let uri = e.uri();
+        add("_Pin to Side Panel", Box::new(move |_| super::sidebar::pin(&uri)));
+        let (uri, title) = (e.uri(), e.title());
+        let is_share = matches!(e, Entry::Share(..));
+        add("Create _Link on Desktop", Box::new(move |p| {
+            let Some((w, _)) = p.context() else { return };
+            let link = if is_share {
+                super::desktoplink::for_share(&network::uri_name(&uri), &uri)
+            } else {
+                super::desktoplink::for_network_page(&title, &Location::Network(uri.trim_start_matches(failbrauwser::location::NETWORK_URI).to_string()))
+            };
+            super::desktoplink::create(&w, std::slice::from_ref(&link));
+        }));
+        let uri = e.uri();
+        add("_Copy Address", Box::new(move |_| {
+            gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&uri);
+        }));
+        menu.show_all();
+        menu
+    }
+}
+
+fn row(e: &Entry) -> gtk::ListBoxRow {
+    let icon = match e {
+        Entry::Computer(_) => ["network-server", "computer"],
+        Entry::Share(..) => ["folder-remote", "folder"],
+    };
+    let image = gtk::Image::from_gicon(&gio::ThemedIcon::from_names(&icon), gtk::IconSize::Dnd);
+    let title = gtk::Label::new(Some(&e.title()));
+    title.set_xalign(0.0);
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let sub = gtk::Label::new(Some(&e.subtitle()));
+    sub.set_xalign(0.0);
+    sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    sub.style_context().add_class("dim-label");
+    let lines = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    lines.set_valign(gtk::Align::Center);
+    lines.pack_start(&title, false, false, 0);
+    lines.pack_start(&sub, false, false, 0);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.set_margin_top(6);
+    content.set_margin_bottom(6);
+    content.pack_start(&image, false, false, 0);
+    content.pack_start(&lines, true, true, 0);
+    let row = gtk::ListBoxRow::new();
+    row.set_tooltip_text(Some(&format!("{}\nDouble-click to open, right-click to pin it to the side panel", e.uri())));
+    row.add(&content);
+    row
+}
+
+/// Computers GVfs's network browsing announces (DNS-SD, WS-Discovery), as (name, address).
+async fn announced() -> Vec<(String, String)> {
+    let dir = gio::File::for_uri("network:///");
+    let list = async {
+        let e = dir.enumerate_children_future("standard::display-name,standard::target-uri", gio::FileQueryInfoFlags::NONE, glib::Priority::DEFAULT).await.ok()?;
+        let mut out = Vec::new();
+        loop {
+            let infos = e.next_files_future(32, glib::Priority::DEFAULT).await.ok()?;
+            if infos.is_empty() {
+                break;
+            }
+            for i in infos {
+                let target = i.attribute_string("standard::target-uri").map(|s| s.to_string()).unwrap_or_default();
+                if let Some(host) = network::announced_host(&target) {
+                    out.push((i.display_name().to_string(), host));
+                }
+            }
+        }
+        Some(out)
+    };
+    glib::future_with_timeout(Duration::from_secs(4), list).await.ok().flatten().unwrap_or_default()
+}
+
+/// The folders a computer shares, through GVfs (asking for a password if the server wants
+/// one), else through `smbclient` as a guest. An empty error: the user cancelled.
+async fn list_shares(parent: &gtk::Window, host: &str) -> Result<Vec<Share>, String> {
+    let dir = gio::File::for_uri(&format!("smb://{host}/"));
+    let mut first_error = None;
+    for attempt in 0..2 {
+        match enumerate(&dir).await {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt == 0 && e.matches(gio::IOErrorEnum::NotMounted) => {
+                let op = gtk::MountOperation::new(Some(parent));
+                if let Err(e) = dir.mount_enclosing_volume_future(gio::MountMountFlags::NONE, Some(&op)).await {
+                    if e.matches(gio::IOErrorEnum::FailedHandled) {
+                        return Err(String::new());
+                    }
+                    if !e.matches(gio::IOErrorEnum::AlreadyMounted) {
+                        first_error = Some(e.message().to_string());
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                first_error = Some(e.message().to_string());
+                break;
+            }
+        }
+    }
+    // Without GVfs's SMB browsing: ask as a guest.
+    let host = host.to_string();
+    let guest = gio::spawn_blocking(move || {
+        let out = std::process::Command::new("smbclient").args(["-g", "-N", "-L", &format!("//{host}")]).output().ok()?;
+        Some(network::parse_smbclient(&String::from_utf8_lossy(&out.stdout)))
+    })
+    .await
+    .ok()
+    .flatten()
+    .filter(|v| !v.is_empty());
+    guest.ok_or_else(|| first_error.unwrap_or_else(|| "no answer".into()))
+}
+
+async fn enumerate(dir: &gio::File) -> Result<Vec<Share>, glib::Error> {
+    let e = dir.enumerate_children_future("standard::display-name,standard::name", gio::FileQueryInfoFlags::NONE, glib::Priority::DEFAULT).await?;
+    let mut out = Vec::new();
+    loop {
+        let infos = e.next_files_future(64, glib::Priority::DEFAULT).await?;
+        if infos.is_empty() {
+            break;
+        }
+        for i in infos {
+            let name = i.display_name().to_string();
+            if network::visible_share(&name) {
+                out.push(Share { name, comment: String::new() });
+            }
+        }
+    }
+    out.sort_by(|a, b| failbrauwser::fs::format::natural_cmp(&a.name.to_lowercase(), &b.name.to_lowercase()));
+    Ok(out)
+}
+
+/// Opens a network share by its address (a pinned one): mounted through GVfs.
+pub fn open_share(w: &Rc<Window>, uri: &str, new_tab: bool) {
+    let fake = FAKES.with(|f| {
+        f.borrow().iter().find_map(|h| h.shares.iter().find(|(n, _)| network::share_uri(&h.name, n) == uri).map(|(_, d)| (d.clone(), h.password.clone())))
+    });
+    match fake {
+        Some((dir, password)) => open_fake(w, &w.current_pane(), dir, password, new_tab),
+        None => super::shares::open_remote(w, uri, new_tab),
+    }
+}
+
+/// A computer for the self-test: `shares` are (name, folder) pairs.
+pub fn add_fake(name: &str, shares: Vec<(String, PathBuf)>, password: Option<String>) {
+    FAKES.with(|f| f.borrow_mut().push(FakeHost { name: name.into(), shares, password }));
+}
+
+fn open_fake(w: &Rc<Window>, pane: &Rc<Pane>, dir: PathBuf, password: Option<String>, new_tab: bool) {
+    let (ww, pw) = (Rc::downgrade(w), Rc::downgrade(pane));
+    let go = move || {
+        let loc = Location::Dir(dir.clone());
+        if new_tab {
+            if let Some(w) = ww.upgrade() {
+                w.add_tab(loc, true);
+            }
+        } else if let Some(p) = pw.upgrade() {
+            p.navigate(loc);
+        }
+    };
+    match password {
+        None => go(),
+        Some(want) => {
+            let parent = w.win.clone();
+            util::ask_secret(&w.win, "Password Required", "Password for the shared folder:", move |given| {
+                if given == want {
+                    go();
+                } else {
+                    util::show_error(&parent, "Wrong password", "The shared folder stays closed.");
+                }
+            });
+        }
+    }
+}
+
+/// The titles of the page's rows (tests).
+pub fn row_titles(pane: &Rc<Pane>) -> Vec<String> {
+    page_for(pane).map(|p| p.entries.borrow().iter().map(Entry::title).collect()).unwrap_or_default()
+}
+
+/// Opens a row by its title as a double click would (tests).
+pub fn activate(pane: &Rc<Pane>, title: &str) -> Result<(), String> {
+    let page = page_for(pane).ok_or("no network page")?;
+    let i = page.entries.borrow().iter().position(|e| e.title() == title).ok_or_else(|| format!("no row {title:?}"))?;
+    let row = page.list.row_at_index(i as i32).ok_or("row missing")?;
+    page.list.emit_by_name::<()>("row-activated", &[&row]);
+    Ok(())
+}
+
+/// Picks an item of a row's right-click menu (tests).
+pub fn menu_item(pane: &Rc<Pane>, title: &str, item: &str) -> Result<(), String> {
+    let page = page_for(pane).ok_or("no network page")?;
+    let e = page.entries.borrow().iter().find(|e| e.title() == title).cloned().ok_or_else(|| format!("no row {title:?}"))?;
+    let menu = page.menu(&e);
+    let found = menu
+        .children()
+        .into_iter()
+        .filter_map(|c| c.downcast::<gtk::MenuItem>().ok())
+        .find(|m| m.label().is_some_and(|l| l.replace('_', "") == item))
+        .ok_or_else(|| format!("no menu item {item:?}"))?;
+    found.activate();
+    Ok(())
+}

@@ -41,7 +41,7 @@ fn model() -> gtk::ListStore {
     })
 }
 
-fn history() -> Vec<String> {
+pub fn history() -> Vec<String> {
     STATE.with(|s| s.borrow_mut().history.get_or_insert_with(|| remote::load_history_from(&remote::history_path())).clone())
 }
 

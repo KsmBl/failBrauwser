@@ -35,6 +35,9 @@ pub fn show(w: &Window) {
         super::drives::show_selected_properties(&pane);
         return;
     }
+    if matches!(pane.location(), Location::Network(_)) {
+        return;
+    }
     let items = pane.selected_items();
     let loc = pane.location();
     let now = glib::real_time() / 1_000_000;

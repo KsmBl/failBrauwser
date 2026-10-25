@@ -49,7 +49,7 @@ pub fn update_sensitivity(w: &Window) {
     let loc = pane.location();
     let n = pane.selected_items().len();
     let writable = super::extensions::location_writable(&loc);
-    let browsable = !matches!(loc, Location::Drives);
+    let browsable = !matches!(loc, Location::Drives | Location::Network(_));
     set_enabled(w, "copy", n > 0);
     set_enabled(w, "cut", n > 0 && writable);
     set_enabled(w, "paste", writable && browsable);

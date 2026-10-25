@@ -46,6 +46,17 @@ pub fn for_drives_page(name: &str) -> Link {
     Link { name: name.into(), url: String::new(), icon: known_icon(&["drive-harddisk", "computer"]), args: vec![failbrauwser::location::DRIVES_URI.into()] }
 }
 
+/// A link to the network page or one computer's shares on it (failBrauwser shows them).
+pub fn for_network_page(name: &str, loc: &failbrauwser::location::Location) -> Link {
+    let icon = if matches!(loc, failbrauwser::location::Location::Network(h) if h.is_empty()) { "network-workgroup" } else { "network-server" };
+    Link { name: name.into(), url: String::new(), icon: known_icon(&[icon, "network-workgroup"]), args: vec![loc.display()] }
+}
+
+/// A link to a network share (`smb://…`), which the desktop mounts when it is opened.
+pub fn for_share(name: &str, uri: &str) -> Link {
+    Link { name: name.into(), url: uri.into(), icon: known_icon(&["folder-remote", "network-server"]), args: Vec::new() }
+}
+
 /// A link to the trash.
 pub fn for_trash(name: &str) -> Link {
     Link { name: name.into(), url: failbrauwser::location::TRASH_URI.into(), icon: "user-trash".into(), args: Vec::new() }

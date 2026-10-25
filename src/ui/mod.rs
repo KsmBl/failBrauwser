@@ -16,6 +16,7 @@ pub mod fileops;
 pub mod icons;
 pub mod jobs;
 pub mod model;
+pub mod network;
 pub mod pane;
 pub mod pathbar;
 pub mod phones;

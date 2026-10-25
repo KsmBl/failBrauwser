@@ -31,6 +31,8 @@ const T_LOADED: u32 = 3;
 enum Target {
     Place(Location),
     Mount(gio::Mount),
+    /// A pinned network share, mounted when opened (`smb://nas/Music`).
+    Share(String),
 }
 
 struct RowInfo {
@@ -76,6 +78,14 @@ const URI_LIST: &str = "text/uri-list";
 
 fn shortcuts() -> Shortcuts {
     SHORTCUTS.with(|s| s.borrow_mut().get_or_insert_with(Shortcuts::load).clone())
+}
+
+/// Pins a network place (a shared folder `smb://…` or a computer `network:///…`) to the
+/// side panel, below the Network entry.
+pub fn pin(uri: &str) {
+    edit_shortcuts(|s| {
+        s.add_remote(uri);
+    });
 }
 
 /// Changes the shortcuts, saves them and shows the change in every window.
@@ -131,7 +141,21 @@ fn place_icon(kind: &Kind) -> gio::Icon {
         Kind::Desktop => themed(&["user-desktop-symbolic", "user-desktop"]),
         Kind::Trash => themed(&["user-trash-symbolic", "user-trash"]),
         Kind::Mounts => themed(&["drive-removable-media-symbolic", "drive-removable-media"]),
+        Kind::Network => themed(&["network-workgroup-symbolic", "network-workgroup"]),
+        Kind::Remote(uri) if uri.starts_with(failbrauwser::location::NETWORK_URI) => themed(&["network-server-symbolic", "network-server"]),
+        Kind::Remote(_) => themed(&["folder-remote-symbolic", "folder-remote"]),
         Kind::Dir(p) => util::place_icon(p),
+    }
+}
+
+/// What a click on an entry opens.
+fn place_target(kind: &Kind) -> Target {
+    match kind {
+        Kind::Remote(uri) => match Location::parse(uri, |_| false) {
+            Some(l) => Target::Place(l),
+            None => Target::Share(uri.clone()),
+        },
+        k => Target::Place(place_location(k)),
     }
 }
 
@@ -142,6 +166,8 @@ fn place_location(kind: &Kind) -> Location {
         Kind::Desktop => Location::Dir(glib::user_special_dir(glib::UserDirectory::Desktop).unwrap_or_else(|| glib::home_dir().join("Desktop"))),
         Kind::Trash => Location::Trash,
         Kind::Mounts => Location::Drives,
+        Kind::Network => Location::Network(String::new()),
+        Kind::Remote(uri) => Location::parse(uri, |_| false).unwrap_or(Location::Network(String::new())),
         Kind::Dir(p) => Location::Dir(p.clone()),
     }
 }
@@ -395,11 +421,14 @@ impl Sidebar {
                 }
                 continue;
             }
-            let loc = place_location(&sc.kind);
-            let tip = match &sc.kind {
-                Kind::Drives => "All drives with their fill levels (Alt+D)".to_string(),
-                Kind::Trash => String::new(),
-                _ => loc.display(),
+            let target = place_target(&sc.kind);
+            let tip = match (&sc.kind, &target) {
+                (Kind::Drives, _) => "All drives with their fill levels (Alt+D)".to_string(),
+                (Kind::Network, _) => "The computers sharing files on your network".to_string(),
+                (Kind::Trash, _) => String::new(),
+                (_, Target::Share(uri)) => uri.clone(),
+                (_, Target::Place(l)) => l.display(),
+                (_, Target::Mount(_)) => String::new(),
             };
             let row = make_row(&place_icon(&sc.kind), &sc.label(), &tip);
             if let Kind::Dir(p) = &sc.kind {
@@ -410,7 +439,7 @@ impl Sidebar {
                 }
             }
             self.list.add(&row);
-            rows.push(RowInfo { index, label: sc.label(), target: Target::Place(loc) });
+            rows.push(RowInfo { index, label: sc.label(), target });
         }
         for row in self.list.children() {
             if let Ok(row) = row.downcast::<gtk::ListBoxRow>() {
@@ -432,6 +461,11 @@ impl Sidebar {
             let here = match &info.target {
                 Target::Place(l) => *l == loc,
                 Target::Mount(m) => m.root().path().is_some_and(|p| loc.local_path() == Some(p.as_path())),
+                // A share is known by the address GVfs gives its folder.
+                Target::Share(uri) => loc.local_path().filter(|p| failbrauwser::ops::gvfs::is_gvfs_path(p)).is_some_and(|p| {
+                    let here = gio::File::for_path(p).uri().to_string();
+                    here.trim_end_matches('/').eq_ignore_ascii_case(uri.trim_end_matches('/'))
+                }),
             };
             if here {
                 row.set_state_flags(gtk::StateFlags::SELECTED, false);
@@ -599,6 +633,10 @@ impl Sidebar {
         let Some(w) = self.window.upgrade() else { return };
         let loc = match target {
             Target::Place(l) => l.clone(),
+            Target::Share(uri) => {
+                super::network::open_share(&w, uri, new_tab);
+                return;
+            }
             Target::Mount(m) => match m.root().path() {
                 Some(p) => Location::Dir(p),
                 None => {
@@ -648,6 +686,8 @@ impl Sidebar {
                 Target::Place(Location::Dir(p)) => desktoplink::for_dir(p, Some(&entry.label())),
                 Target::Place(Location::Trash) => Some(desktoplink::for_trash(&entry.label())),
                 Target::Place(Location::Drives) => Some(desktoplink::for_drives_page(&entry.label())),
+                Target::Place(l @ Location::Network(_)) => Some(desktoplink::for_network_page(&entry.label(), l)),
+                Target::Share(uri) => Some(desktoplink::for_share(&entry.label(), uri)),
                 Target::Place(_) => None,
                 Target::Mount(m) => Some(desktoplink::for_mount(m)),
             };
@@ -836,7 +876,7 @@ impl Sidebar {
 
     /// The labels of the shortcut rows (mounted volumes left out: they depend on the machine).
     pub fn labels(&self) -> Vec<String> {
-        self.rows.borrow().iter().filter(|r| matches!(r.target, Target::Place(_))).map(|r| r.label.clone()).collect()
+        self.rows.borrow().iter().filter(|r| matches!(r.target, Target::Place(_) | Target::Share(_))).map(|r| r.label.clone()).collect()
     }
 
     /// The labels of the rows marked as the current place.

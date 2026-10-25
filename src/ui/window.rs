@@ -285,6 +285,8 @@ impl Window {
         let icon = match &loc {
             Location::Archive(_) => util::icon_for_type("application/x-archive"),
             Location::Drives => gio::ThemedIcon::new("drive-harddisk").upcast(),
+            Location::Network(h) if h.is_empty() => gio::ThemedIcon::new("network-workgroup").upcast(),
+            Location::Network(_) => gio::ThemedIcon::new("network-server").upcast(),
             _ => util::folder_icon(),
         };
         self.location_entry.set_icon_from_gicon(gtk::EntryIconPosition::Primary, Some(&icon));
@@ -319,6 +321,8 @@ impl Window {
         let text = if pane.location() == Location::Drives {
             let n = super::drives::shown_volumes(&pane).len();
             format!("{n} drive{}", if n == 1 { "" } else { "s" })
+        } else if matches!(pane.location(), Location::Network(_)) {
+            super::network::status_text(&pane)
         } else if pane.is_loading() && pane.item_count() == 0 {
             "Loading…".to_string()
         } else if let Some(err) = pane.error() {
@@ -412,6 +416,7 @@ impl Window {
         self.add_action("up", |w| w.current_pane().go_up());
         self.add_action("home", |w| w.navigate(Location::home()));
         self.add_action("drives", |w| w.navigate(Location::Drives));
+        self.add_action("network", |w| w.navigate(Location::Network(String::new())));
         self.add_action("zoom-in", |w| w.zoom(1));
         self.add_action("zoom-out", |w| w.zoom(-1));
         self.add_action("zoom-normal", |w| w.zoom(0));

@@ -64,6 +64,8 @@ pub fn crumbs_for(loc: &Location) -> Vec<Crumb> {
                 Location::Dir(p) if *p == glib::home_dir() => (l.title(), Some("user-home-symbolic")),
                 Location::Dir(p) if p.parent().is_none() => ("/".to_string(), None),
                 Location::Archive(a) if a.inner.is_empty() => (l.title(), Some("package-x-generic-symbolic")),
+                Location::Network(h) if h.is_empty() => (l.title(), Some("network-workgroup-symbolic")),
+                Location::Network(_) => (l.title(), Some("network-server-symbolic")),
                 _ => (l.title(), None),
             };
             Crumb { label, icon, location: l }
@@ -302,6 +304,8 @@ mod tests {
         assert_eq!(labels, vec!["/", "data", "x.zip", "in", "y.tar", "docs"]);
         assert_eq!(c[2].icon, Some("package-x-generic-symbolic"));
         assert_eq!(crumbs_for(&Location::Drives)[0].label, "Drives");
+        let net: Vec<String> = crumbs_for(&Location::Network("nas".into())).into_iter().map(|c| c.label).collect();
+        assert_eq!(net, ["Network", "nas"]);
     }
 
     #[test]

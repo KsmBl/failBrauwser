@@ -564,6 +564,30 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let (dir, pass) = rest.split_once(" : ").map_or((rest, None), |(d, p)| (d, Some(p.trim().to_string())));
             super::drives::add_fake(label.trim(), PathBuf::from(dir.trim()), pass);
         }
+        "fake-host" => {
+            // fake-host <name> = <share>:<folder>, … [: <password>]: a computer on the network
+            // whose shared folders are local folders.
+            let (name, rest) = arg.split_once(" = ").ok_or("usage: fake-host <name> = <share>:<folder>, … [: <password>]")?;
+            let (list, password) = rest.split_once(" : ").map_or((rest, None), |(l, p)| (l, Some(p.trim().to_string())));
+            let shares = list.split(", ").filter_map(|x| x.split_once(':')).map(|(n, d)| (n.trim().to_string(), PathBuf::from(d.trim()))).collect();
+            super::network::add_fake(name.trim(), shares, password);
+        }
+        "wait-network-row" => {
+            let want = arg.to_string();
+            wait(r, move |r| Ok(super::network::row_titles(&r.window.current_pane()).contains(&want)));
+        }
+        "expect-network-rows" => {
+            let got = super::network::row_titles(&w.current_pane()).join(" | ");
+            if got != arg {
+                return Err(format!("rows are {got:?}"));
+            }
+        }
+        "network-open" => super::network::activate(&w.current_pane(), arg)?,
+        "network-menu" => {
+            // network-menu <row> : <item>
+            let (row, item) = arg.split_once(" : ").ok_or("usage: network-menu <row> : <item>")?;
+            super::network::menu_item(&w.current_pane(), row.trim(), item.trim())?;
+        }
         "wait-drive-text" => {
             // wait-drive-text <title> : <text>  (a row of that drive shows the text)
             let (title, text) = arg.split_once(" : ").ok_or("usage: wait-drive-text <title> : <text>")?;

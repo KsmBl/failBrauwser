@@ -45,12 +45,14 @@ pub fn open_uri(w: &Window, uri: &str) {
 pub fn pane_created(w: &Window, p: &Rc<Pane>) {
     dnd::setup(w, p);
     super::drives::attach(w, p);
+    super::network::attach(w, p);
     super::trash::attach(p);
     super::searchbar::attach(p);
 }
 
 pub fn pane_location_changed(_w: &Window, p: &Rc<Pane>) {
     super::drives::location_changed(p);
+    super::network::location_changed(p);
     super::trash::update_bar(p);
     super::searchbar::location_changed(p);
 }
@@ -116,7 +118,7 @@ pub fn location_writable(loc: &Location) -> bool {
         // Known once the archive was listed (always the case while it is shown).
         Location::Archive(a) => failbrauwser::archive::vfs::Vfs::global().cached(a).is_some_and(|x| x.writable),
         // Nothing can be put into the trash view; items there are restored or deleted.
-        Location::Drives | Location::Trash | Location::Search(_) => false,
+        Location::Drives | Location::Trash | Location::Search(_) | Location::Network(_) => false,
     }
 }
 
@@ -126,7 +128,7 @@ pub fn open_non_local(w: &Window, item: &Item) {
 }
 
 pub fn transfer_non_local(w: &Window, sources: Vec<ClipSource>, dest: Location, mode: Mode, after: Box<dyn FnOnce()>) {
-    if matches!(dest, Location::Drives) {
+    if matches!(dest, Location::Drives | Location::Network(_)) {
         util::show_error(&w.win, "Cannot paste here", "Open a folder to paste into.");
         return;
     }
