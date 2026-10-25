@@ -12,6 +12,8 @@ const INTERFACE: &str = "org.gnome.desktop.interface";
 struct State {
     /// The colour scheme last heard of.
     scheme: Scheme,
+    /// Changes heard of since the start (a late first answer must not undo them).
+    changes: u32,
     /// GTK's theme before anything was changed, for desktops without GNOME's settings.
     startup_theme: String,
     gsettings: Option<gio::Settings>,
@@ -61,7 +63,7 @@ pub fn follow() {
             },
         )
     });
-    STATE.with(|s| *s.borrow_mut() = Some(State { scheme, startup_theme, gsettings, _portal: portal }));
+    STATE.with(|s| *s.borrow_mut() = Some(State { scheme, changes: 0, startup_theme, gsettings, _portal: portal }));
     apply();
     // The portal knows the scheme where GNOME's settings do not.
     glib::spawn_future_local(async {
@@ -70,15 +72,25 @@ pub fn follow() {
         let reply = conn
             .call_future(Some("org.freedesktop.portal.Desktop"), "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "ReadOne", Some(&args), None, gio::DBusCallFlags::NONE, 2000)
             .await;
-        if let Some(v) = reply.ok().and_then(|r| r.child_value(0).as_variant()).and_then(|v| v.as_variant().or(Some(v))).and_then(|v| v.get::<u32>()) {
-            set_scheme(Scheme::from_portal(v));
+        // The value comes wrapped once, or twice by older portals.
+        let unwrap = |v: glib::Variant| if v.is_type(glib::VariantTy::VARIANT) { v.as_variant() } else { Some(v) };
+        if let Some(v) = reply.ok().map(|r| r.child_value(0)).and_then(unwrap).and_then(unwrap).and_then(|v| v.get::<u32>()) {
+            // Only if nothing changed while the portal was asked.
+            if STATE.with(|s| s.borrow().as_ref().is_some_and(|st| st.changes == 0)) {
+                set_scheme(Scheme::from_portal(v));
+            }
         }
     });
 }
 
 /// A new colour scheme (from the desktop, or the self-test).
 pub fn set_scheme(scheme: Scheme) {
-    let changed = STATE.with(|s| s.borrow_mut().as_mut().is_some_and(|st| std::mem::replace(&mut st.scheme, scheme) != scheme));
+    let changed = STATE.with(|s| {
+        s.borrow_mut().as_mut().is_some_and(|st| {
+            st.changes += 1;
+            std::mem::replace(&mut st.scheme, scheme) != scheme
+        })
+    });
     if changed {
         apply();
     }
