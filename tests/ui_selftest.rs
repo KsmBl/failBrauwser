@@ -148,6 +148,11 @@ fn unmounted_drives_in_the_side_panel() {
 }
 
 #[test]
+fn light_and_dark_follow_the_desktop() {
+    run("appearance.fbt", |_| {});
+}
+
+#[test]
 fn network_page() {
     run_checked(
         "network.fbt",

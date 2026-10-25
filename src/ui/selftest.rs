@@ -588,6 +588,19 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let (row, item) = arg.split_once(" : ").ok_or("usage: network-menu <row> : <item>")?;
             super::network::menu_item(&w.current_pane(), row.trim(), item.trim())?;
         }
+        "color-scheme" => {
+            // color-scheme dark|light|default: as if the desktop switched.
+            let scheme = match arg {
+                "dark" => failbrauwser::appearance::Scheme::Dark,
+                "light" => failbrauwser::appearance::Scheme::Light,
+                _ => failbrauwser::appearance::Scheme::Default,
+            };
+            super::appearance::set_scheme(scheme);
+        }
+        "wait-dark" | "wait-light" => {
+            let want = cmd == "wait-dark";
+            wait(r, move |r| Ok(super::appearance::window_is_dark(r.window.win.upcast_ref()) == Some(want)));
+        }
         "wait-drive-text" => {
             // wait-drive-text <title> : <text>  (a row of that drive shows the text)
             let (title, text) = arg.split_once(" : ").ok_or("usage: wait-drive-text <title> : <text>")?;
