@@ -2,6 +2,7 @@
 //! so it can be unit tested headless.
 
 pub mod actions;
+pub mod appearance;
 pub mod archive;
 pub mod clipformat;
 pub mod fs;

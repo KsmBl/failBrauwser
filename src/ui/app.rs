@@ -149,6 +149,7 @@ pub fn run() -> glib::ExitCode {
     app.connect_startup(move |app| {
         gtk::Window::set_default_icon_name(&icon_name());
         super::style::install();
+        super::appearance::follow();
         let settings = Rc::new(RefCell::new(Settings::load()));
         let actx = Rc::new(AppCtx {
             app: app.clone(),
