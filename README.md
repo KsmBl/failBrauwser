@@ -20,6 +20,9 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
 - **Drives page** with every volume, its fill level and mount point; mount, unmount and eject
   without freezing the window, and a properties window per drive (UUID, partition, model,
   serial, SSD or HDD, mount options, …).
+- **Network page** with the computers sharing files on your network; a double click shows the
+  folders one shares, entering a folder asks for a password where the server wants one, and
+  computers and folders pin to the side panel.
 - **Phones and cameras** next to the USB sticks under their own name (“Pixel 7”), one row per
   storage with its fill level; open and eject them there, and a locked phone tells you what
   to tap.
@@ -92,7 +95,7 @@ that; windows then take a moment longer the first time).
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>T</kbd> | New window / tab |
 | <kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd>, <kbd>Backspace</kbd> | Back, forward, up |
-| <kbd>Alt</kbd>+<kbd>Home</kbd> / <kbd>Alt</kbd>+<kbd>D</kbd> | Home / Drives |
+| <kbd>Alt</kbd>+<kbd>Home</kbd> / <kbd>Alt</kbd>+<kbd>D</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> | Home / Drives / Network |
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | Type a location (also paths through archives: `~/a.zip/docs`) |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> | Copy, cut, paste (works with other file managers too) |
 | <kbd>F2</kbd>, <kbd>Delete</kbd>, <kbd>Shift</kbd>+<kbd>Delete</kbd> | Rename, move to trash, delete |
@@ -114,6 +117,19 @@ local network (searched in the background, about two seconds) and, once a server
 with its slash, that server's shares. Home and Drives are in the side panel.
 Network addresses also open from the command line (`failbrauwser smb://nas/share`) and from
 other applications.
+
+**Network:** the *Network* entry of the side panel (<kbd>Alt</kbd>+<kbd>N</kbd>, *Go →
+Network*) lists the computers sharing files: the ones answering for SMB on the local network
+(each address is asked, about two seconds; the search is kept for a minute, the button at the
+top searches again), the ones GVfs announces (DNS-SD, WS-Discovery) and the servers of
+addresses opened before. Only computers are listed. A double click (or <kbd>Enter</kbd>) on
+one shows the folders it shares (`network:///nas` in the location bar), asking for a user name
+and password first if the server wants one; hidden shares (`IPC$`, `C$`) are left out.
+Entering a folder mounts it through GVfs, with the password dialog where needed, and opens
+it. Right-click a computer or a folder to open it in a new tab, *Pin to Side Panel* (it goes
+below *Network* and opens with a click from there; rename, move or remove it like any
+entry), create a link on the desktop or copy its address. Without GVfs's SMB support
+(`gvfs-smb`) the folders are asked of `smbclient` as a guest.
 
 **Shares that stop answering:** before a share is listed or copied to, failBrauwser asks it
 with a timeout, so a server that went away (or a stuck GVfs) never freezes the window. The
@@ -140,7 +156,8 @@ share does not hold up the others.
 **Folder tree:** *View → Folder Tree → Tree Starts At* the current folder, your home folder or
 `/`.
 
-**Side panel entries:** Drives, Home, Desktop, Trash, your folders and the mounted volumes,
+**Side panel entries:** Drives, Home, Desktop, Network, Trash, your folders, pinned network
+places and the mounted volumes,
 in the order you like. Right-click an entry to rename, move, hide or remove it (built-in
 entries can only be hidden), or to eject a volume; right-click the empty space to add the
 current folder or show a hidden entry again. Drag entries to reorder them, and drop folders
@@ -347,6 +364,7 @@ src/
     archive/       helper client, archive tree, VFS (nested archives, write-back)
     location.rs    folders, paths through archives, the drives page
     remote.rs      network address history, SMB servers on the local network
+    network.rs     the Network page's computers (found, announced, opened before) and shares
     drives.rs      UDisks2 / mount table, fill levels
     devices.rs     phones and cameras (MTP, PTP, AFC): kinds, names, advice when they fail
     config.rs      settings
