@@ -1,0 +1,11 @@
+# Big folders and the files of many subfolders load without freezing the window.
+open $T
+watch-stalls
+open $T/flat
+wait-count 15000
+expect-max-stall 1500
+action win.view-mode icons
+open $T/tree
+status-button subfolders
+wait-count 15150
+expect-max-stall 1500

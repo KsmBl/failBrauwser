@@ -1,0 +1,42 @@
+# The buttons at the left of the status bar: everything, files only, folders only (one at a
+# time), and the files of all subfolders in one list.
+open $T/w
+expect-pressed all
+wait-shown a.txt | b.png | docs | pics
+status-button files
+expect-pressed files
+wait-shown a.txt | b.png
+status-button folders
+expect-pressed folders
+wait-shown docs | pics
+status-button all
+wait-shown a.txt | b.png | docs | pics
+# Files of all subfolders, deep ones too; the Folder column says where.
+status-button subfolders
+expect-pressed all | subfolders
+wait-location $T/w — with subfolders
+wait-shown a.txt | b.png | docs | deep | notes.txt | photo.jpg | pics | plan.txt
+expect-title w
+status-button files
+wait-shown a.txt | b.png | notes.txt | photo.jpg | plan.txt
+# Opening a folder keeps showing subfolders; Up too.
+status-button folders
+wait-shown deep | docs | pics
+open $T/w/docs
+wait-location $T/w/docs — with subfolders
+wait-shown deep
+status-button files
+wait-shown notes.txt | plan.txt
+action win.up
+wait-location $T/w — with subfolders
+# Off again: the folder as it is.
+status-button subfolders
+expect-pressed files
+wait-location $T/w
+wait-shown a.txt | b.png
+# Not where there are no subfolders to search.
+action win.drives
+expect-disabled win.show-subfolders
+# Files only is kept for the next start.
+expect-pressed files
+sleep 1500

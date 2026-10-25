@@ -159,6 +159,8 @@ impl Window {
     /// Hook for features that attach to a freshly built window (side panel, drives page).
     fn after_build(self: &Rc<Self>) {
         super::summary::attach(self, &self.statusbar);
+        super::showfilter::install_actions(self);
+        super::showfilter::attach(&self.statusbar);
         super::extensions::window_created(self);
     }
 

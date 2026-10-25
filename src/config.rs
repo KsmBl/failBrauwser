@@ -36,6 +36,41 @@ pub enum ViewMode {
     Icons,
 }
 
+/// Which entries a folder shows: everything, only files, or only folders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowOnly {
+    Everything,
+    Files,
+    Folders,
+}
+
+impl ShowOnly {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShowOnly::Everything => "all",
+            ShowOnly::Files => "files",
+            ShowOnly::Folders => "folders",
+        }
+    }
+
+    pub fn parse(s: &str) -> ShowOnly {
+        match s {
+            "files" => ShowOnly::Files,
+            "folders" => ShowOnly::Folders,
+            _ => ShowOnly::Everything,
+        }
+    }
+
+    /// Whether an entry (a folder or not) is shown.
+    pub fn allows(self, is_dir: bool) -> bool {
+        match self {
+            ShowOnly::Everything => true,
+            ShowOnly::Files => !is_dir,
+            ShowOnly::Folders => is_dir,
+        }
+    }
+}
+
 /// Icon sizes (pixels) the list can be zoomed through.
 pub const LIST_ZOOM: &[i32] = &[16, 24, 32, 48, 64];
 /// Icon sizes (pixels) the icon view can be zoomed through.
@@ -47,6 +82,7 @@ pub const COLUMN_IDS: &[&str] = &["name", "size", "type", "modified", "permissio
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub show_hidden: bool,
+    pub show_only: ShowOnly,
     pub folders_first: bool,
     pub view_mode: ViewMode,
     /// Visible column ids from [`COLUMN_IDS`].
@@ -77,6 +113,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             show_hidden: false,
+            show_only: ShowOnly::Everything,
             folders_first: true,
             view_mode: ViewMode::List,
             columns: ["name", "size", "type", "modified"].iter().map(|s| s.to_string()).collect(),
@@ -140,6 +177,9 @@ impl Settings {
         if let Ok(v) = kf.integer(GROUP, "zoom_icons") {
             s.zoom_icons = (v.max(0) as usize).min(ICON_ZOOM.len() - 1);
         }
+        if let Ok(v) = kf.string(GROUP, "show_only") {
+            s.show_only = ShowOnly::parse(&v);
+        }
         if let Ok(v) = kf.string(GROUP, "view_mode") {
             s.view_mode = if v == "icons" { ViewMode::Icons } else { ViewMode::List };
         }
@@ -179,6 +219,7 @@ impl Settings {
         let kf = glib::KeyFile::new();
         kf.set_boolean(GROUP, "show_hidden", self.show_hidden);
         kf.set_boolean(GROUP, "folders_first", self.folders_first);
+        kf.set_string(GROUP, "show_only", self.show_only.as_str());
         kf.set_string(GROUP, "view_mode", if self.view_mode == ViewMode::Icons { "icons" } else { "list" });
         // Key file list syntax: items separated and terminated by ';'.
         kf.set_string(GROUP, "columns", &format!("{};", self.columns.join(";")));
@@ -264,6 +305,7 @@ mod tests {
         let path = dir.path().join("sub/settings.ini");
         let mut s = Settings::default();
         s.show_hidden = true;
+        s.show_only = ShowOnly::Folders;
         s.view_mode = ViewMode::Icons;
         s.tree_root = TreeRoot::Current;
         s.set_column_visible("permissions", true);
@@ -272,6 +314,15 @@ mod tests {
         s.zoom_icons = 4;
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);
+    }
+
+    #[test]
+    fn show_only_filters_entries() {
+        assert!(ShowOnly::Everything.allows(true) && ShowOnly::Everything.allows(false));
+        assert!(ShowOnly::Files.allows(false) && !ShowOnly::Files.allows(true));
+        assert!(ShowOnly::Folders.allows(true) && !ShowOnly::Folders.allows(false));
+        assert_eq!(ShowOnly::parse("sideways"), ShowOnly::Everything);
+        assert_eq!(ShowOnly::parse(ShowOnly::Files.as_str()), ShowOnly::Files);
     }
 
     #[test]

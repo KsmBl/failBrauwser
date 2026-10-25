@@ -153,6 +153,45 @@ fn light_and_dark_follow_the_desktop() {
 }
 
 #[test]
+fn show_only_and_subfolders() {
+    run_checked(
+        "show_only.fbt",
+        &[],
+        |t| {
+            let w = t.join("w");
+            for d in ["docs/deep", "pics"] {
+                std::fs::create_dir_all(w.join(d)).unwrap();
+            }
+            for f in ["a.txt", "b.png", "docs/notes.txt", "docs/deep/plan.txt", "pics/photo.jpg"] {
+                std::fs::write(w.join(f), "x").unwrap();
+            }
+        },
+        |t| {
+            // Files only is kept for the next start; the subfolder view is not.
+            let ini = std::fs::read_to_string(t.join("config/failbrauwser/settings.ini")).unwrap_or_default();
+            assert!(ini.contains("show_only=files"), "{ini}");
+        },
+    );
+}
+
+#[test]
+fn big_listings_do_not_freeze_the_window() {
+    run("big_listings.fbt", |t| {
+        std::fs::create_dir_all(t.join("flat")).unwrap();
+        for i in 0..15000 {
+            std::fs::write(t.join(format!("flat/f{i:05}.txt")), "").unwrap();
+        }
+        for d in 0..150 {
+            let dir = t.join(format!("tree/d{d:03}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            for i in 0..100 {
+                std::fs::write(dir.join(format!("f{i:03}.txt")), "").unwrap();
+            }
+        }
+    });
+}
+
+#[test]
 fn network_page() {
     run_checked(
         "network.fbt",

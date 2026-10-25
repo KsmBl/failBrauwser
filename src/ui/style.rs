@@ -38,8 +38,9 @@ list.fb-drives levelbar trough { min-height: 4px; padding: 0; }
 list.fb-drives levelbar block { min-height: 4px; }
 separator.fb-drives-line { margin: 4px 8px; }
 
-/* Status bar: one line of text, not a band. */
-statusbar { padding: 1px 8px; }
+/* Status bar: one line of text, not a band; its buttons no taller than the text. */
+statusbar { padding: 0 8px 0 2px; }
+statusbar button.fb-status-toggle { min-height: 0; min-width: 0; padding: 1px 4px; margin: 1px 0; }
 "#;
 
 thread_local! {

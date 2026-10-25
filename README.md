@@ -224,6 +224,14 @@ them, desktop-wide (`~/.config/mimeapps.list`).
 **Zoom:** <kbd>Ctrl</kbd>+scroll, <kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>-</kbd> or
 *View → Zoom*; the list and the icon view keep their own size.
 
+**Status bar buttons:** at its left, three buttons of which one is pressed — show files and
+folders, files only, or folders only (kept for the next start; also in *View*) — and a fourth
+that lists the files of all subfolders, however deep, in one list with a *Folder* column
+(*View → Files from Subfolders*). It stays on while you open folders, go up or use the path
+bar, until you turn it off; with *Files Only* it gives every file below a folder at once.
+The list fills in while the folders are read, and the window stays usable meanwhile, also
+for a hundred thousand files and more.
+
 **Search:** <kbd>Ctrl</kbd>+<kbd>F</kbd> opens the search bar above the list. Type part of a
 name, or a pattern with `*` and `?`; results stream in with the folder they were found in,
 and act like files anywhere else (open, copy, rename, trash, properties). *In subfolders* and

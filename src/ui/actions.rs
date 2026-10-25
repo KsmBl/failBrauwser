@@ -198,6 +198,12 @@ pub fn menubar_model() -> gio::Menu {
         item(s, "Side _Panel", "win.show-sidebar");
     });
     section(&view, |s| {
+        s.append(Some("_Everything"), Some("win.show-only::all"));
+        s.append(Some("Files _Only"), Some("win.show-only::files"));
+        s.append(Some("Fold_ers Only"), Some("win.show-only::folders"));
+        item(s, "Files from _Subfolders", "win.show-subfolders");
+    });
+    section(&view, |s| {
         s.append(Some("as _Detailed List"), Some("win.view-mode::list"));
         s.append(Some("as _Icons"), Some("win.view-mode::icons"));
     });
