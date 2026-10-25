@@ -12,7 +12,8 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
   rename, delete or create files in it like anywhere else. Open a file from inside an archive,
   edit it, save — the archive is updated. *Compress…* writes about 350 of these formats.
 - **Looks like your desktop.** Native GTK widgets and your GTK theme, icon theme and fonts;
-  nothing is custom-drawn.
+  nothing is custom-drawn. Switching the desktop between light and dark mode restyles every
+  window at once.
 - **Opens instantly.** After the first start a background instance keeps running; a new
   window appears ~40 ms after you click the launcher, using no CPU while idle.
 - **Drives in the side panel** with a fill bar under each mount point; the system's own
@@ -201,6 +202,13 @@ some desktops want before they trust it; a second link of the same name gets a n
 The Drives entry has no address other programs know, so its link is an entry of type
 `Application` that starts `failbrauwser drives:///` and opens the drives page.
 
+**Light and dark mode:** failBrauwser follows the desktop's colour scheme while it runs (the
+`org.freedesktop.appearance` portal setting and GNOME's `color-scheme`, as the desktop's
+dark-mode switch sets them). Dark uses the theme's dark variant (or its "-dark" sibling,
+`Arc` → `Arc-Dark`); light goes back to the light theme a dark one belongs to
+(`Adwaita-dark` → `Adwaita`) and overrides `gtk-application-prefer-dark-theme` from
+`settings.ini`. Without a preference the theme stays as GTK loads it.
+
 **Thumbnails:** *View → Show Thumbnails*. failBrauwser uses the freedesktop.org thumbnail
 cache (`~/.cache/thumbnails`), so thumbnails made by Thunar, Nautilus or Dolphin are reused
 and the ones it makes are theirs too. Missing ones are requested from Tumbler (the thumbnailer
@@ -373,6 +381,7 @@ src/
     shortcuts.rs   side panel entries: order, names, hidden ones, saved
     thumbs.rs      freedesktop.org thumbnail cache
     actions.rs     custom actions (Thunar uca.xml)
+    appearance.rs  light or dark: the theme variant for the desktop's colour scheme
   ui/              GTK: window, tabs, sidebar, drives page, jobs, clipboard, dnd, archives
 helper/FbArchive/  fb-archive: C# (NativeAOT) host for CompressionWorkbench's archive logic
 tests/             engine, archive and headless UI tests
