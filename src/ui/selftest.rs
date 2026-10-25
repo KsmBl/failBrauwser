@@ -38,6 +38,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 thread_local! {
+    /// When the stall watcher last ran, and the longest gap between its runs.
+    static STALL: Cell<(Instant, Duration)> = Cell::new((Instant::now(), Duration::ZERO));
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
     static ANSWER: Cell<Option<Answer>> = const { Cell::new(None) };
     static TEXT: RefCell<VecDeque<String>> = const { RefCell::new(VecDeque::new()) };
@@ -504,6 +506,60 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             // Plays an editor: rewrites the file that was opened.
             let path = OPENED.with(|o| o.borrow().clone()).ok_or("nothing opened")?;
             std::fs::write(&path, arg).map_err(|e| e.to_string())?;
+        }
+        "watch-stalls" => {
+            // From now on, the longest time the window did not get to run (frozen).
+            STALL.with(|s| s.set((Instant::now(), Duration::ZERO)));
+            glib::timeout_add_local(Duration::from_millis(20), || {
+                STALL.with(|s| {
+                    let (last, max) = s.get();
+                    s.set((Instant::now(), max.max(last.elapsed())));
+                });
+                glib::ControlFlow::Continue
+            });
+        }
+        "wait-count" => {
+            // wait-count <n>: the listing (or search) is complete with n rows.
+            let n: usize = arg.parse().map_err(|_| "bad number")?;
+            wait(r, move |r| {
+                let p = r.window.current_pane();
+                Ok(!p.is_searching() && p.item_count() == n && idle(r))
+            });
+        }
+        "expect-max-stall" => {
+            // expect-max-stall <ms>: the window was never frozen longer than that.
+            let limit: u64 = arg.parse().map_err(|_| "bad number")?;
+            let max = STALL.with(|s| s.get().1);
+            if max > Duration::from_millis(limit) {
+                return Err(format!("the window froze for {} ms", max.as_millis()));
+            }
+            eprintln!("longest freeze: {} ms", max.as_millis());
+        }
+        "status-button" => {
+            // status-button all|files|folders|subfolders: clicks that button of the status bar.
+            fn named(w: &gtk::Widget, name: &str) -> Option<gtk::Button> {
+                if w.widget_name() == name {
+                    return w.downcast_ref::<gtk::Button>().cloned();
+                }
+                w.downcast_ref::<gtk::Container>()?.children().iter().find_map(|c| named(c, name))
+            }
+            let b = named(w.win.upcast_ref(), &format!("show-{arg}")).ok_or("no such button")?;
+            if !b.is_sensitive() {
+                return Err("the button is disabled".into());
+            }
+            b.clicked();
+        }
+        "expect-pressed" => {
+            let got = super::showfilter::pressed(&w).join(" | ");
+            if got != arg {
+                return Err(format!("pressed: {got:?}"));
+            }
+        }
+        "wait-shown" => {
+            // wait-shown a | b | c: exactly these names are listed (in any order).
+            let mut want: Vec<String> = arg.split(" | ").map(str::to_string).filter(|s| !s.is_empty()).collect();
+            want.sort();
+            wait(r, move |r| Ok(r.window.current_pane().shown_names() == want && idle(r)));
         }
         "expect-rows" => {
             let n: usize = arg.parse().map_err(|_| "bad number")?;
