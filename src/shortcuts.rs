@@ -1,5 +1,5 @@
-//! The entries of the side panel: built-in places (Drives, Home, Desktop, Trash, mounted
-//! volumes) and folders the user added, in the user's order, each one hideable and
+//! The entries of the side panel: built-in places (Drives, Home, Desktop, Network, Trash,
+//! mounted volumes) and folders and network places the user added, in the user's order, each one hideable and
 //! renameable. Stored in `$XDG_CONFIG_HOME/failbrauwser/shortcuts`, one entry per line.
 //!
 //! On the first start the folders bookmarked in GTK (`~/.config/gtk-3.0/bookmarks`, shared
@@ -17,7 +17,12 @@ pub enum Kind {
     Trash,
     /// Mounted volumes (USB drives, network shares): as many rows as there are mounts.
     Mounts,
+    /// The computers sharing files on the network.
+    Network,
     Dir(PathBuf),
+    /// A network place pinned by its address: a shared folder (`smb://nas/Music`) or a
+    /// computer (`network:///nas`).
+    Remote(String),
 }
 
 impl Kind {
@@ -28,13 +33,15 @@ impl Kind {
             Kind::Desktop => "Desktop".into(),
             Kind::Trash => "Trash".into(),
             Kind::Mounts => "Mounted volumes".into(),
+            Kind::Network => "Network".into(),
+            Kind::Remote(uri) => crate::network::uri_name(uri),
             Kind::Dir(p) => p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned()),
         }
     }
 
     /// Built-in entries can be hidden but not removed.
     pub fn is_builtin(&self) -> bool {
-        !matches!(self, Kind::Dir(_))
+        !matches!(self, Kind::Dir(_) | Kind::Remote(_))
     }
 
     fn key(&self) -> String {
@@ -44,6 +51,8 @@ impl Kind {
             Kind::Desktop => "desktop".into(),
             Kind::Trash => "trash".into(),
             Kind::Mounts => "mounts".into(),
+            Kind::Network => "network".into(),
+            Kind::Remote(uri) => uri.clone(),
             Kind::Dir(p) => glib::filename_to_uri(p, None).map(|u| u.to_string()).unwrap_or_default(),
         }
     }
@@ -55,7 +64,10 @@ impl Kind {
             "desktop" => Kind::Desktop,
             "trash" => Kind::Trash,
             "mounts" => Kind::Mounts,
-            uri => Kind::Dir(glib::filename_from_uri(uri).ok()?.0),
+            "network" => Kind::Network,
+            uri if uri.starts_with("file:") => Kind::Dir(glib::filename_from_uri(uri).ok()?.0),
+            uri if uri.contains("://") => Kind::Remote(uri.to_string()),
+            _ => return None,
         })
     }
 }
@@ -95,6 +107,7 @@ impl Shortcuts {
                 v.push(Shortcut { kind: Kind::Dir(p), name, hidden: false });
             }
         }
+        v.push(Shortcut::new(Kind::Network));
         v.push(Shortcut::new(Kind::Trash));
         v.push(Shortcut::new(Kind::Mounts));
         Shortcuts(v)
@@ -122,6 +135,11 @@ impl Shortcuts {
             if !v.iter().any(|s| s.kind == k) {
                 v.push(Shortcut::new(k));
             }
+        }
+        // Network came later: it goes in before the trash.
+        if !v.iter().any(|s| s.kind == Kind::Network) {
+            let at = v.iter().position(|s| s.kind == Kind::Trash).unwrap_or(v.len());
+            v.insert(at, Shortcut::new(Kind::Network));
         }
         Shortcuts(v)
     }
@@ -161,6 +179,23 @@ impl Shortcuts {
             }
         }
         self.0.insert(at, entry);
+        at
+    }
+
+    /// Pins a network place (`smb://…`, `network:///host`) after the Network entry (at the end
+    /// without one), or shows it again where it is. Returns its index.
+    pub fn add_remote(&mut self, uri: &str) -> usize {
+        let kind = Kind::Remote(uri.trim_end_matches('/').to_string());
+        if let Some(i) = self.0.iter().position(|s| s.kind == kind) {
+            self.0[i].hidden = false;
+            return i;
+        }
+        // After the Network entry and the places already pinned there.
+        let mut at = self.0.iter().position(|s| s.kind == Kind::Network).map_or(self.0.len(), |i| i + 1);
+        while self.0.get(at).is_some_and(|s| matches!(s.kind, Kind::Remote(_))) {
+            at += 1;
+        }
+        self.0.insert(at, Shortcut::new(kind));
         at
     }
 
@@ -226,7 +261,7 @@ mod tests {
         std::fs::write(&bm, "file:///home/me/Games Spiele\nfile:///home/me/My%20Docs\nsmb://nas/share NAS\n").unwrap();
         let s = Shortcuts::load_from(&dir.path().join("none"), &bm);
         let labels: Vec<String> = s.0.iter().map(Shortcut::label).collect();
-        assert_eq!(labels, ["Drives", "Home", "Desktop", "Spiele", "My Docs", "Trash", "Mounted volumes"]);
+        assert_eq!(labels, ["Drives", "Home", "Desktop", "Spiele", "My Docs", "Network", "Trash", "Mounted volumes"]);
         assert_eq!(s.0[4].kind, Kind::Dir("/home/me/My Docs".into()));
     }
 
@@ -251,6 +286,7 @@ mod tests {
                 ("Home".into(), true),
                 ("Desktop".into(), false),
                 ("Drives".into(), false),
+                ("Network".into(), false),
                 ("Trash".into(), false),
                 ("Mounted volumes".into(), false)
             ]
@@ -285,7 +321,28 @@ mod tests {
         std::fs::write(&path, "0\thome\t\n1\ttrash\tBin\ngarbage\n0\tfile:///srv\t\n0\thome\t\n").unwrap();
         let s = Shortcuts::load_from(&path, Path::new("/nonexistent"));
         let keys: Vec<String> = s.0.iter().map(|e| e.label()).collect();
-        assert_eq!(keys, ["Home", "Bin", "srv", "Drives", "Desktop", "Mounted volumes"]);
-        assert!(s.0[1].hidden);
+        assert_eq!(keys, ["Home", "Network", "Bin", "srv", "Drives", "Desktop", "Mounted volumes"]);
+        assert!(s.0[2].hidden);
+    }
+
+    #[test]
+    fn network_places_are_pinned_after_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shortcuts");
+        let mut s = Shortcuts::defaults(Vec::new());
+        let a = s.add_remote("smb://nas.fritz.box/My%20Music/");
+        let b = s.add_remote("network:///nas");
+        let net = s.0.iter().position(|e| e.kind == Kind::Network).unwrap();
+        assert_eq!((a, b), (net + 1, net + 2));
+        assert_eq!(s.add_remote("smb://nas.fritz.box/My%20Music"), a);
+        assert_eq!(s.0[a].label(), "My Music on nas");
+        assert_eq!(s.0[b].label(), "nas");
+        assert!(!s.0[a].kind.is_builtin());
+        s.save_to(&path).unwrap();
+        let mut back = Shortcuts::load_from(&path, Path::new("/nonexistent"));
+        assert_eq!(back, s);
+        // Pinned places can be removed, unlike Network itself.
+        assert!(back.remove(a));
+        assert!(!back.remove(net));
     }
 }

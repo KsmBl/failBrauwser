@@ -386,7 +386,7 @@ fn transfer_work(ctx: &JobCtx, sources: Vec<ClipSource>, dest: &Location, mode: 
                     delete::delete_permanently(ctx, &moved_local)?;
                 }
             }
-            Location::Drives | Location::Trash | Location::Search(_) => {}
+            Location::Drives | Location::Trash | Location::Search(_) | Location::Network(_) => {}
         }
         if mode == Mode::Move {
             for (a, e) in &from_archives {

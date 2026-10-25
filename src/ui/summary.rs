@@ -131,7 +131,7 @@ impl Summary {
         let here = counts(files, dirs);
         self.label.set_tooltip_text(None);
         match pane.location() {
-            Location::Drives => self.label.set_text(""),
+            Location::Drives | Location::Network(_) => self.label.set_text(""),
             Location::Search(_) => {
                 let n = files + dirs;
                 let state = if pane.is_searching() { " · searching…" } else { "" };

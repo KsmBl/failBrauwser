@@ -67,10 +67,14 @@ pub enum Location {
     /// The trash (freedesktop.org spec; shared with other file managers).
     Trash,
     Search(SearchLoc),
+    /// The computers sharing files on the local network (empty), or the shared folders of
+    /// one of them (its name or address).
+    Network(String),
 }
 
 pub const DRIVES_URI: &str = "drives:///";
 pub const TRASH_URI: &str = "trash:///";
+pub const NETWORK_URI: &str = "network:///";
 
 impl Location {
     pub fn home() -> Location {
@@ -96,6 +100,7 @@ impl Location {
             Location::Drives => DRIVES_URI.into(),
             Location::Trash => TRASH_URI.into(),
             Location::Search(s) => format!("{} — search “{}”", s.root.display(), s.query),
+            Location::Network(host) => format!("{NETWORK_URI}{host}"),
         }
     }
 
@@ -124,6 +129,8 @@ impl Location {
             Location::Drives => "Drives".into(),
             Location::Trash => "Trash".into(),
             Location::Search(s) => format!("Search “{}”", s.query),
+            Location::Network(host) if host.is_empty() => "Network".into(),
+            Location::Network(host) => host.clone(),
         }
     }
 
@@ -143,6 +150,7 @@ impl Location {
             }
             Location::Drives | Location::Trash => None,
             Location::Search(s) => Some(Location::Dir(s.root.clone())),
+            Location::Network(host) => (!host.is_empty()).then(|| Location::Network(String::new())),
         }
     }
 
@@ -151,7 +159,7 @@ impl Location {
         match self {
             Location::Dir(p) => Some(Location::Dir(p.join(name))),
             Location::Archive(a) => Some(Location::Archive(a.with_inner(&a.entry_path(name)))),
-            Location::Drives | Location::Trash | Location::Search(_) => None,
+            Location::Drives | Location::Trash | Location::Search(_) | Location::Network(_) => None,
         }
     }
 
@@ -168,7 +176,7 @@ impl Location {
             Location::Dir(p) => Some(p.clone()),
             Location::Archive(a) => a.file.parent().map(Path::to_path_buf),
             Location::Search(s) => Some(s.root.clone()),
-            Location::Drives | Location::Trash => None,
+            Location::Drives | Location::Trash | Location::Network(_) => None,
         }
     }
 
@@ -185,6 +193,10 @@ impl Location {
         }
         if t == "trash:" || t.starts_with("trash:/") {
             return Some(Location::Trash);
+        }
+        if t == "network:" || t.starts_with("network:/") {
+            let host = t.trim_start_matches("network:").trim_matches('/');
+            return Some(Location::Network(host.to_string()));
         }
         let path: PathBuf = if let Some(rest) = t.strip_prefix("file://") {
             gtk::glib::filename_from_uri(&format!("file://{rest}")).ok()?.0
@@ -295,6 +307,12 @@ mod tests {
         assert_eq!(p("trash:///"), Some(Location::Trash));
         assert_eq!(Location::Trash.display(), "trash:///");
         assert_eq!(Location::Trash.parent(), None);
+        assert_eq!(p("network:///"), Some(Location::Network(String::new())));
+        assert_eq!(p("network:///nas/"), Some(Location::Network("nas".into())));
+        assert_eq!(Location::Network("nas".into()).display(), "network:///nas");
+        assert_eq!(Location::Network("nas".into()).parent(), Some(Location::Network(String::new())));
+        assert_eq!(Location::Network(String::new()).title(), "Network");
+        assert_eq!(Location::Network(String::new()).parent(), None);
         assert_eq!(p("relative/path"), None);
         assert_eq!(p("~"), Some(Location::home()));
 

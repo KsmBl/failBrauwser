@@ -918,8 +918,9 @@ impl Pane {
         let mode = self.settings.borrow().view_mode;
         let focus = self.tree.has_focus() || self.icons.has_focus();
         let keys = self.selected_keys();
-        // The Drives page has no list or icon view; it stays until the location changes.
-        if self.location() != Location::Drives {
+        // The Drives and Network pages have no list or icon view; they stay until the
+        // location changes.
+        if !matches!(self.location(), Location::Drives | Location::Network(_)) {
             self.stack.set_visible_child_name(if mode == ViewMode::Icons { "icons" } else { "list" });
         }
         // Carry the selection over to the other view.
