@@ -73,6 +73,10 @@ pub struct Pane {
     weak: RefCell<Weak<Pane>>,
     /// Suppresses the sort-changed handler while the pane sets the sort itself.
     applying_sort: Cell<bool>,
+    /// Rows are streaming in unsorted (a search); sorted again before anything else loads.
+    unsorted: Cell<bool>,
+    /// Rows the icon view had when it last took the model during a streamed listing.
+    icons_rows: Cell<usize>,
     /// While > 0 the model is being changed in bulk: events are held back.
     quiet: Cell<u32>,
     selection_dirty: Cell<bool>,
@@ -184,6 +188,8 @@ impl Pane {
             listeners: RefCell::new(Vec::new()),
             weak: RefCell::new(Weak::new()),
             applying_sort: Cell::new(false),
+            unsorted: Cell::new(false),
+            icons_rows: Cell::new(0),
             quiet: Cell::new(0),
             selection_dirty: Cell::new(false),
             list_px,
@@ -261,6 +267,13 @@ impl Pane {
     pub fn item_count(&self) -> usize {
         self.st.borrow().rows.len()
     }
+    /// The names of the rows shown, sorted (tests).
+    pub fn shown_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.st.borrow().rows.values().map(|(i, _)| i.display_name()).collect();
+        v.sort();
+        v
+    }
+
     pub fn has_name(&self, name: &str) -> bool {
         self.st.borrow().all.iter().any(|i| i.display_name() == name)
     }
@@ -273,13 +286,61 @@ impl Pane {
         }
     }
 
+    /// Runs a change of many rows with the views let go of the model: they would otherwise
+    /// follow every single row (the icon view walks all its items for each one). Scroll
+    /// position and selection stay.
+    fn in_bulk<T>(&self, f: impl FnOnce() -> T) -> T {
+        let selected = self.selected_keys();
+        let scroll = [self.tree.vadjustment(), self.icons.vadjustment()].map(|a| a.map(|a| (a.value(), a)));
+        self.tree.set_model(None::<&gtk::ListStore>);
+        self.icons.set_model(None::<&gtk::ListStore>);
+        let r = f();
+        self.attach_views();
+        {
+            let st = self.st.borrow();
+            for k in selected {
+                if let Some((_, iter)) = st.rows.get(&k) {
+                    self.tree.selection().select_iter(iter);
+                    if let Some(p) = self.store.path(iter) {
+                        self.icons.select_path(&p);
+                    }
+                }
+            }
+        }
+        for (v, adj) in scroll.into_iter().flatten() {
+            adj.set_value(v);
+        }
+        r
+    }
+
+    /// Gives both views the model again (after bulk changes or a streamed listing).
+    fn attach_views(&self) {
+        if self.tree.model().is_none() {
+            self.tree.set_model(Some(&self.store));
+        }
+        if self.icons.model().is_none() {
+            self.icons.set_model(Some(&self.store));
+        }
+    }
+
+    /// While a listing streams in, the view not shown does without the model (the icon view
+    /// walks all its items for every row added); the shown one follows it.
+    fn detach_hidden_view(&self) {
+        if self.view_is_icons() {
+            self.tree.set_model(None::<&gtk::ListStore>);
+        } else {
+            self.icons.set_model(None::<&gtk::ListStore>);
+        }
+    }
+
     fn view_is_icons(&self) -> bool {
         self.stack.visible_child_name().as_deref() == Some("icons")
     }
 
     pub fn selected_keys(&self) -> Vec<u64> {
         // While rows are rebuilt the views are detached from the model.
-        if self.tree.model().is_none() || self.icons.model().is_none() {
+        let shown_has_model = if self.view_is_icons() { self.icons.model().is_some() } else { self.tree.model().is_some() };
+        if !shown_has_model {
             return Vec::new();
         }
         let paths: Vec<gtk::TreePath> = if self.view_is_icons() {
@@ -349,6 +410,16 @@ impl Pane {
     // ── Navigation ───────────────────────────────────────────────────
 
     pub fn navigate(&self, loc: Location) {
+        // While the files of subfolders are shown, every folder opened is shown that way.
+        let loc = match loc {
+            Location::Dir(d) if self.location().is_subfolder_listing() => Location::with_subfolders(d),
+            other => other,
+        };
+        self.navigate_exactly(loc);
+    }
+
+    /// Goes to `loc` as it is (leaving the subfolder view).
+    pub fn navigate_exactly(&self, loc: Location) {
         {
             let mut st = self.st.borrow_mut();
             if st.location == loc {
@@ -407,6 +478,11 @@ impl Pane {
         if let Some(c) = self.search_cancel.borrow_mut().take() {
             c.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        // A search left before it ended leaves the rows unsorted, and a view without them.
+        if self.unsorted.get() {
+            self.apply_sort();
+        }
+        self.attach_views();
         self.searching.set(false);
         // The Folder column exists only in search results.
         let is_search = matches!(loc, Location::Search(_));
@@ -541,6 +617,7 @@ impl Pane {
         // New rows have no thumbnails yet: ask again for what comes into view.
         super::thumbnails::reset(&self.me());
         let show_hidden = self.settings.borrow().show_hidden;
+        let show_only = self.settings.borrow().show_only;
         let scroll = if fresh { None } else { self.tree.vadjustment().map(|a| a.value()) };
         // Detached views do not react to every single insert.
         self.tree.set_model(None::<&gtk::ListStore>);
@@ -555,7 +632,7 @@ impl Pane {
         {
             let mut st = self.st.borrow_mut();
             let filter = self.filter.borrow();
-            let visible: Vec<Item> = st.all.iter().filter(|i| (show_hidden || !i.is_hidden()) && filter.matches(&i.display_name())).cloned().collect();
+            let visible: Vec<Item> = st.all.iter().filter(|i| (show_hidden || !i.is_hidden()) && show_only.allows(i.is_dir_like()) && filter.matches(&i.display_name())).cloned().collect();
             let names: Vec<String> = visible.iter().map(Item::display_name).collect();
             let ranks = model::ranks(names.iter().map(String::as_str));
             for (item, rank) in visible.into_iter().zip(ranks) {
@@ -677,6 +754,7 @@ impl Pane {
     /// Returns whether anything visible changed.
     fn apply_update_inner(&self, items: Vec<Item>) -> bool {
         let show_hidden = self.settings.borrow().show_hidden;
+        let show_only = self.settings.borrow().show_only;
         let now = glib::real_time() / 1_000_000;
         let mut changed_any = false;
         {
@@ -693,7 +771,7 @@ impl Pane {
             }
             let mut added = false;
             let filter = self.filter.borrow().clone();
-            for item in items.iter().filter(|i| (show_hidden || !i.is_hidden()) && filter.matches(&i.display_name())) {
+            for item in items.iter().filter(|i| (show_hidden || !i.is_hidden()) && show_only.allows(i.is_dir_like()) && filter.matches(&i.display_name())) {
                 let name = item.os_name();
                 match st.by_name.get(&name).copied() {
                     Some(key) => {
@@ -829,31 +907,144 @@ impl Pane {
                 let _ = tx.send_blocking(None);
             })
             .expect("spawn search thread");
+        // Rows stream in unsorted (sorting each one in was what made big lists stall the
+        // window); they are put in order once, at the end.
+        self.applying_sort.set(true);
+        self.store.set_unsorted();
+        self.applying_sort.set(false);
+        self.unsorted.set(true);
+        self.icons_rows.set(0);
         let me = self.me();
         glib::spawn_future_local(async move {
+            let mut told = std::time::Instant::now();
             while let Ok(msg) = rx.recv().await {
                 if me.generation() != generation {
                     return;
                 }
+                // Everything that arrived meanwhile goes in at once: the slower the window,
+                // the bigger the batches.
+                let mut batch = Vec::new();
+                let mut done = false;
                 match msg {
-                    Some(items) => me.append_items(items),
-                    None => {
-                        me.searching.set(false);
-                        me.emit(PaneEvent::Location);
-                        me.emit(PaneEvent::Contents);
-                        return;
+                    Some(items) => batch.extend(items),
+                    None => done = true,
+                }
+                while !done {
+                    match rx.try_recv() {
+                        Ok(Some(items)) => batch.extend(items),
+                        Ok(None) => done = true,
+                        Err(_) => break,
+                    }
+                }
+                // In pieces, with the window getting its turn in between.
+                while !batch.is_empty() {
+                    let rest = batch.split_off(batch.len().min(20000));
+                    me.append_items(std::mem::replace(&mut batch, rest));
+                    if !batch.is_empty() {
+                        glib::timeout_future(Duration::from_millis(5)).await;
+                        if me.generation() != generation {
+                            return;
+                        }
+                    }
+                }
+                if done {
+                    me.finish_search();
+                    return;
+                }
+                // The status bar, thumbnails and friends follow twice a second, not per batch.
+                if told.elapsed() >= Duration::from_millis(500) {
+                    told = std::time::Instant::now();
+                    me.emit(PaneEvent::Contents);
+                }
+                // A moment for the window to draw and take clicks between batches.
+                glib::timeout_future(Duration::from_millis(30)).await;
+            }
+        });
+    }
+
+    /// The search ended: the rows get their name order and are put in order, once. Sorted by
+    /// name, the order is worked out off the UI thread and the rows moved there in one go
+    /// (GTK's own sort of a big list holds the window for seconds); other columns sort as usual.
+    fn finish_search(&self) {
+        let generation = self.generation();
+        let (column, descending, folders_first) = {
+            let s = self.settings.borrow();
+            (s.sort_column.clone(), s.sort_descending, s.folders_first)
+        };
+        // The rows as they stand in the list, with what their order depends on.
+        let mut keys = Vec::new();
+        let mut rows = Vec::new();
+        {
+            let st = self.st.borrow();
+            if let Some(it) = self.store.iter_first() {
+                loop {
+                    let key: u64 = self.store.value(&it, model::COL_KEY as i32).get().unwrap_or_default();
+                    if let Some((item, _)) = st.rows.get(&key) {
+                        keys.push(key);
+                        rows.push((item.display_name(), item.is_dir_like()));
+                    }
+                    if !self.store.iter_next(&it) {
+                        break;
                     }
                 }
             }
+        }
+        let me = self.me();
+        glib::spawn_future_local(async move {
+            let Ok((rank, order)) = gio::spawn_blocking(move || model::name_order(&rows, folders_first, descending)).await else { return };
+            if me.generation() != generation {
+                return;
+            }
+            me.quietly(|| {
+                me.in_bulk(|| {
+                    let st = me.st.borrow();
+                    for (key, r) in keys.iter().zip(&rank) {
+                        if let Some((_, iter)) = st.rows.get(key) {
+                            me.store.set_value(iter, model::COL_RANK, &r.to_value());
+                        }
+                    }
+                    drop(st);
+                    if column == "name" && order.len() == me.store.iter_n_children(None) as usize {
+                        me.store.reorder(&order);
+                    } else {
+                        me.apply_sort();
+                    }
+                })
+            });
+            if column == "name" {
+                me.show_sort_indicator(descending);
+            }
+            me.searching.set(false);
+            me.emit(PaneEvent::Location);
+            me.emit(PaneEvent::Contents);
         });
+    }
+
+    /// The Name header shows the order the rows were put in by hand.
+    fn show_sort_indicator(&self, descending: bool) {
+        let name_id = model::sort_id_for("name") as i32;
+        for c in self.tree.columns() {
+            let on = c.sort_column_id() == name_id;
+            c.set_sort_indicator(on);
+            if on {
+                c.set_sort_order(if descending { gtk::SortType::Descending } else { gtk::SortType::Ascending });
+            }
+        }
     }
 
     /// Adds rows (search results as they arrive).
     fn append_items(&self, items: Vec<Item>) {
         let now = glib::real_time() / 1_000_000;
-        self.quietly(|| {
+        let show_only = self.settings.borrow().show_only;
+        self.detach_hidden_view();
+        let add = || {
             let mut st = self.st.borrow_mut();
             for item in items {
+                // All are kept; the ones filtered out show up when the filter changes.
+                if !show_only.allows(item.is_dir_like()) {
+                    st.all.push(item);
+                    continue;
+                }
                 let key = st.next_key;
                 st.next_key += 1;
                 let iter = self.store.append();
@@ -862,13 +1053,32 @@ impl Pane {
                 st.all.push(item.clone());
                 st.rows.insert(key, (item, iter));
             }
-            let rows: Vec<(String, gtk::TreeIter)> = st.rows.values().map(|(i, it)| (i.display_name(), it.clone())).collect();
-            let ranks = model::ranks(rows.iter().map(|(n, _)| n.as_str()));
-            for ((_, iter), rank) in rows.iter().zip(ranks) {
-                self.store.set_value(iter, model::COL_RANK, &rank.to_value());
+        };
+        if !self.view_is_icons() {
+            // The detailed list takes rows one by one.
+            self.quietly(add);
+            return;
+        }
+        // The icon view lays out all its items whenever it takes the model: it does so when
+        // the rows have doubled (and at the end), not for every batch.
+        let shown = self.icons.model().is_some();
+        let (selected, scroll) = if shown { (self.selected_keys(), self.icons.vadjustment().map(|a| a.value())) } else { (Vec::new(), None) };
+        self.icons.set_model(None::<&gtk::ListStore>);
+        self.quietly(add);
+        let rows = self.st.borrow().rows.len();
+        if rows >= 2 * self.icons_rows.get().max(500) || !shown && self.icons_rows.get() == 0 {
+            self.icons_rows.set(rows);
+            self.icons.set_model(Some(&self.store));
+            let st = self.st.borrow();
+            for k in selected {
+                if let Some(p) = st.rows.get(&k).and_then(|(_, it)| self.store.path(it)) {
+                    self.icons.select_path(&p);
+                }
             }
-        });
-        self.emit(PaneEvent::Contents);
+            if let (Some(v), Some(adj)) = (scroll, self.icons.vadjustment()) {
+                adj.set_value(v);
+            }
+        }
     }
 
     /// Selects `names` now if they are shown, otherwise once they appear (for a few
@@ -921,6 +1131,7 @@ impl Pane {
     // ── Views ────────────────────────────────────────────────────────
 
     pub fn apply_view_mode(&self) {
+        self.attach_views();
         let mode = self.settings.borrow().view_mode;
         let focus = self.tree.has_focus() || self.icons.has_focus();
         let keys = self.selected_keys();
@@ -1053,6 +1264,7 @@ impl Pane {
             let s = self.settings.borrow();
             (model::sort_id_for(&s.sort_column), s.sort_descending)
         };
+        self.unsorted.set(false);
         self.applying_sort.set(true);
         self.store.set_unsorted();
         self.store.set_sort_column_id(
@@ -1197,6 +1409,7 @@ impl Pane {
             if p.applying_sort.get() {
                 return;
             }
+            p.unsorted.set(false);
             if let Some((gtk::SortColumn::Index(i), order)) = store.sort_column_id() {
                 if let Some(id) = failbrauwser::config::COLUMN_IDS.get(i as usize) {
                     let mut s = p.settings.borrow_mut();

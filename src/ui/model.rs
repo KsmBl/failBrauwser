@@ -219,6 +219,21 @@ pub fn ranks<'a>(names: impl Iterator<Item = &'a str>) -> Vec<u32> {
     rank
 }
 
+/// The name ranks of rows (name, is a folder) and the order sorting by name puts them in:
+/// `order[new position] = old position`, folders first when asked (in both directions, like
+/// the sort functions). Done off the UI thread for big lists.
+pub fn name_order(rows: &[(String, bool)], folders_first: bool, descending: bool) -> (Vec<u32>, Vec<u32>) {
+    let rank = ranks(rows.iter().map(|(n, _)| n.as_str()));
+    let mut order: Vec<u32> = (0..rows.len() as u32).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = (a as usize, b as usize);
+        let dirs = if folders_first { rows[b].1.cmp(&rows[a].1) } else { Ordering::Equal };
+        let names = if descending { rank[b].cmp(&rank[a]) } else { rank[a].cmp(&rank[b]) };
+        dirs.then(names)
+    });
+    (rank, order)
+}
+
 /// Sort ids: the index of the column id in [`failbrauwser::config::COLUMN_IDS`].
 pub fn sort_id_for(column: &str) -> u32 {
     failbrauwser::config::COLUMN_IDS.iter().position(|c| *c == column).unwrap_or(0) as u32
@@ -278,6 +293,16 @@ pub fn install_sorting(store: &gtk::ListStore, folders_first: std::rc::Rc<std::c
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_order_puts_folders_first_both_ways() {
+        let rows: Vec<(String, bool)> = [("b10", false), ("dir", true), ("b2", false), ("A", false)].iter().map(|(n, d)| (n.to_string(), *d)).collect();
+        let (rank, order) = name_order(&rows, true, false);
+        assert_eq!(rank, vec![2, 3, 1, 0]);
+        assert_eq!(order, vec![1, 3, 2, 0]);
+        assert_eq!(name_order(&rows, true, true).1, vec![1, 0, 2, 3]);
+        assert_eq!(name_order(&rows, false, false).1, vec![3, 2, 0, 1]);
+    }
 
     #[test]
     fn ranks_follow_natural_order() {

@@ -54,9 +54,17 @@ impl ArchiveLoc {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SearchLoc {
     pub root: PathBuf,
+    /// Empty: every file and folder below `root` (the folder shown with its subfolders).
     pub query: String,
     /// Look inside archives too.
     pub archives: bool,
+}
+
+impl SearchLoc {
+    /// The folder with everything in its subfolders, rather than a search.
+    pub fn is_listing(&self) -> bool {
+        self.query.trim().is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -81,6 +89,16 @@ impl Location {
         Location::Dir(gtk::glib::home_dir())
     }
 
+    /// A folder shown with the files of all its subfolders.
+    pub fn with_subfolders(dir: PathBuf) -> Location {
+        Location::Search(SearchLoc { root: dir, query: String::new(), archives: false })
+    }
+
+    /// Whether this is a folder shown with the files of all its subfolders.
+    pub fn is_subfolder_listing(&self) -> bool {
+        matches!(self, Location::Search(s) if s.is_listing())
+    }
+
     /// The text shown in the location bar; [`Location::parse`] reads it back.
     pub fn display(&self) -> String {
         match self {
@@ -99,6 +117,7 @@ impl Location {
             }
             Location::Drives => DRIVES_URI.into(),
             Location::Trash => TRASH_URI.into(),
+            Location::Search(s) if s.is_listing() => format!("{} — with subfolders", s.root.display()),
             Location::Search(s) => format!("{} — search “{}”", s.root.display(), s.query),
             Location::Network(host) => format!("{NETWORK_URI}{host}"),
         }
@@ -128,6 +147,7 @@ impl Location {
             }
             Location::Drives => "Drives".into(),
             Location::Trash => "Trash".into(),
+            Location::Search(s) if s.is_listing() => Location::Dir(s.root.clone()).title(),
             Location::Search(s) => format!("Search “{}”", s.query),
             Location::Network(host) if host.is_empty() => "Network".into(),
             Location::Network(host) => host.clone(),
@@ -149,6 +169,8 @@ impl Location {
                 a.file.parent().map(|p| Location::Dir(p.to_path_buf()))
             }
             Location::Drives | Location::Trash => None,
+            // Up from a folder with its subfolders: the folder above it.
+            Location::Search(s) if s.is_listing() => s.root.parent().map(|p| Location::Dir(p.to_path_buf())),
             Location::Search(s) => Some(Location::Dir(s.root.clone())),
             Location::Network(host) => (!host.is_empty()).then(|| Location::Network(String::new())),
         }
@@ -307,6 +329,14 @@ mod tests {
         assert_eq!(p("trash:///"), Some(Location::Trash));
         assert_eq!(Location::Trash.display(), "trash:///");
         assert_eq!(Location::Trash.parent(), None);
+        let flat = Location::with_subfolders(d.join("sub"));
+        assert!(flat.is_subfolder_listing());
+        assert_eq!(flat.title(), "sub");
+        assert_eq!(flat.parent(), Some(Location::Dir(d.to_path_buf())));
+        assert!(flat.display().ends_with("sub — with subfolders"));
+        let search = Location::Search(SearchLoc { root: d.join("sub"), query: "a".into(), archives: false });
+        assert!(!search.is_subfolder_listing());
+        assert_eq!(search.parent(), Some(Location::Dir(d.join("sub"))));
         assert_eq!(p("network:///"), Some(Location::Network(String::new())));
         assert_eq!(p("network:///nas/"), Some(Location::Network("nas".into())));
         assert_eq!(Location::Network("nas".into()).display(), "network:///nas");
