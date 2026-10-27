@@ -44,6 +44,29 @@ fn file_operations() {
 }
 
 #[test]
+fn rename_onto_a_taken_name() {
+    run_checked(
+        "rename_conflict.fbt",
+        &[],
+        |t| {
+            std::fs::create_dir_all(t.join("files/one")).unwrap();
+            std::fs::create_dir_all(t.join("files/two")).unwrap();
+            std::fs::write(t.join("files/a.txt"), "from a").unwrap();
+            std::fs::write(t.join("files/b.txt"), "from b").unwrap();
+            std::fs::write(t.join("files/one/from-one.txt"), "1").unwrap();
+            std::fs::write(t.join("files/two/from-two.txt"), "2").unwrap();
+        },
+        |t| {
+            // b.txt holds what was a.txt; nothing else is left of it.
+            assert_eq!(std::fs::read_to_string(t.join("files/b.txt")).unwrap(), "from a");
+            let mut names: Vec<_> = std::fs::read_dir(t.join("files")).unwrap().map(|e| e.unwrap().file_name()).collect();
+            names.sort();
+            assert_eq!(names, ["b.txt", "two"]);
+        },
+    );
+}
+
+#[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();
