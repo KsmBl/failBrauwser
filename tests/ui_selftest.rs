@@ -55,13 +55,16 @@ fn rename_onto_a_taken_name() {
             std::fs::write(t.join("files/b.txt"), "from b").unwrap();
             std::fs::write(t.join("files/one/from-one.txt"), "1").unwrap();
             std::fs::write(t.join("files/two/from-two.txt"), "2").unwrap();
+            std::fs::write(t.join("files/x.txt"), "from x").unwrap();
+            std::fs::write(t.join("files/y.txt"), "from y").unwrap();
         },
         |t| {
-            // b.txt holds what was a.txt; nothing else is left of it.
+            // b.txt holds what was a.txt and y.txt what was x.txt; nothing else is left of them.
             assert_eq!(std::fs::read_to_string(t.join("files/b.txt")).unwrap(), "from a");
+            assert_eq!(std::fs::read_to_string(t.join("files/y.txt")).unwrap(), "from x");
             let mut names: Vec<_> = std::fs::read_dir(t.join("files")).unwrap().map(|e| e.unwrap().file_name()).collect();
             names.sort();
-            assert_eq!(names, ["b.txt", "two"]);
+            assert_eq!(names, ["b.txt", "two", "y.txt"]);
         },
     );
 }
