@@ -21,8 +21,8 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
 - **Drives page** with every volume, its fill level and mount point; mount, unmount and eject
   without freezing the window, and a properties window per drive (UUID, partition, model,
   serial, SSD or HDD, mount options, …).
-- **Network page** with the computers sharing files on your network; a double click shows the
-  folders one shares, entering a folder asks for a password where the server wants one, and
+- **Network page** with the computers sharing folders on your network, by name and with their
+  folders; a double click shows the folders one shares, entering a folder asks for a password where the server wants one, and
   computers and folders pin to the side panel.
 - **Phones and cameras** next to the USB sticks under their own name (“Pixel 7”), one row per
   storage with its fill level; open and eject them there, and a locked phone tells you what
@@ -120,10 +120,15 @@ Network addresses also open from the command line (`failbrauwser smb://nas/share
 other applications.
 
 **Network:** the *Network* entry of the side panel (<kbd>Alt</kbd>+<kbd>N</kbd>, *Go →
-Network*) lists the computers sharing files: the ones answering for SMB on the local network
+Network*) lists the computers sharing folders: the ones answering for SMB on the local network
 (each address is asked, about two seconds; the search is kept for a minute, the button at the
 top searches again), the ones GVfs announces (DNS-SD, WS-Discovery) and the servers of
-addresses opened before. Only computers are listed. A double click (or <kbd>Enter</kbd>) on
+addresses opened before. Each is listed under its name, from the network's DNS, the name it
+announces itself under (mDNS, `nas.local`) or its Windows name (NetBIOS, `NAS`), with the
+folders it shares below it. Each is asked for its folders as a guest first (`smbclient`), and
+only the ones with folders are listed: a router or printer that answers SMB without sharing
+anything stays out; a computer that wants a password before it lists anything stays in
+("Folders behind a password"). Only computers are listed. A double click (or <kbd>Enter</kbd>) on
 one shows the folders it shares (`network:///nas` in the location bar), asking for a user name
 and password first if the server wants one; hidden shares (`IPC$`, `C$`) are left out.
 Entering a folder mounts it through GVfs, with the password dialog where needed, and opens
