@@ -247,8 +247,8 @@ fn rename_selection(w: &Window) {
 fn ask_rename(w: &Window, item: Item, initial: String) {
     let old = item.display_name();
     let weak = Rc::downgrade(&w.me());
-    let prompt = format!("New name for “{old}”:");
-    util::ask_text(&w.win, "Rename", &prompt, &initial, "_Rename", !item.is_dir_like(), move |new| {
+    let title = format!("Rename “{old}”");
+    util::ask_text(&w.win, &title, "New name:", &initial, "_Rename", !item.is_dir_like(), move |new| {
         let Some(w) = weak.upgrade() else { return };
         if new == old {
             return;

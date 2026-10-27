@@ -1,7 +1,33 @@
 # Renaming onto a name that is taken asks: overwrite, choose another name, or cancel.
 open $T/files
-expect-rows 4
-# Cancel: nothing changes.
+expect-rows 6
+# The real dialogs, attached to the window: after Overwrite none is left open.
+select x.txt
+action win.rename
+wait-dialog Rename “x.txt”
+dialog-entry Rename “x.txt” = y.txt
+dialog-button Rename “x.txt” : Rename
+wait-dialog already exists
+dialog-button already exists : Overwrite
+wait-missing $T/files/x.txt
+wait-no-dialog Rename “x.txt”
+wait-no-dialog already exists
+expect-rows 5
+# Rename… asks for the name again with a free one suggested; Cancel there keeps it.
+select a.txt
+action win.rename
+wait-dialog Rename “a.txt”
+dialog-entry Rename “a.txt” = b.txt
+dialog-button Rename “a.txt” : Rename
+wait-dialog already exists
+dialog-button already exists : Rename…
+wait-dialog Rename “a.txt”
+expect-dialog-entry Rename “a.txt” = b (2).txt
+dialog-button Rename “a.txt” : Cancel
+wait-no-dialog Rename “a.txt”
+wait-no-dialog already exists
+wait-row a.txt
+# Scripted answers from here. Cancel: nothing changes.
 select a.txt
 answer cancel
 text b.txt
@@ -26,7 +52,7 @@ text b.txt
 action win.rename
 wait-missing $T/files/c.txt
 wait-idle
-expect-rows 3
+expect-rows 4
 expect-selected b.txt
 # Overwrite a folder: the one in the way goes, with everything in it.
 select one
@@ -35,5 +61,5 @@ action win.rename
 wait-missing $T/files/one
 wait-exists $T/files/two/from-one.txt
 wait-missing $T/files/two/from-two.txt
-expect-rows 2
+expect-rows 3
 expect-selected two
