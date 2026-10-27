@@ -16,7 +16,7 @@
 //! `shortcut-menu <entry> : <item>` (`Show Hidden Entry/<name>` for the submenu),
 //! `shortcut-drag <entry> > <before entry>`, `shortcut-drop <folder> > <before entry>`,
 //! `window-snapshot <png>`, `wait-error <text>`, `wait-dialog <text>`,
-//! `dialog-button <dialog text> : <button>`, `properties-choose-app <desktop id>`,
+//! `dialog-button <dialog text> : <button>`, `dialog-entry <dialog text> = <text>`, `expect-dialog-entry <dialog text> = <text>`, `wait-no-dialog <text>`, `properties-choose-app <desktop id>`,
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
@@ -276,6 +276,25 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 c.children().iter().find_map(|ch| find(ch, label))
             }
             find(d.upcast_ref(), button.trim()).ok_or("no such button")?.clicked();
+        }
+        "dialog-entry" => {
+            // dialog-entry <dialog text> = <text>: types into the dialog's text field.
+            let (text, value) = arg.split_once(" = ").ok_or("need <dialog text> = <text>")?;
+            let d = find_dialog(text.trim()).ok_or("no such dialog")?;
+            let entry = find_widget::<gtk::Entry>(d.upcast_ref()).ok_or("the dialog has no text field")?;
+            entry.set_text(value);
+        }
+        "expect-dialog-entry" => {
+            let (text, want) = arg.split_once(" = ").ok_or("need <dialog text> = <text>")?;
+            let d = find_dialog(text.trim()).ok_or("no such dialog")?;
+            let got = find_widget::<gtk::Entry>(d.upcast_ref()).ok_or("the dialog has no text field")?.text();
+            if got != want {
+                return Err(format!("the field holds {got:?}"));
+            }
+        }
+        "wait-no-dialog" => {
+            let want = arg.to_string();
+            wait(r, move |_| Ok(find_dialog(&want).is_none()));
         }
         "properties-choose-app" => {
             // In the open Properties dialog, picks the application with this desktop id.

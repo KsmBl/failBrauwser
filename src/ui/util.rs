@@ -249,25 +249,26 @@ pub fn ask_text(
             return;
         }
     }
-    let d = gtk::Dialog::with_buttons(
-        Some(title),
+    // Attached to the window like the other questions, not a window of its own.
+    let d = gtk::MessageDialog::new(
         Some(parent),
         gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-        &[("_Cancel", gtk::ResponseType::Cancel), (ok_label, gtk::ResponseType::Ok)],
+        gtk::MessageType::Question,
+        gtk::ButtonsType::None,
+        title,
     );
+    d.set_secondary_text(Some(label));
+    d.add_button("_Cancel", gtk::ResponseType::Cancel);
+    d.add_button(ok_label, gtk::ResponseType::Ok);
     d.set_default_response(gtk::ResponseType::Ok);
-    d.set_resizable(false);
-    let area = d.content_area();
-    area.set_spacing(6);
-    area.set_border_width(12);
-    let l = gtk::Label::new(Some(label));
-    l.set_xalign(0.0);
     let entry = gtk::Entry::new();
     entry.set_text(initial);
     entry.set_activates_default(true);
     entry.set_width_chars(40);
-    area.add(&l);
-    area.add(&entry);
+    entry.set_margin_top(6);
+    if let Ok(area) = d.message_area().downcast::<gtk::Box>() {
+        area.pack_start(&entry, false, false, 0);
+    }
     d.show_all();
     let stem = if select_stem {
         initial.char_indices().filter(|(i, c)| *c == '.' && *i > 0).map(|(i, _)| i).next().map(|i| initial[..i].chars().count() as i32)
@@ -276,14 +277,19 @@ pub fn ask_text(
     };
     entry.grab_focus();
     entry.select_region(0, stem.unwrap_or(-1));
+    // Closing the dialog answers once more (as a delete event).
+    let answered = std::cell::Cell::new(false);
     d.connect_response(move |d, resp| {
-        if resp == gtk::ResponseType::Ok {
-            let text = entry.text().to_string();
-            if !text.trim().is_empty() {
-                on_ok(text);
-            }
+        if answered.replace(true) {
+            return;
         }
-        d.close();
+        // Gone before what comes next (a question about the name) shows: close() only
+        // queues a delete event, which GTK drops while that next dialog holds the grab.
+        let text = entry.text().to_string();
+        unsafe { d.destroy() };
+        if resp == gtk::ResponseType::Ok && !text.trim().is_empty() {
+            on_ok(text);
+        }
     });
 }
 
@@ -378,12 +384,13 @@ pub fn ask_name_taken(parent: &impl IsA<gtk::Window>, name: &str, place: &str, f
         if answered.replace(true) {
             return;
         }
+        // Not close(): see ask_text.
+        unsafe { d.destroy() };
         on(match resp {
             gtk::ResponseType::Other(0) => NameTaken::Overwrite,
             gtk::ResponseType::Other(1) => NameTaken::Rename,
             _ => NameTaken::Cancel,
         });
-        d.close();
     });
     d.show();
 }
