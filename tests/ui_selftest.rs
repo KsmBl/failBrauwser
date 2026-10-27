@@ -70,6 +70,15 @@ fn rename_onto_a_taken_name() {
 }
 
 #[test]
+fn progress_window_with_speed_chart() {
+    run_checked("progress.fbt", &[], |_| {}, |t| {
+        // The window was drawn, chart and all.
+        let png = std::fs::read(t.join("progress.png")).unwrap();
+        assert!(png.len() > 1000 && png.starts_with(b"\x89PNG"));
+    });
+}
+
+#[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();
