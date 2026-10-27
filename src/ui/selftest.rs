@@ -470,7 +470,8 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let a = match arg {
                 "replace" => Answer::Replace,
                 "skip" => Answer::Skip,
-                "keepboth" => Answer::KeepBoth,
+                // For a taken name, "rename" chooses another one.
+                "keepboth" | "rename" => Answer::KeepBoth,
                 "delete" => Answer::DeleteInstead,
                 "retry" => Answer::Retry,
                 _ => Answer::Cancel,

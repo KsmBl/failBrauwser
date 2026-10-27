@@ -20,6 +20,17 @@ wait-no-row new.txt
 text Made Here
 action win.new-folder
 wait-row Made Here
+# Renaming onto a name that is taken: overwrite the entry there.
+text Other
+action win.new-folder
+wait-row Other
+select Other
+answer replace
+text Made Here
+action win.rename
+wait-no-row Other
+wait-row Made Here
+expect-selected Made Here
 select a.txt
 action win.delete
 wait-no-row a.txt

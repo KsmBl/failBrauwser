@@ -238,10 +238,16 @@ fn delete_selection(w: &Window) {
 fn rename_selection(w: &Window) {
     let pane = w.current_pane();
     let Some(item) = pane.selected_items().into_iter().next() else { return };
+    let initial = item.display_name();
+    ask_rename(w, item, initial);
+}
+
+/// Asks for the new name of `item`, starting from `initial`; a name that is taken asks
+/// whether to overwrite, choose another name (back here) or leave it.
+fn ask_rename(w: &Window, item: Item, initial: String) {
     let old = item.display_name();
     let weak = Rc::downgrade(&w.me());
     let prompt = format!("New name for “{old}”:");
-    let initial = old.clone();
     util::ask_text(&w.win, "Rename", &prompt, &initial, "_Rename", !item.is_dir_like(), move |new| {
         let Some(w) = weak.upgrade() else { return };
         if new == old {
@@ -258,15 +264,72 @@ fn rename_selection(w: &Window) {
                 match copy::rename_noreplace(&e.path, &target) {
                     Ok(()) => pane.select_when_present(vec![OsString::from(&new)]),
                     Err(err) if err.raw_os_error() == Some(libc::EEXIST) => {
-                        util::show_error(&w.win, "Cannot rename", &format!("“{new}” already exists."))
+                        let folder = target.symlink_metadata().is_ok_and(|m| m.is_dir());
+                        let place = target.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
+                        name_taken(&w, item.clone(), new, &place, folder, {
+                            let (from, pane) = (e.path.clone(), Rc::downgrade(&pane));
+                            move |w, new| overwrite_local(w, &pane, from.clone(), target.clone(), new)
+                        });
                     }
                     Err(err) => util::show_error(&w.win, "Cannot rename", &err.to_string()),
                 }
+            }
+            Item::Archive(_) if pane.has_name(&new) => {
+                let folder = pane.item_named(&new).is_some_and(|i| i.is_dir_like());
+                let place = pane.location().title();
+                let (p, it) = (Rc::downgrade(&pane), item.clone());
+                name_taken(&w, item.clone(), new, &place, folder, move |w, new| {
+                    if let Some(pane) = p.upgrade() {
+                        super::archive::rename_replacing(w, &pane, &it, &new);
+                    }
+                });
             }
             Item::Archive(_) => super::extensions::rename_non_local(&w, &pane, &item, &new),
             Item::Trash(..) | Item::FoundInArchive(..) => {}
         }
     });
+}
+
+/// `new` is taken: overwrite (`overwrite`), ask for another name, or leave it.
+fn name_taken(w: &Window, item: Item, new: String, place: &str, folder: bool, overwrite: impl Fn(&Rc<Window>, String) + 'static) {
+    let weak = Rc::downgrade(&w.me());
+    util::ask_name_taken(&w.win, &new.clone(), place, folder, move |choice| {
+        let Some(w) = weak.upgrade() else { return };
+        match choice {
+            util::NameTaken::Overwrite => overwrite(&w, new.clone()),
+            util::NameTaken::Rename => {
+                // Back to the name, with one that is free suggested.
+                let free = match &item {
+                    Item::Fs(e) | Item::Found(e, _) => names::free_name(e.path.parent().unwrap_or(Path::new("/")), new.as_ref(), None),
+                    _ => {
+                        let pane = w.current_pane();
+                        names::free_name_in(&|n| pane.has_name(&n.to_string_lossy()), new.as_ref(), None)
+                    }
+                };
+                ask_rename(&w, item.clone(), free.to_string_lossy().into_owned());
+            }
+            util::NameTaken::Cancel => {}
+        }
+    });
+}
+
+/// Renames over what is there; a folder in the way is deleted on a worker thread.
+fn overwrite_local(w: &Rc<Window>, pane: &std::rc::Weak<Pane>, from: PathBuf, to: PathBuf, new: String) {
+    let title = format!("Renaming “{}”", from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+    let pane = pane.clone();
+    w.app.jobs.start(
+        w.win.upcast_ref(),
+        title,
+        move |_| copy::rename_replacing(&from, &to).map(|_| vec![to]),
+        move |outcome| {
+            if let (Some(p), Outcome::Done(_)) = (pane.upgrade(), outcome) {
+                if matches!(p.location(), Location::Search(_)) {
+                    p.reload();
+                }
+                p.select_when_present(vec![OsString::from(&new)]);
+            }
+        },
+    );
 }
 
 fn create_named(w: &Window, title: &str, default: &str, folder: bool) {

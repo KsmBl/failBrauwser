@@ -111,6 +111,37 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     if r == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
+/// Renames `from` to `to`, replacing what is there: a file in one atomic step, a folder (or
+/// a file over a folder) by swapping the two and deleting the old one afterwards.
+pub fn rename_replacing(from: &Path, to: &Path) -> io::Result<()> {
+    let target = match fs::symlink_metadata(to) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return fs::rename(from, to),
+        Err(e) => return Err(e),
+    };
+    let source = fs::symlink_metadata(from)?;
+    // "a.txt" to "A.txt" on a case-insensitive drive: the same file, just a new spelling.
+    if source.dev() == target.dev() && source.ino() == target.ino() {
+        return fs::rename(from, to);
+    }
+    if !source.is_dir() && !target.is_dir() {
+        return fs::rename(from, to);
+    }
+    let (f, t) = (cpath(from)?, cpath(to)?);
+    let r = unsafe { libc::renameat2(libc::AT_FDCWD, f.as_ptr(), libc::AT_FDCWD, t.as_ptr(), libc::RENAME_EXCHANGE) };
+    if r == 0 {
+        // The old one now sits under the source's name.
+        return remove_any(from);
+    }
+    let err = io::Error::last_os_error();
+    if !matches!(err.raw_os_error(), Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)) {
+        return Err(err);
+    }
+    // Filesystems that cannot swap (FUSE, some network ones): delete first.
+    remove_any(to)?;
+    fs::rename(from, to)
+}
+
 fn remove_any(p: &Path) -> io::Result<()> {
     match fs::symlink_metadata(p) {
         Ok(m) if m.is_dir() => fs::remove_dir_all(p),

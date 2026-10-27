@@ -1,0 +1,39 @@
+# Renaming onto a name that is taken asks: overwrite, choose another name, or cancel.
+open $T/files
+expect-rows 4
+# Cancel: nothing changes.
+select a.txt
+answer cancel
+text b.txt
+action win.rename
+wait-idle
+sleep 200
+wait-row a.txt
+wait-row b.txt
+# Rename: asked for a name again, this time a free one.
+select a.txt
+answer rename
+text b.txt
+text c.txt
+action win.rename
+wait-exists $T/files/c.txt
+wait-missing $T/files/a.txt
+expect-selected c.txt
+# Overwrite a file: the renamed one takes its place.
+select c.txt
+answer replace
+text b.txt
+action win.rename
+wait-missing $T/files/c.txt
+wait-idle
+expect-rows 3
+expect-selected b.txt
+# Overwrite a folder: the one in the way goes, with everything in it.
+select one
+text two
+action win.rename
+wait-missing $T/files/one
+wait-exists $T/files/two/from-one.txt
+wait-missing $T/files/two/from-two.txt
+expect-rows 2
+expect-selected two

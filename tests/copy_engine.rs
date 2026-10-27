@@ -330,3 +330,37 @@ fn copying_many_files_onto_gvfs_shares_keeps_no_descriptors_open() {
     let after = open_fds();
     assert!(after < before + 20, "{before} descriptors open before the copy, {after} after");
 }
+
+#[test]
+fn rename_replacing_overwrites_files_and_folders() {
+    use failbrauwser::ops::copy::rename_replacing;
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    // A file over a file.
+    fs::write(d.join("new.txt"), "new").unwrap();
+    fs::write(d.join("old.txt"), "old").unwrap();
+    rename_replacing(&d.join("new.txt"), &d.join("old.txt")).unwrap();
+    assert_eq!(fs::read_to_string(d.join("old.txt")).unwrap(), "new");
+    assert!(!d.join("new.txt").exists());
+    // A folder over a folder with contents: only the renamed folder's contents remain.
+    fs::create_dir_all(d.join("A/inner")).unwrap();
+    fs::write(d.join("A/inner/x"), "a").unwrap();
+    fs::create_dir_all(d.join("B/other")).unwrap();
+    fs::write(d.join("B/other/y"), "b").unwrap();
+    rename_replacing(&d.join("A"), &d.join("B")).unwrap();
+    assert!(!d.join("A").exists());
+    assert_eq!(fs::read_to_string(d.join("B/inner/x")).unwrap(), "a");
+    assert!(!d.join("B/other").exists());
+    // A file over a folder and a folder over a file.
+    fs::write(d.join("f"), "file").unwrap();
+    rename_replacing(&d.join("f"), &d.join("B")).unwrap();
+    assert_eq!(fs::read_to_string(d.join("B")).unwrap(), "file");
+    fs::create_dir(d.join("D")).unwrap();
+    rename_replacing(&d.join("D"), &d.join("B")).unwrap();
+    assert!(d.join("B").is_dir());
+    // Nothing in the way: a plain rename; a missing source fails without touching the target.
+    rename_replacing(&d.join("B"), &d.join("C")).unwrap();
+    assert!(d.join("C").is_dir() && !d.join("B").exists());
+    assert!(rename_replacing(&d.join("missing"), &d.join("C")).is_err());
+    assert!(d.join("C").is_dir());
+}
