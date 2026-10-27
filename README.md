@@ -232,6 +232,11 @@ bar, until you turn it off; with *Files Only* it gives every file below a folder
 The list fills in while the folders are read, and the window stays usable meanwhile, also
 for a hundred thousand files and more.
 
+**Renaming** (<kbd>F2</kbd>) onto a name that is taken asks what to do: *Overwrite* replaces
+what is there (a folder in the way is deleted with everything in it), *Rename…* asks for the
+name again with a free one suggested (`report (2).pdf`), *Cancel* leaves both as they are.
+The same works inside archives.
+
 **Search:** <kbd>Ctrl</kbd>+<kbd>F</kbd> opens the search bar above the list. Type part of a
 name, or a pattern with `*` and `?`; results stream in with the folder they were found in,
 and act like files anywhere else (open, copy, rename, trash, properties). *In subfolders* and
