@@ -26,6 +26,7 @@ pub mod remote;
 pub mod searchbar;
 pub mod shares;
 pub mod showfilter;
+pub mod speedchart;
 pub mod selftest;
 pub mod sidebar;
 pub mod style;

@@ -1,8 +1,12 @@
 //! Runs file operations on worker threads and shows them: a progress window that appears
 //! only for operations taking longer than a moment, and dialogs for the questions they ask.
+//! Copies show how far they are, a chart of their speed (in the window manager's chart
+//! colors), the item being copied, the time and the items left.
 //! A timer runs only while operations are active, so an idle window costs no CPU.
 
+use super::speedchart::{self, SpeedChart};
 use super::util;
+use failbrauwser::wmtheme::ChartStyle;
 use failbrauwser::fs::format::{human_size, human_time};
 use failbrauwser::ops::fastcopy::is_cancelled_error;
 use failbrauwser::ops::job::{Answer, JobCtx, Phase, PendingQuestion, Question, Reply};
@@ -45,8 +49,16 @@ struct Job {
 
 struct JobRow {
     widget: gtk::Box,
+    /// "45% complete", "Paused", "Preparing…".
+    status: gtk::Label,
+    /// For operations that count items, not bytes (delete, trash).
     bar: gtk::ProgressBar,
-    detail: gtk::Label,
+    /// The chart and the lines below it, for operations that move bytes.
+    details: gtk::Expander,
+    chart: SpeedChart,
+    name: gtk::Label,
+    time_left: gtk::Label,
+    items_left: gtk::Label,
     pause: gtk::ToggleButton,
 }
 
@@ -62,6 +74,9 @@ pub fn set_start_paused(on: bool) {
 pub struct Jobs {
     jobs: RefCell<Vec<Job>>,
     window: RefCell<Option<(gtk::Window, gtk::Box)>>,
+    /// The window manager's chart colors, read each time the window shows (None: the GTK
+    /// theme's).
+    chart_style: Rc<RefCell<Option<ChartStyle>>>,
     ticking: RefCell<Option<glib::SourceId>>,
     weak: RefCell<Weak<Jobs>>,
 }
@@ -71,7 +86,7 @@ const SHOW_AFTER: Duration = Duration::from_millis(500);
 
 impl Jobs {
     pub fn new() -> Rc<Jobs> {
-        let j = Rc::new(Jobs { jobs: RefCell::new(Vec::new()), window: RefCell::new(None), ticking: RefCell::new(None), weak: RefCell::new(Weak::new()) });
+        let j = Rc::new(Jobs { jobs: RefCell::new(Vec::new()), window: RefCell::new(None), chart_style: Rc::new(RefCell::new(None)), ticking: RefCell::new(None), weak: RefCell::new(Weak::new()) });
         *j.weak.borrow_mut() = Rc::downgrade(&j);
         j
     }
@@ -85,6 +100,16 @@ impl Jobs {
         let jobs = self.jobs.borrow();
         let waiting = jobs.iter().filter(|j| j.waiting.is_some()).count();
         (jobs.len() - waiting, waiting)
+    }
+
+    /// The progress window while it is shown (tests).
+    pub fn progress_window(&self) -> Option<gtk::Window> {
+        self.window.borrow().as_ref().map(|(w, _)| w.clone()).filter(|w| w.is_visible())
+    }
+
+    /// The most points a speed chart has drawn (tests).
+    pub fn chart_points(&self) -> usize {
+        self.jobs.borrow().iter().filter_map(|j| j.row.as_ref()).map(|r| if r.details.is_visible() { r.chart.samples.borrow().points.len() } else { 0 }).max().unwrap_or(0)
     }
 
     pub fn pause_all(&self, on: bool) {
@@ -274,10 +299,15 @@ impl Jobs {
         }
         self.ensure_window();
         let (win, list) = self.window.borrow().clone().unwrap();
+        if !win.is_visible() {
+            // The window manager's theme may have changed since.
+            let under = speedchart::window_bg(&win);
+            *self.chart_style.borrow_mut() = failbrauwser::wmtheme::load().map(|t| ChartStyle::from_theme(&t, under));
+        }
         let mut jobs = self.jobs.borrow_mut();
         for job in jobs.iter_mut() {
             if job.row.is_none() {
-                job.row = Some(Self::make_row(&list, job));
+                job.row = Some(Self::make_row(&list, job, &self.chart_style));
             }
             Self::update_row(job, now);
         }
@@ -296,7 +326,7 @@ impl Jobs {
         let win = gtk::Window::new(gtk::WindowType::Toplevel);
         win.set_title("File Operation Progress");
         win.set_type_hint(gtk::gdk::WindowTypeHint::Dialog);
-        win.set_default_size(460, -1);
+        win.set_default_size(500, -1);
         win.set_resizable(false);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 12);
         list.set_border_width(12);
@@ -309,22 +339,23 @@ impl Jobs {
         *self.window.borrow_mut() = Some((win, list));
     }
 
-    fn make_row(list: &gtk::Box, job: &Job) -> JobRow {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let texts = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        let title = gtk::Label::new(Some(&job.title));
-        title.set_xalign(0.0);
+    fn make_row(list: &gtk::Box, job: &Job, style: &Rc<RefCell<Option<ChartStyle>>>) -> JobRow {
+        let left = |text: &str| {
+            let l = gtk::Label::new(Some(text));
+            l.set_xalign(0.0);
+            l
+        };
+        let title = left(&job.title);
         title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         title.style_context().add_class("dim-label");
+        let status = left("");
+        let attrs = gtk::pango::AttrList::new();
+        attrs.insert(gtk::pango::AttrFloat::new_scale(1.25));
+        status.set_attributes(Some(&attrs));
         let bar = gtk::ProgressBar::new();
         bar.set_show_text(true);
         bar.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        let detail = gtk::Label::new(None);
-        detail.set_xalign(0.0);
-        detail.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-        texts.pack_start(&title, false, false, 0);
-        texts.pack_start(&bar, false, false, 0);
-        texts.pack_start(&detail, false, false, 0);
+        bar.set_no_show_all(true);
         let cancel = gtk::Button::from_icon_name(Some("process-stop"), gtk::IconSize::Button);
         cancel.set_tooltip_text(Some("Cancel"));
         cancel.set_valign(gtk::Align::Center);
@@ -348,66 +379,123 @@ impl Jobs {
                 b.set_tooltip_text(Some("Pause"));
             }
         });
-        row.pack_start(&texts, true, true, 0);
-        row.pack_start(&pause, false, false, 0);
-        row.pack_start(&cancel, false, false, 0);
+        let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let texts = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        texts.pack_start(&title, false, false, 0);
+        texts.pack_start(&status, false, false, 0);
+        head.pack_start(&texts, true, true, 0);
+        head.pack_start(&pause, false, false, 0);
+        head.pack_start(&cancel, false, false, 0);
+        // The chart, then name, time and items left, as in a two-column form.
+        let chart = SpeedChart::new(style.clone());
+        let facts = gtk::Grid::new();
+        facts.set_column_spacing(12);
+        facts.set_row_spacing(2);
+        let fact = |row: i32, key: &str| {
+            let k = left(key);
+            k.style_context().add_class("dim-label");
+            let v = left("");
+            v.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+            v.set_hexpand(true);
+            facts.attach(&k, 0, row, 1, 1);
+            facts.attach(&v, 1, row, 1, 1);
+            v
+        };
+        let name = fact(0, "Name:");
+        let time_left = fact(1, "Time remaining:");
+        let items_left = fact(2, "Items remaining:");
+        let inner = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        inner.set_margin_top(6);
+        inner.pack_start(&chart.area, false, false, 0);
+        inner.pack_start(&facts, false, false, 0);
+        let details = gtk::Expander::new(Some("Details"));
+        details.set_expanded(true);
+        details.add(&inner);
+        details.set_no_show_all(true);
+        inner.show_all();
+        let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        row.pack_start(&head, false, false, 0);
+        row.pack_start(&bar, false, false, 0);
+        row.pack_start(&details, false, false, 0);
         list.pack_start(&row, false, false, 0);
         row.show_all();
-        JobRow { widget: row, bar, detail, pause }
+        JobRow { widget: row, status, bar, details, chart, name, time_left, items_left, pause }
     }
 
     fn update_row(job: &mut Job, now: Instant) {
         let Some(row) = &job.row else { return };
         let s = job.ctx.snapshot();
         let dt = now.duration_since(job.last_sample.0).as_secs_f64();
-        if dt >= 0.5 {
+        let sampled = dt >= 0.5;
+        if sampled {
             let inst = s.bytes_done.saturating_sub(job.last_sample.1) as f64 / dt;
             job.speed = if job.speed == 0.0 { inst } else { job.speed * 0.7 + inst * 0.3 };
             job.last_sample = (now, s.bytes_done);
         }
+        let by_bytes = s.bytes_total > 0;
+        row.details.set_visible(by_bytes);
+        row.bar.set_visible(!by_bytes);
         if job.waiting.is_some() {
+            row.status.set_text("Waiting for the operation before it on this drive");
             row.bar.set_fraction(0.0);
-            row.bar.set_text(Some("Waiting for the operation before it on this drive"));
+            row.bar.set_text(None);
             row.pause.set_sensitive(false);
             return;
         }
         row.pause.set_sensitive(true);
+        let fraction = if by_bytes {
+            (s.bytes_done as f64 / s.bytes_total as f64).clamp(0.0, 1.0)
+        } else if s.files_total > 0 {
+            (s.files_done as f64 / s.files_total as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let percent = format!("{}% complete", (fraction * 100.0).floor() as u32);
         if job.ctx.is_paused() {
-            row.bar.set_text(Some("Paused"));
+            row.status.set_text(&format!("Paused — {percent}"));
             row.pause.set_active(true);
+            row.time_left.set_text("—");
             return;
         }
         match job.ctx.phase() {
             Phase::Preparing => {
+                row.status.set_text("Preparing…");
                 row.bar.pulse();
-                row.bar.set_text(Some("Preparing…"));
+                row.bar.set_text(None);
             }
             Phase::Flushing => {
+                row.status.set_text("Writing cached data to the drive…");
                 row.bar.pulse();
-                row.bar.set_text(Some("Writing cached data to the drive…"));
+                row.time_left.set_text("A moment");
             }
-            _ if s.bytes_total > 0 => {
-                row.bar.set_fraction((s.bytes_done as f64 / s.bytes_total as f64).clamp(0.0, 1.0));
-                let mut text = format!("{} of {}", human_size(s.bytes_done), human_size(s.bytes_total));
-                if job.speed > 1.0 {
-                    text.push_str(&format!(" — {}/s", human_size(job.speed as u64)));
-                    let left = (s.bytes_total.saturating_sub(s.bytes_done)) as f64 / job.speed;
-                    if left >= 1.0 {
-                        text.push_str(&format!(" — {} left", human_duration(left as u64)));
-                    }
-                }
-                row.bar.set_text(Some(&text));
-            }
-            _ if s.files_total > 0 => {
-                row.bar.set_fraction((s.files_done as f64 / s.files_total as f64).clamp(0.0, 1.0));
+            _ if by_bytes || s.files_total > 0 => {
+                row.status.set_text(&percent);
+                row.bar.set_fraction(fraction);
                 row.bar.set_text(Some(&format!("{} of {} items", s.files_done, s.files_total)));
             }
             _ => {
+                row.status.set_text("Working…");
                 row.bar.pulse();
-                row.bar.set_text(Some("Working…"));
+                row.bar.set_text(None);
             }
         }
-        row.detail.set_text(&s.current);
+        if by_bytes {
+            if sampled && job.ctx.phase() == Phase::Working {
+                row.chart.push(fraction, job.speed);
+            }
+            let left = s.bytes_total.saturating_sub(s.bytes_done);
+            if job.ctx.phase() == Phase::Working {
+                row.time_left.set_text(&if job.speed > 1.0 {
+                    format!("About {}", human_duration((left as f64 / job.speed).ceil() as u64))
+                } else {
+                    "Working it out…".into()
+                });
+            }
+            let items = s.files_total.saturating_sub(s.files_done);
+            row.items_left.set_text(&format!("{items} ({})", human_size(left)));
+        }
+        row.name.set_text(&s.current);
+        row.name.set_tooltip_text(Some(&s.current));
     }
 
     fn ask(&self, ctx: Arc<JobCtx>, parent: Option<gtk::Window>, pending: PendingQuestion) {
