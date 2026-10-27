@@ -2,6 +2,8 @@
 # the folders one shares, entering one opens it (asking for a password where needed).
 fake-host nas = Music:$T/music, Photos:$T/photos
 fake-host vault = Secret:$T/secret : letmein
+# A computer that answers but shares no folders is left out.
+fake-host printer = -
 expect-shortcuts Drives | Home | Desktop | Network | Trash
 shortcut-click Network
 wait-location network:///
@@ -9,6 +11,8 @@ expect-shortcut-marked Network
 expect-crumbs Network
 wait-network-row nas
 wait-network-row vault
+expect-network-rows nas | vault
+expect-network-subtitle nas = Music, Photos
 network-open nas
 wait-location network:///nas
 expect-crumbs Network > nas

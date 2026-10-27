@@ -7,7 +7,7 @@ use super::pane::Pane;
 use super::util;
 use super::window::Window;
 use failbrauwser::location::Location;
-use failbrauwser::network::{self, Computer, Share};
+use failbrauwser::network::{self, Computer, Probe, Share};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 /// A row of the page.
 #[derive(Clone, Debug)]
 enum Entry {
-    Computer(Computer),
+    /// A computer and what asking it for its folders found.
+    Computer(Computer, Probe),
     /// A folder shared by the computer at this address.
     Share(String, Share),
 }
@@ -26,20 +27,31 @@ enum Entry {
 impl Entry {
     fn title(&self) -> String {
         match self {
-            Entry::Computer(c) => c.name.clone(),
+            Entry::Computer(c, _) => c.name.clone(),
             Entry::Share(_, s) => s.name.clone(),
         }
     }
 
     fn subtitle(&self) -> String {
         match self {
-            // The address where it says more than the name.
-            Entry::Computer(c) => match (&c.ip, c.address.eq_ignore_ascii_case(&c.name)) {
-                (Some(ip), true) => ip.clone(),
-                (Some(ip), false) => format!("{} — {ip}", c.address),
-                (None, false) => c.address.clone(),
-                (None, true) => "Shares files".into(),
-            },
+            // Its folders, and the address where it says more than the name.
+            Entry::Computer(c, probe) => {
+                let address = match (&c.ip, c.address.eq_ignore_ascii_case(&c.name)) {
+                    (Some(ip), true) => Some(ip.clone()),
+                    (Some(ip), false) => Some(format!("{} — {ip}", c.address)),
+                    (None, false) => Some(c.address.clone()),
+                    (None, true) => None,
+                };
+                let what = match probe {
+                    Probe::Shares(s) if !s.is_empty() => s.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "),
+                    Probe::Locked => "Folders behind a password".into(),
+                    _ => "Shares files".into(),
+                };
+                match address {
+                    Some(a) => format!("{what} — {a}"),
+                    None => what,
+                }
+            }
             Entry::Share(_, s) if !s.comment.is_empty() => s.comment.clone(),
             Entry::Share(..) => "Shared folder".into(),
         }
@@ -48,7 +60,7 @@ impl Entry {
     /// Its address: `network:///nas` for a computer, `smb://nas/Music` for a folder.
     fn uri(&self) -> String {
         match self {
-            Entry::Computer(c) => Location::Network(c.address.clone()).display(),
+            Entry::Computer(c, _) => Location::Network(c.address.clone()).display(),
             Entry::Share(host, s) => network::share_uri(host, &s.name),
         }
     }
@@ -77,8 +89,8 @@ struct FakeHost {
 
 thread_local! {
     static PAGES: RefCell<Vec<Rc<NetworkPage>>> = const { RefCell::new(Vec::new()) };
-    /// The computers found last, and when.
-    static FOUND: RefCell<Option<(Instant, Vec<Computer>)>> = const { RefCell::new(None) };
+    /// The computers with folders found last, and when.
+    static FOUND: RefCell<Option<(Instant, Vec<(Computer, Probe)>)>> = const { RefCell::new(None) };
     static FAKES: RefCell<Vec<FakeHost>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -269,39 +281,53 @@ impl NetworkPage {
         let history = super::remote::history();
         let fakes: Vec<(String, String)> = FAKES.with(|f| f.borrow().iter().map(|h| (h.name.clone(), h.name.clone())).collect());
         let cached = FOUND.with(|f| f.borrow().clone());
-        // What is known shows at once; the search adds to it.
-        let known = match &cached {
-            Some((_, list)) => list.clone(),
-            None => network::merge(&[], &fakes, &history),
-        };
-        self.show(known.iter().cloned().map(Entry::Computer).collect());
+        // What was found last shows at once; a new search replaces it.
+        let known = cached.as_ref().map(|(_, list)| list.clone()).unwrap_or_default();
+        self.show(known.iter().cloned().map(|(c, p)| Entry::Computer(c, p)).collect());
         let fresh = cached.as_ref().is_some_and(|(at, _)| at.elapsed() < FRESH);
-        // The self-test does not knock on the doors of the network it runs in.
-        if (fresh && !again) || super::selftest::active() {
+        if fresh && !again {
             self.after_search(&known);
             return;
         }
         self.busy(true);
+        if known.is_empty() {
+            self.say("Searching for computers that share folders…");
+        }
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let scan = gio::spawn_blocking(failbrauwser::remote::find_smb_servers);
-            let announced = announced().await;
-            let scanned = scan.await.unwrap_or_default();
-            let all = network::merge(&scanned, &[announced, fakes].concat(), &history);
-            FOUND.with(|f| *f.borrow_mut() = Some((Instant::now(), all.clone())));
+            // The self-test does not knock on the doors of the network it runs in.
+            let all = if super::selftest::active() {
+                network::merge(&[], &fakes, &history)
+            } else {
+                let scan = gio::spawn_blocking(failbrauwser::remote::find_smb_servers);
+                let announced = announced().await;
+                let scanned = scan.await.unwrap_or_default();
+                network::merge(&scanned, &[announced, fakes].concat(), &history)
+            };
+            // Each is asked for its folders at once; only those with some are listed.
+            let probes: Vec<_> = all.iter().map(|c| probe(&c.address)).collect();
+            let mut found = Vec::new();
+            for (c, p) in all.into_iter().zip(probes) {
+                let p = p.await;
+                if p.worth_showing() {
+                    found.push((c, p));
+                }
+            }
+            FOUND.with(|f| *f.borrow_mut() = Some((Instant::now(), found.clone())));
             let Some(p) = weak.upgrade() else { return };
             if p.generation.get() != generation {
                 return;
             }
             p.busy(false);
-            p.show(all.iter().cloned().map(Entry::Computer).collect());
-            p.after_search(&all);
+            p.say("");
+            p.show(found.iter().cloned().map(|(c, p)| Entry::Computer(c, p)).collect());
+            p.after_search(&found);
         });
     }
 
-    fn after_search(&self, found: &[Computer]) {
+    fn after_search(&self, found: &[(Computer, Probe)]) {
         if found.is_empty() {
-            self.say("No computer sharing files answered. A NAS or a computer that shares folders (SMB, Windows file sharing) shows up here; one on another network can be opened by typing its address in the location bar, like smb://192.168.1.10/share.");
+            self.say("No computer sharing folders answered. A NAS or a computer that shares folders (SMB, Windows file sharing) shows up here; one on another network can be opened by typing its address in the location bar, like smb://192.168.1.10/share.");
         }
     }
 
@@ -338,7 +364,7 @@ impl NetworkPage {
     fn open(&self, e: &Entry, new_tab: bool) {
         let Some((w, pane)) = self.context() else { return };
         match e {
-            Entry::Computer(c) => {
+            Entry::Computer(c, _) => {
                 let loc = Location::Network(c.address.clone());
                 if new_tab {
                     w.add_tab(loc, true);
@@ -397,7 +423,7 @@ impl NetworkPage {
 
 fn row(e: &Entry) -> gtk::ListBoxRow {
     let icon = match e {
-        Entry::Computer(_) => ["network-server", "computer"],
+        Entry::Computer(..) => ["network-server", "computer"],
         Entry::Share(..) => ["folder-remote", "folder"],
     };
     let image = gtk::Image::from_gicon(&gio::ThemedIcon::from_names(&icon), gtk::IconSize::Dnd);
@@ -506,6 +532,32 @@ async fn enumerate(dir: &gio::File) -> Result<Vec<Share>, glib::Error> {
     Ok(out)
 }
 
+/// Asks a computer for its folders as a guest, on a worker thread. A stand-in computer of the
+/// self-test answers with its folders; others there are not asked.
+fn probe(address: &str) -> impl std::future::Future<Output = Probe> + use<> {
+    let fake = FAKES.with(|f| {
+        f.borrow().iter().find(|h| h.name == address).map(|h| Probe::Shares(h.shares.iter().map(|(n, _)| Share { name: n.clone(), comment: String::new() }).collect()))
+    });
+    let fake = fake.or_else(|| super::selftest::active().then_some(Probe::Unknown));
+    // Started here, so that all computers are asked at the same time.
+    // A thread each (not GLib's few pool threads): the slow ones must not hold up the rest.
+    let asking = fake.is_none().then(|| {
+        let (tx, rx) = async_channel::bounded(1);
+        let address = address.to_string();
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(network::probe_shares(&address, Duration::from_secs(4)));
+        });
+        rx
+    });
+    async move {
+        match (fake, asking) {
+            (Some(p), _) => p,
+            (None, Some(rx)) => rx.recv().await.unwrap_or(Probe::Unknown),
+            (None, None) => Probe::Unknown,
+        }
+    }
+}
+
 /// Opens a network share by its address (a pinned one): mounted through GVfs.
 pub fn open_share(w: &Rc<Window>, uri: &str, new_tab: bool) {
     let fake = FAKES.with(|f| {
@@ -552,6 +604,11 @@ fn open_fake(w: &Rc<Window>, pane: &Rc<Pane>, dir: PathBuf, password: Option<Str
 /// The titles of the page's rows (tests).
 pub fn row_titles(pane: &Rc<Pane>) -> Vec<String> {
     page_for(pane).map(|p| p.entries.borrow().iter().map(Entry::title).collect()).unwrap_or_default()
+}
+
+/// The second line of a row (tests).
+pub fn row_subtitle(pane: &Rc<Pane>, title: &str) -> Option<String> {
+    page_for(pane)?.entries.borrow().iter().find(|e| e.title() == title).map(Entry::subtitle)
 }
 
 /// Opens a row by its title as a double click would (tests).
