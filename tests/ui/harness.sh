@@ -14,6 +14,13 @@ TH=${FB_THEME_HOME:-$HOME}
 [ -d "$TH/.config/gtk-3.0" ] && cp -r "$TH/.config/gtk-3.0" "$T/config/" 2>/dev/null
 # On Wayland GTK takes theme, icons and fonts from GSettings (the dconf database).
 [ -d "$TH/.config/dconf" ] && cp -r "$TH/.config/dconf" "$T/config/" 2>/dev/null
+# The window manager's theme (tileWin): the progress window draws its charts in its colors.
+if [ -d "$TH/.config/tileWin" ]; then
+  mkdir -p "$T/config/tileWin"
+  for f in current-theme color-scheme themes; do
+    [ -e "$TH/.config/tileWin/$f" ] && cp -r "$TH/.config/tileWin/$f" "$T/config/tileWin/" 2>/dev/null
+  done
+fi
 # Icon themes installed per user live in the data dir; keep them visible.
 [ -d "$TH/.local/share/icons" ] && ln -sfn "$TH/.local/share/icons" "$T/data/icons"
 

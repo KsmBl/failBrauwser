@@ -1,0 +1,16 @@
+# A copy shows how far it is, a chart of its speed, the item being copied and what is left;
+# pausing it says so, and it can be cancelled from the window.
+open $T
+fake-job 8 400
+wait-progress-chart 4
+expect-progress-text Copying 20 items to “backup”
+expect-progress-text % complete
+expect-progress-text holiday-video-
+expect-progress-text About
+expect-progress-text Details
+progress-snapshot $T/progress.png
+jobs-pause on
+sleep 300
+expect-progress-text Paused
+jobs-pause off
+wait-no-jobs

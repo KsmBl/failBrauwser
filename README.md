@@ -35,7 +35,8 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
   zoom from tiny rows to big icons with <kbd>Ctrl</kbd>+scroll.
 - **Search** (<kbd>Ctrl</kbd>+<kbd>F</kbd>) through subfolders and even inside archives, with
   results streaming in.
-- **Copy jobs you control:** pause and resume, copies to the same drive wait in a queue instead
+- **Copy jobs you control:** a progress window with a speed chart in the window manager's
+  theme, the time and items left; pause and resume, copies to the same drive wait in a queue instead
   of fighting each other, and optional read-back verification.
 - **Custom actions** from Thunar (`uca.xml`) in the right-click menu, and *Open Terminal Here*.
 - **More details.** Folder sizes in the *Size* column (recursive, symlink-safe), a
@@ -298,7 +299,13 @@ boot records of bootable images (BIOS and UEFI) are kept. Hybrid images written 
 (an extra partition table in the first sectors) stay read-only, since a rebuild would break
 the partitions.
 
-**Copy jobs:** the progress window has a pause button per job. A copy to a drive that is
+**Copy jobs:** the progress window shows each copy or move with how far it is ("45% complete")
+and, under *Details*, a chart of its speed: across, how far it has come; up, how fast it went
+there, with a line and the figure for the speed now. Below it the file being copied, the time
+remaining and the items left with their size. The chart is drawn the way the window manager
+draws its charts: with tileWin in the colors of its current theme (green on black and sunken
+in the Windows 95 theme, the accent color in the Windows 10 one, light or dark as chosen),
+elsewhere in the colors of the GTK theme. Each job has a pause and a cancel button. A copy to a drive that is
 already being written to waits in a queue and starts when the first one is done. With
 *Edit → Verify Copies* every copied file is flushed to the device, dropped from the cache and
 read back to compare it with the source.

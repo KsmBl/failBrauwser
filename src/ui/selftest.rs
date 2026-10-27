@@ -20,6 +20,7 @@
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
+//! `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
 //! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
 //! `expect-side-drive-marked <name> : <place>`, `quit`. Blank lines and `#` comments are ignored.
@@ -437,6 +438,74 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             if got != want {
                 return Err(format!("jobs (running, waiting) are {got:?}"));
             }
+        }
+        "fake-job" => {
+            // fake-job <seconds> <megabytes>: a copy of 20 files at a steady pace.
+            let mut it = arg.split_whitespace().filter_map(|x| x.parse::<f64>().ok());
+            let (secs, mb) = (it.next().ok_or("usage: fake-job <seconds> <megabytes>")?, it.next().unwrap_or(100.0));
+            r.app.jobs.start(
+                w.win.upcast_ref(),
+                "Copying 20 items to “backup”",
+                move |ctx| {
+                    use std::sync::atomic::Ordering;
+                    let total = (mb * 1e6) as u64;
+                    ctx.bytes_total.store(total, Ordering::Relaxed);
+                    ctx.files_total.store(20, Ordering::Relaxed);
+                    ctx.set_phase(failbrauwser::ops::job::Phase::Working);
+                    let steps = (secs * 20.0).max(1.0) as u64;
+                    for i in 1..=steps {
+                        ctx.wait_while_paused();
+                        if ctx.is_cancelled() {
+                            return Err(failbrauwser::ops::fastcopy::cancelled());
+                        }
+                        // Faster in the middle, like a copy that meets bigger files.
+                        let wave = 0.6 + 0.4 * (i as f64 / steps as f64 * std::f64::consts::PI).sin();
+                        ctx.add_bytes(((total / steps) as f64 * wave) as u64);
+                        let file = (i * 20 / steps).min(19);
+                        ctx.files_done.store(file, Ordering::Relaxed);
+                        ctx.set_current(format!("holiday-video-{:02}.mkv", file + 1));
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    ctx.bytes_done.store(total, Ordering::Relaxed);
+                    Ok(Vec::new())
+                },
+                |_| {},
+            );
+        }
+        "wait-progress-chart" => {
+            // wait-progress-chart <points>: the progress window shows a speed chart this long.
+            let n: usize = arg.parse().map_err(|_| "bad number")?;
+            wait(r, move |r| Ok(r.app.jobs.progress_window().is_some() && r.app.jobs.chart_points() >= n));
+        }
+        "expect-progress-text" => {
+            fn texts(w: &gtk::Widget, out: &mut Vec<String>) {
+                if let Some(l) = w.downcast_ref::<gtk::Label>() {
+                    if l.is_visible() {
+                        out.push(l.text().to_string());
+                    }
+                }
+                if let Some(c) = w.downcast_ref::<gtk::Container>() {
+                    c.children().iter().for_each(|ch| texts(ch, out));
+                }
+            }
+            let win = r.app.jobs.progress_window().ok_or("no progress window")?;
+            let mut all = Vec::new();
+            texts(win.upcast_ref(), &mut all);
+            if !all.iter().any(|t| t.contains(arg)) {
+                return Err(format!("the progress window shows {all:?}"));
+            }
+        }
+        "progress-snapshot" => {
+            // The progress window drawn into a PNG.
+            let win = r.app.jobs.progress_window().ok_or("no progress window")?;
+            let alloc = win.allocation();
+            win.size_allocate(&alloc);
+            let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, alloc.width(), alloc.height()).map_err(|e| e.to_string())?;
+            let cr = gtk::cairo::Context::new(&surface).map_err(|e| e.to_string())?;
+            win.draw(&cr);
+            drop(cr);
+            let pb = gtk::gdk::pixbuf_get_from_surface(&surface, 0, 0, alloc.width(), alloc.height()).ok_or("cannot read the drawing")?;
+            pb.savev(arg, "png", &[]).map_err(|e| e.to_string())?;
         }
         "wait-no-jobs" => wait(r, |r| Ok(!r.app.jobs.is_busy())),
         "show-compress" => {
