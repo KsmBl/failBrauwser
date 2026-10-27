@@ -106,6 +106,78 @@ pub fn parse_smbclient(text: &str) -> Vec<Share> {
         .collect()
 }
 
+/// What asking a computer for its shared folders as a guest found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Probe {
+    /// The folders it shares (maybe none).
+    Shares(Vec<Share>),
+    /// It wants a user name and password before it lists anything.
+    Locked,
+    /// It did not answer as a file server.
+    Nothing,
+    /// Could not ask (no `smbclient`).
+    Unknown,
+}
+
+impl Probe {
+    /// Whether the Network page lists the computer: only the ones with folders to open,
+    /// or that may have some behind a password.
+    pub fn worth_showing(&self) -> bool {
+        match self {
+            Probe::Shares(s) => !s.is_empty(),
+            Probe::Locked | Probe::Unknown => true,
+            Probe::Nothing => false,
+        }
+    }
+}
+
+/// What `smbclient -g -N -L` printed: its folders, or why there are none.
+pub fn classify_smbclient(stdout: &str, stderr: &str) -> Probe {
+    let shares = parse_smbclient(stdout);
+    if !shares.is_empty() {
+        return Probe::Shares(shares);
+    }
+    let all = format!("{stdout}\n{stderr}");
+    const LOCKED: [&str; 4] = ["NT_STATUS_ACCESS_DENIED", "NT_STATUS_LOGON_FAILURE", "NT_STATUS_ACCOUNT_DISABLED", "NT_STATUS_ACCOUNT_RESTRICTION"];
+    if LOCKED.iter().any(|c| all.contains(c)) {
+        Probe::Locked
+    } else if all.lines().any(|l| l.starts_with("Disk|") || l.starts_with("IPC|") || l.starts_with("Printer|")) {
+        // It answered, with nothing but hidden folders and printers.
+        Probe::Shares(Vec::new())
+    } else {
+        Probe::Nothing
+    }
+}
+
+/// Asks `host` for its shared folders as a guest (never shows a password dialog); gives up
+/// after `timeout`.
+pub fn probe_shares(host: &str, timeout: std::time::Duration) -> Probe {
+    use std::process::{Command, Stdio};
+    let child = Command::new("smbclient")
+        .args(["-g", "-N", "-L", &format!("//{host}"), "-t", &timeout.as_secs().max(1).to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else { return Probe::Unknown };
+    let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Probe::Nothing;
+            }
+        }
+    }
+    match child.wait_with_output() {
+        Ok(out) => classify_smbclient(&String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)),
+        Err(_) => Probe::Unknown,
+    }
+}
+
 /// The address of a shared folder: `smb://nas/My%20Files`.
 pub fn share_uri(address: &str, share: &str) -> String {
     format!("smb://{}/{}", address, glib::uri_escape_string(share, None::<&str>, false))
@@ -148,6 +220,22 @@ mod tests {
         assert_eq!(nas.ip.as_deref(), Some("192.168.1.198"));
         assert_eq!(nas.uri(), "smb://NAS.local/");
         assert_eq!(all.iter().find(|c| c.name == "192.168.1.20").unwrap().ip, None);
+    }
+
+    #[test]
+    fn guest_listings() {
+        let listed = "Disk|Music|Songs\nIPC|IPC$|IPC Service (Samba)\n";
+        assert_eq!(classify_smbclient(listed, ""), Probe::Shares(vec![Share { name: "Music".into(), comment: "Songs".into() }]));
+        // A router that answers SMB without sharing anything.
+        let empty = "IPC|IPC$|IPC Service\nDisk|print$|Printer Drivers\n";
+        assert_eq!(classify_smbclient(empty, ""), Probe::Shares(Vec::new()));
+        // Windows wants a password before listing.
+        assert_eq!(classify_smbclient("", "session setup failed: NT_STATUS_ACCESS_DENIED\n"), Probe::Locked);
+        assert_eq!(classify_smbclient("", "do_connect: Connection to 10.0.0.9 failed (Error NT_STATUS_CONNECTION_REFUSED)\n"), Probe::Nothing);
+        assert!(!Probe::Nothing.worth_showing());
+        assert!(!Probe::Shares(Vec::new()).worth_showing());
+        assert!(Probe::Locked.worth_showing() && Probe::Unknown.worth_showing());
+        assert!(classify_smbclient(listed, "").worth_showing());
     }
 
     #[test]

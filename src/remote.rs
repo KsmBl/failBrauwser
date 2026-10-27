@@ -3,7 +3,7 @@
 
 use gtk::glib;
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -172,8 +172,155 @@ fn reverse_name(addr: Ipv4Addr) -> Option<String> {
     }
 }
 
-/// Asks every address on the local networks whether it takes SMB connections. Blocks for
-/// about a second (many addresses are tried at once).
+/// The NetBIOS node status request (RFC 1002 4.2.17): "what are your names?" for `*`.
+pub fn nbstat_request(id: u16) -> Vec<u8> {
+    let mut p = Vec::with_capacity(50);
+    p.extend_from_slice(&id.to_be_bytes());
+    p.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+    // "*" padded with zeros to 16 bytes, each byte as two letters A..P.
+    p.push(32);
+    for b in std::iter::once(b'*').chain(std::iter::repeat_n(0u8, 15)) {
+        p.push(b'A' + (b >> 4));
+        p.push(b'A' + (b & 0x0f));
+    }
+    p.push(0);
+    p.extend_from_slice(&[0, 0x21, 0, 1]);
+    p
+}
+
+/// The computer's own name in a node status answer: the first unique name of type 00
+/// (workstation) or 20 (file server), not a group (workgroup) name.
+pub fn parse_nbstat(answer: &[u8], id: u16) -> Option<String> {
+    if answer.len() < 12 || answer[..2] != id.to_be_bytes() || answer[2] & 0x80 == 0 {
+        return None;
+    }
+    // Header, the name (as sent, or a pointer to it), type, class, TTL, data length.
+    let mut i = 12;
+    i = skip_dns_name(answer, i)?;
+    i += 10;
+    let count = *answer.get(i)? as usize;
+    i += 1;
+    (0..count).find_map(|n| {
+        let e = answer.get(i + n * 18..i + n * 18 + 18)?;
+        let group = e[16] & 0x80 != 0;
+        let name = String::from_utf8_lossy(&e[..15]).trim_end_matches([' ', '\0']).to_string();
+        (!group && matches!(e[15], 0x00 | 0x20) && !name.is_empty()).then_some(name)
+    })
+}
+
+/// The position after the DNS name starting at `i`.
+fn skip_dns_name(p: &[u8], mut i: usize) -> Option<usize> {
+    loop {
+        let len = *p.get(i)? as usize;
+        if len == 0 {
+            return Some(i + 1);
+        }
+        if len & 0xc0 == 0xc0 {
+            return Some(i + 2);
+        }
+        i += 1 + len;
+    }
+}
+
+/// The DNS name at `i`, following compression pointers.
+fn read_dns_name(p: &[u8], mut i: usize) -> Option<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for _ in 0..64 {
+        let len = *p.get(i)? as usize;
+        if len == 0 {
+            return Some(labels.join("."));
+        }
+        if len & 0xc0 == 0xc0 {
+            i = ((len & 0x3f) << 8) | *p.get(i + 1)? as usize;
+            continue;
+        }
+        labels.push(String::from_utf8_lossy(p.get(i + 1..i + 1 + len)?).into_owned());
+        i += 1 + len;
+    }
+    None
+}
+
+/// A DNS question for the name of `addr` (`4.3.2.1.in-addr.arpa`, PTR), as mDNS asks it.
+pub fn ptr_request(id: u16, addr: Ipv4Addr) -> Vec<u8> {
+    let mut p = Vec::with_capacity(48);
+    p.extend_from_slice(&id.to_be_bytes());
+    p.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+    let o = addr.octets();
+    for label in [o[3].to_string(), o[2].to_string(), o[1].to_string(), o[0].to_string(), "in-addr".into(), "arpa".into()] {
+        p.push(label.len() as u8);
+        p.extend_from_slice(label.as_bytes());
+    }
+    p.push(0);
+    p.extend_from_slice(&[0, 12, 0, 1]);
+    p
+}
+
+/// The name in the first PTR record of a DNS answer.
+pub fn parse_ptr(answer: &[u8], id: u16) -> Option<String> {
+    if answer.len() < 12 || answer[..2] != id.to_be_bytes() || answer[2] & 0x80 == 0 {
+        return None;
+    }
+    let questions = u16::from_be_bytes([answer[4], answer[5]]);
+    let answers = u16::from_be_bytes([answer[6], answer[7]]);
+    let mut i = 12;
+    for _ in 0..questions {
+        i = skip_dns_name(answer, i)? + 4;
+    }
+    for _ in 0..answers {
+        i = skip_dns_name(answer, i)?;
+        let kind = u16::from_be_bytes([*answer.get(i)?, *answer.get(i + 1)?]);
+        let len = u16::from_be_bytes([*answer.get(i + 8)?, *answer.get(i + 9)?]) as usize;
+        i += 10;
+        if kind == 12 {
+            return read_dns_name(answer, i).map(|n| n.trim_end_matches('.').to_string()).filter(|n| !n.is_empty());
+        }
+        i += len;
+    }
+    None
+}
+
+/// Sends `request` to `to` over UDP and hands the answer to `parse`; None after `timeout`.
+fn ask_udp(to: SocketAddr, request: &[u8], timeout: Duration, parse: impl Fn(&[u8]) -> Option<String>) -> Option<String> {
+    let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    sock.set_read_timeout(Some(timeout)).ok()?;
+    sock.send_to(request, to).ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    let mut buf = [0u8; 1500];
+    while std::time::Instant::now() < deadline {
+        let (n, from) = sock.recv_from(&mut buf).ok()?;
+        if from.ip() == to.ip() {
+            if let Some(name) = parse(&buf[..n]) {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// The name a Windows or Samba computer answers to (NetBIOS, UDP port 137 at `to`).
+pub fn netbios_name(to: SocketAddr, timeout: Duration) -> Option<String> {
+    let id = (std::process::id() as u16) ^ 0x4e42;
+    ask_udp(to, &nbstat_request(id), timeout, |a| parse_nbstat(a, id))
+}
+
+/// The name a computer announces itself under (`nas.local`), asked directly (mDNS, UDP
+/// port 5353 at `to`).
+pub fn mdns_name(to: SocketAddr, addr: Ipv4Addr, timeout: Duration) -> Option<String> {
+    let id = (std::process::id() as u16) ^ 0x6d44;
+    ask_udp(to, &ptr_request(id, addr), timeout, |a| parse_ptr(a, id))
+}
+
+/// The best name for a computer: from the network's DNS (`nas.fritz.box`), its own mDNS
+/// name (`nas.local`), or its NetBIOS name (`NAS`).
+pub fn host_name(addr: Ipv4Addr) -> Option<String> {
+    let t = Duration::from_millis(700);
+    reverse_name(addr)
+        .or_else(|| mdns_name(SocketAddr::from((addr, 5353)), addr, t))
+        .or_else(|| netbios_name(SocketAddr::from((addr, 137)), t))
+}
+
+/// Asks every address on the local networks whether it takes SMB connections, and what the
+/// ones that do are called. Blocks for a second or two (many addresses are tried at once).
 pub fn find_smb_servers() -> Vec<Host> {
     let neighbours = std::fs::read_to_string("/proc/net/arp").map(|t| parse_arp(&t)).unwrap_or_default();
     let targets = scan_targets(&local_networks(), &neighbours);
@@ -194,7 +341,7 @@ pub fn find_smb_servers() -> Vec<Host> {
         handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
     });
     std::thread::scope(|s| {
-        let handles: Vec<_> = found.iter().map(|a| s.spawn(move || Host { addr: *a, name: reverse_name(*a) })).collect();
+        let handles: Vec<_> = found.iter().map(|a| s.spawn(move || Host { addr: *a, name: host_name(*a) })).collect();
         handles.into_iter().filter_map(|h| h.join().ok()).collect()
     })
 }
@@ -235,6 +382,91 @@ mod tests {
         assert!(!suggestion_matches("smb://192.168.1.198", "smb://192.168.1.198"));
         assert!(!suggestion_matches("smb://192.168.1.198", "/home"));
         assert!(!suggestion_matches("smb://192.168.1.198", ""));
+    }
+
+    /// A node status answer from a Samba server called NAS in workgroup WORKGROUP.
+    fn nbstat_answer(id: u16) -> Vec<u8> {
+        let req = nbstat_request(id);
+        let mut a = req[..12].to_vec();
+        a[2] = 0x84;
+        a[5] = 0;
+        a[7] = 1;
+        a.extend_from_slice(&req[12..46]);
+        a.extend_from_slice(&[0, 0x21, 0, 1, 0, 0, 0, 0]);
+        let names: [(&str, u8, u8); 3] = [("WORKGROUP", 0x00, 0x80), ("NAS", 0x00, 0x04), ("NAS", 0x20, 0x04)];
+        a.extend_from_slice(&((1 + names.len() * 18 + 46) as u16).to_be_bytes());
+        a.push(names.len() as u8);
+        for (n, suffix, flags) in names {
+            let mut e = format!("{n:<15}").into_bytes();
+            e.push(suffix);
+            e.extend_from_slice(&[flags, 0]);
+            a.extend_from_slice(&e);
+        }
+        a.extend_from_slice(&[0u8; 46]);
+        a
+    }
+
+    #[test]
+    fn netbios_names() {
+        let req = nbstat_request(7);
+        assert_eq!(req.len(), 50);
+        assert_eq!(&req[12..15], &[32, b'C', b'K']);
+        assert_eq!(&req[46..], &[0, 0x21, 0, 1]);
+        assert_eq!(parse_nbstat(&nbstat_answer(7), 7).as_deref(), Some("NAS"));
+        // Someone else's answer, a request and junk are no names.
+        assert_eq!(parse_nbstat(&nbstat_answer(7), 8), None);
+        assert_eq!(parse_nbstat(&req, 7), None);
+        assert_eq!(parse_nbstat(&[0x00, 0x07, 0x84], 7), None);
+    }
+
+    #[test]
+    fn mdns_names() {
+        let addr = Ipv4Addr::new(192, 168, 1, 198);
+        let req = ptr_request(9, addr);
+        assert_eq!(&req[12..16], b"\x03198");
+        // The answer repeats the question and points back at its name.
+        let mut a = req.clone();
+        a[2] = 0x84;
+        a[7] = 1;
+        a.extend_from_slice(&[0xc0, 12, 0, 12, 0, 1, 0, 0, 0, 120]);
+        let target = b"\x03nas\x05local\x00";
+        a.extend_from_slice(&(target.len() as u16).to_be_bytes());
+        a.extend_from_slice(target);
+        assert_eq!(parse_ptr(&a, 9).as_deref(), Some("nas.local"));
+        assert_eq!(parse_ptr(&a, 10), None);
+        assert_eq!(parse_ptr(&req, 9), None);
+        assert_eq!(parse_ptr(&a[..40], 9), None);
+    }
+
+    #[test]
+    fn names_asked_over_udp() {
+        // A stand-in computer answering NetBIOS and mDNS questions on this machine.
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let at = server.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            for _ in 0..2 {
+                let (n, from) = server.recv_from(&mut buf).unwrap();
+                let id = u16::from_be_bytes([buf[0], buf[1]]);
+                let reply = if buf[n - 3] == 0x21 {
+                    nbstat_answer(id)
+                } else {
+                    let mut a = buf[..n].to_vec();
+                    a[2] = 0x84;
+                    a[7] = 1;
+                    a.extend_from_slice(&[0xc0, 12, 0, 12, 0, 1, 0, 0, 0, 120, 0, 9, 3, b'p', b'c', b'1', 3, b'l', b'a', b'n', 0]);
+                    a
+                };
+                server.send_to(&reply, from).unwrap();
+            }
+        });
+        let wait = Duration::from_secs(2);
+        assert_eq!(netbios_name(at, wait).as_deref(), Some("NAS"));
+        assert_eq!(mdns_name(at, Ipv4Addr::new(127, 0, 0, 1), wait).as_deref(), Some("pc1.lan"));
+        t.join().unwrap();
+        // Nobody answering: no name, after the timeout.
+        let silent = UdpSocket::bind("127.0.0.1:0").unwrap();
+        assert_eq!(netbios_name(silent.local_addr().unwrap(), Duration::from_millis(100)), None);
     }
 
     #[test]

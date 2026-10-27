@@ -20,7 +20,7 @@
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
-//! `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
+//! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
 //! `expect-side-drive-marked <name> : <place>`, `quit`. Blank lines and `#` comments are ignored.
 
@@ -632,6 +632,14 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
         "wait-network-row" => {
             let want = arg.to_string();
             wait(r, move |r| Ok(super::network::row_titles(&r.window.current_pane()).contains(&want)));
+        }
+        "expect-network-subtitle" => {
+            // expect-network-subtitle <row> = <second line>
+            let (row, want) = arg.split_once(" = ").ok_or("usage: expect-network-subtitle <row> = <text>")?;
+            let got = super::network::row_subtitle(&w.current_pane(), row.trim()).ok_or("no such row")?;
+            if got != want.trim() {
+                return Err(format!("second line is {got:?}"));
+            }
         }
         "expect-network-rows" => {
             let got = super::network::row_titles(&w.current_pane()).join(" | ");
