@@ -451,6 +451,37 @@ pub fn rename(w: &Window, pane: &Rc<Pane>, item: &Item, new: &str) {
     );
 }
 
+/// Renames over an entry that is there: the entry in the way is deleted first.
+pub fn rename_replacing(w: &Window, pane: &Rc<Pane>, item: &Item, new: &str) {
+    let (Location::Archive(a), Item::Archive(n)) = (pane.location(), item) else { return };
+    let from = n.path.clone();
+    let to = a.entry_path(new);
+    let weak = Rc::downgrade(&w.me());
+    let name = new.to_string();
+    let a2 = a.clone();
+    w.app.jobs.start(
+        w.win.upcast_ref(),
+        format!("Renaming “{}”", n.name),
+        move |ctx| {
+            tracked(ctx, || {
+                let v = Vfs::global();
+                v.remove(&a2, std::slice::from_ref(&to))?;
+                v.rename(&a2, &from, &to)
+            })
+            .map(|_| Vec::new())
+            .map_err(io)
+        },
+        move |outcome| {
+            if let Some(w) = weak.upgrade() {
+                refresh_archive_tabs(&w, &a);
+                if matches!(outcome, Outcome::Done(_)) {
+                    w.current_pane().select_when_present(vec![name.clone().into()]);
+                }
+            }
+        },
+    );
+}
+
 pub fn create(w: &Window, loc: &Location, name: &str, folder: bool) {
     let Location::Archive(a) = loc.clone() else { return };
     let path = a.entry_path(name);

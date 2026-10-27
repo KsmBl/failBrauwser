@@ -278,6 +278,10 @@ impl Pane {
         self.st.borrow().all.iter().any(|i| i.display_name() == name)
     }
 
+    pub fn item_named(&self, name: &str) -> Option<Item> {
+        self.st.borrow().all.iter().find(|i| i.display_name() == name).cloned()
+    }
+
     pub fn focus_view(&self) {
         if self.stack.visible_child_name().as_deref() == Some("icons") {
             self.icons.grab_focus();

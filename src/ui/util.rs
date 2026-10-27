@@ -329,6 +329,65 @@ pub fn valid_file_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && name != "." && name != ".." && !name.contains('\0')
 }
 
+/// The choice when a new name is taken already.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameTaken {
+    Overwrite,
+    /// Choose another name.
+    Rename,
+    Cancel,
+}
+
+/// Asks what to do when renaming onto a name that exists: overwrite what is there, choose
+/// another name or leave it. `folder`: what is there is a folder.
+pub fn ask_name_taken(parent: &impl IsA<gtk::Window>, name: &str, place: &str, folder: bool, on: impl Fn(NameTaken) + 'static) {
+    if super::selftest::active() {
+        if let Some(a) = super::selftest::scripted_answer() {
+            use failbrauwser::ops::job::Answer;
+            let choice = match a {
+                Answer::Replace => NameTaken::Overwrite,
+                Answer::KeepBoth => NameTaken::Rename,
+                _ => NameTaken::Cancel,
+            };
+            glib::idle_add_local_once(move || on(choice));
+            return;
+        }
+    }
+    let d = gtk::MessageDialog::new(
+        Some(parent),
+        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+        gtk::MessageType::Warning,
+        gtk::ButtonsType::None,
+        &format!("“{name}” already exists"),
+    );
+    let detail = if folder {
+        format!("A folder with this name is already in “{place}”. Overwriting it deletes that folder and everything in it.")
+    } else {
+        format!("A file with this name is already in “{place}”. Overwriting it replaces that file.")
+    };
+    d.set_secondary_text(Some(&detail));
+    d.add_button("_Cancel", gtk::ResponseType::Cancel);
+    d.add_button("_Rename…", gtk::ResponseType::Other(1));
+    if let Some(b) = d.add_button("_Overwrite", gtk::ResponseType::Other(0)).downcast_ref::<gtk::Button>() {
+        b.style_context().add_class("destructive-action");
+    }
+    d.set_default_response(gtk::ResponseType::Other(1));
+    // Closing the dialog answers once more (as a delete event).
+    let answered = std::cell::Cell::new(false);
+    d.connect_response(move |d, resp| {
+        if answered.replace(true) {
+            return;
+        }
+        on(match resp {
+            gtk::ResponseType::Other(0) => NameTaken::Overwrite,
+            gtk::ResponseType::Other(1) => NameTaken::Rename,
+            _ => NameTaken::Cancel,
+        });
+        d.close();
+    });
+    d.show();
+}
+
 /// Yes/No confirmation.
 pub fn confirm(parent: &impl IsA<gtk::Window>, title: &str, detail: &str, ok_label: &str, on_ok: impl Fn() + 'static) {
     if super::selftest::active() {
