@@ -263,6 +263,14 @@ and the first one opens. It shows in the side panel and on the drives page under
 name; *Eject* unmounts it and detaches it again. A double click still opens an image like a
 folder, which also works for VHD, VMDK, QCOW2 and other formats Linux cannot mount.
 
+**Comparing folders:** *Tools → Compare Folders* (or *Compare* in the right-click menu of two
+selected folders; otherwise this folder and the one another tab shows) lists what differs
+between two folders, however deep: only on the left or right, newer on one side, or the same
+date with another size. *Compare contents* also compares files of the same size byte by byte,
+*Show identical* lists the rest too. *Copy to Right* / *Copy to Left* copies what is missing
+or older on that side — the selected rows, or all of them — keeping the dates, and compares
+again; nothing is ever deleted.
+
 **Checksums:** *Properties* of a file has *Calculate MD5 and SHA-256* (read once for both,
 with progress) and *Compare with Clipboard*, which finds an MD5 or SHA-256 in the copied text
 (also a `sha256sum` line or `sha256:…`) and says whether it is this file's.

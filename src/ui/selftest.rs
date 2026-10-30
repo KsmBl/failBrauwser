@@ -20,7 +20,7 @@
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
-//! `fake-share <folder>`, `fake-image <file> = <folder>`, `expect-menu-item <label>`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
+//! `fake-share <folder>`, `fake-image <file> = <folder>`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
 //! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
 //! `expect-side-drive-marked <name> : <place>`, `quit`. Blank lines and `#` comments are ignored.
@@ -527,6 +527,14 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("jobs (running, waiting) are {got:?}"));
             }
         }
+        "wait-compare-rows" => {
+            // wait-compare-rows <path state | …>: the compare window's rows, once it is done.
+            let want = arg.to_string();
+            wait(r, move |_| Ok(super::compare::current().is_some_and(|c| !c.is_busy() && c.row_texts().join(" | ") == want)));
+        }
+        "compare-show-identical" => super::compare::current().ok_or("no compare window")?.set_show_same(arg == "on"),
+        "compare-copy" => super::compare::current().ok_or("no compare window")?.click_copy(arg == "right"),
+        "close-compare" => unsafe { super::compare::current().ok_or("no compare window")?.window.destroy() },
         "expect-menu-item" | "expect-no-menu-item" => {
             // The right-click menu of the selection has (or has not) this item.
             fn labels(m: &gio::MenuModel, out: &mut Vec<String>) {

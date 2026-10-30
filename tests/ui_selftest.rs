@@ -137,6 +137,39 @@ fn disk_image_as_drive() {
 }
 
 #[test]
+fn compare_folders() {
+    run_checked(
+        "compare.fbt",
+        &[],
+        |t| {
+            let put = |rel: &str, text: &str, age: u64| {
+                let p = t.join(rel);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(&p, text).unwrap();
+                let f = std::fs::File::options().write(true).open(&p).unwrap();
+                f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age)).unwrap();
+            };
+            put("left/same.txt", "same", 5000);
+            put("right/same.txt", "same", 5000);
+            put("left/only-left.txt", "l", 50);
+            put("right/only-right.txt", "r", 50);
+            put("left/sub/report.txt", "new report", 50);
+            put("right/sub/report.txt", "old", 5000);
+            put("left/notes.txt", "old notes", 5000);
+            put("right/notes.txt", "new notes", 50);
+            put("left/photos/beach.jpg", "jpg", 50);
+        },
+        |t| {
+            // Copied: missing and newer from the left; the right's newer notes untouched.
+            assert_eq!(std::fs::read_to_string(t.join("right/sub/report.txt")).unwrap(), "new report");
+            assert_eq!(std::fs::read_to_string(t.join("right/only-left.txt")).unwrap(), "l");
+            assert_eq!(std::fs::read_to_string(t.join("right/notes.txt")).unwrap(), "new notes");
+            assert!(t.join("right/only-right.txt").exists());
+        },
+    );
+}
+
+#[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();

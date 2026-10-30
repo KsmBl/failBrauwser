@@ -1,0 +1,15 @@
+# Two folders compared from the right-click menu; what is missing or newer on the left is
+# copied to the right with a click, and then they agree.
+open $T
+select left | right
+expect-menu-item Compare
+action win.compare-folders
+wait-compare-rows notes.txt ⇠ right newer | only-left.txt ⇢ only left | only-right.txt ⇠ only right | photos/ ⇢ only left | sub/report.txt ⇢ left newer
+compare-show-identical on
+wait-compare-rows notes.txt ⇠ right newer | only-left.txt ⇢ only left | only-right.txt ⇠ only right | photos/ ⇢ only left | same.txt = identical | sub/report.txt ⇢ left newer
+compare-show-identical off
+compare-copy right
+wait-exists $T/right/photos/beach.jpg
+wait-no-jobs
+wait-compare-rows notes.txt ⇠ right newer | only-right.txt ⇠ only right
+close-compare

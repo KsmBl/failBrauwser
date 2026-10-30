@@ -7,6 +7,7 @@ pub mod archive;
 pub mod backend;
 pub mod batchrename;
 pub mod clipboard;
+pub mod compare;
 pub mod compress;
 pub mod customactions;
 pub mod desktoplink;

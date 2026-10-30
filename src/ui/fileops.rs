@@ -36,6 +36,19 @@ pub fn install_actions(w: &Window) {
     w.add_action("new-file", new_file);
     w.add_action("link-on-desktop", link_on_desktop);
     w.add_action("undo", undo_last);
+    w.add_action("compare-folders", |w| {
+        // Two folders selected: those; else this folder and the one another tab shows.
+        let pane = w.current_pane();
+        let dirs: Vec<PathBuf> = pane.selected_items().iter().filter(|i| i.is_dir_like()).filter_map(|i| i.path().cloned()).collect();
+        let (left, right) = if let [a, b] = dirs.as_slice() {
+            (Some(a.clone()), Some(b.clone()))
+        } else {
+            let here = pane.location().local_path().map(Path::to_path_buf);
+            let other = w.panes().iter().filter_map(|p| p.location().local_path().map(Path::to_path_buf)).find(|p| Some(p) != here.as_ref());
+            (here, other)
+        };
+        super::compare::show(w, left, right);
+    });
     w.add_action("mount-image", |w| {
         let image = w.current_pane().selected_items().first().and_then(|i| i.path().cloned());
         if let Some(image) = image {
