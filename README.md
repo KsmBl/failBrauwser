@@ -282,6 +282,15 @@ date with another size. *Compare contents* also compares files of the same size 
 or older on that side — the selected rows, or all of them — keeping the dates, and compares
 again; nothing is ever deleted.
 
+**Finding duplicates:** *Tools → Find Duplicates* searches a folder and every folder in it
+for files with the same bytes and — with *Compare pictures by what they show* — for pictures
+that show the same thing at another resolution or saved again (compared by their content,
+not their metadata: a small grey version's brightness pattern and colours, and the shape).
+Each group is shown side by side, pictures as pictures, with name, folder, resolution, size
+and date under each, and the biggest picture (or the oldest file) ticked to keep; *Delete
+Unticked* moves the others to the trash (<kbd>Ctrl</kbd>+<kbd>Z</kbd> brings them back),
+*Skip* and *Previous* go through the groups.
+
 **Checksums:** *Properties* of a file has *Calculate MD5 and SHA-256* (read once for both,
 with progress) and *Compare with Clipboard*, which finds an MD5 or SHA-256 in the copied text
 (also a `sha256sum` line or `sha256:…`) and says whether it is this file's.
