@@ -79,7 +79,9 @@ current desktop theme (here: Adwaita dark with Breeze colors and a Windows XP ic
 
 The script builds everything, installs the program, the archive helper, a launcher and the icon,
 and registers a background instance that starts with your session (`--no-autostart` to skip
-that; windows then take a moment longer the first time).
+that; windows then take a moment longer the first time). It also makes failBrauwser the open
+and save dialog of applications that ask the desktop portal for one (`--no-file-chooser` to
+keep the desktop's; see *File chooser for other applications* below).
 
 ### Requirements
 
@@ -290,6 +292,19 @@ Each group is shown side by side, pictures as pictures, with name, folder, resol
 and date under each, and the biggest picture (or the oldest file) ticked to keep; *Delete
 Unticked* moves the others to the trash (<kbd>Ctrl</kbd>+<kbd>Z</kbd> brings them back),
 *Skip* and *Previous* go through the groups.
+
+**File chooser for other applications:** applications that open and save files through the
+desktop portal (`xdg-desktop-portal`) — Flatpak applications, Firefox and Chromium, Qt
+applications with the portal platform theme (set in tileWin sessions), GTK 4 applications and
+GTK 3 ones started with `GTK_USE_PORTAL=1` — get a failBrauwser window instead of the GTK
+dialog: the side panel, path bar, tabs, list and icon views, the archive and network support,
+and a bar at the bottom with the name (when saving, the name without its extension selected),
+the file types the application offers and its button. A double click opens folders and picks
+files; saving over a file asks first; several files are picked with <kbd>Ctrl</kbd>+click.
+`install.sh` registers the backend (`failbrauwser.portal` and its D-Bus service) and sets
+`org.freedesktop.impl.portal.FileChooser=failbrauwser` in
+`~/.config/xdg-desktop-portal/portals.conf` (created from the system's default when there is
+none; `--uninstall` takes it out again); every other portal stays as it was.
 
 **Checksums:** *Properties* of a file has *Calculate MD5 and SHA-256* (read once for both,
 with progress) and *Compare with Clipboard*, which finds an MD5 or SHA-256 in the copied text
