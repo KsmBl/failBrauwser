@@ -170,6 +170,14 @@ fn compare_folders() {
 }
 
 #[test]
+fn servers_on_the_network_page() {
+    run_checked("servers.fbt", &[], |_| {}, |t| {
+        let saved = std::fs::read_to_string(t.join("config/failbrauwser/servers")).unwrap();
+        assert_eq!(saved, "Pi\tsftp://me@pi.local:2222/srv/My%20Files\n");
+    });
+}
+
+#[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();

@@ -235,7 +235,8 @@ pub fn mount_remote(parent: &impl IsA<gtk::Window>, uri: &str, done: impl FnOnce
             Err(e) if e.matches(gio::IOErrorEnum::AlreadyMounted) => Ok(()),
             Err(e) if [gio::IOErrorEnum::NotSupported, gio::IOErrorEnum::NotMountableFile, gio::IOErrorEnum::NotMounted].iter().any(|c| e.matches(*c)) => Err(format!(
                 "{e}\n\nThe GVfs backend for this kind of address is not installed \
-                 (for smb:// install “gvfs-smb”, for sftp:// “gvfs-sftp”…)."
+                 (for smb:// install “gvfs-smb”; dav:// and davs:// (WebDAV) come with “gvfs-dnssd” on Arch, \
+                 “gvfs-backends” on Debian and Ubuntu)."
             )),
             Err(e) => Err(e.to_string()),
         };

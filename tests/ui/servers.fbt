@@ -1,0 +1,32 @@
+# Servers added to the Network page under a name: added, changed, removed, kept.
+open network:///
+expect-network-rows 
+network-add-server
+wait-dialog Add Server
+dialog-set Add Server : server-name = Raspberry Pi
+dialog-set Add Server : server-kind = sftp
+dialog-set Add Server : server-host = pi.local
+dialog-set Add Server : server-port = 2222
+dialog-set Add Server : server-user = me
+dialog-set Add Server : server-folder = srv/My Files
+expect-dialog-label Add Server : sftp://me@pi.local:2222/srv/My%20Files
+dialog-button Add Server : Add
+wait-network-row Raspberry Pi
+expect-network-subtitle Raspberry Pi = SFTP (SSH) — me@pi.local:2222/srv/My Files
+network-add-server
+wait-dialog Add Server
+dialog-set Add Server : server-name = Cloud
+dialog-set Add Server : server-kind = davs
+dialog-set Add Server : server-host = cloud.example.org
+dialog-set Add Server : server-folder = remote.php/dav/files/anna
+dialog-button Add Server : Add
+wait-network-row Cloud
+expect-network-rows Raspberry Pi | Cloud
+# Renamed, and the other one removed.
+network-menu Raspberry Pi : Edit…
+wait-dialog Edit Server
+dialog-set Edit Server : server-name = Pi
+dialog-button Edit Server : Save
+wait-network-row Pi
+network-menu Cloud : Remove
+expect-network-rows Pi

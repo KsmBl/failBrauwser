@@ -16,7 +16,7 @@
 //! `shortcut-menu <entry> : <item>` (`Show Hidden Entry/<name>` for the submenu),
 //! `shortcut-drag <entry> > <before entry>`, `shortcut-drop <folder> > <before entry>`,
 //! `window-snapshot <png>`, `wait-error <text>`, `wait-dialog <text>`,
-//! `dialog-button <dialog text> : <button>`, `dialog-entry <dialog text> = <text>`, `expect-dialog-entry <dialog text> = <text>`, `wait-no-dialog <text>`, `properties-choose-app <desktop id>`, `clipboard-text <text>`, `batch-set <field> = <value>`, `expect-batch-preview <a -> b | …>`, `expect-batch-status <text>`, `properties-button <label>`, `wait-properties-text <text>`,
+//! `dialog-button <dialog text> : <button>`, `dialog-entry <dialog text> = <text>`, `expect-dialog-entry <dialog text> = <text>`, `wait-no-dialog <text>`, `properties-choose-app <desktop id>`, `clipboard-text <text>`, `batch-set <field> = <value>`, `dialog-set <dialog> : <field> = <value>`, `expect-dialog-label <dialog> : <text>`, `network-add-server`, `expect-batch-preview <a -> b | …>`, `expect-batch-status <text>`, `properties-button <label>`, `wait-properties-text <text>`,
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
@@ -164,6 +164,22 @@ fn find_widget<T: IsA<gtk::Widget>>(w: &gtk::Widget) -> Option<T> {
         return Some(t.clone());
     }
     w.downcast_ref::<gtk::Container>()?.children().iter().find_map(find_widget::<T>)
+}
+
+/// Sets a field of a dialog: text, number, check box (`on`) or choice (its id).
+fn set_field(w: &gtk::Widget, value: &str) -> Result<(), String> {
+    if let Some(spin) = w.downcast_ref::<gtk::SpinButton>() {
+        spin.set_value(value.parse().map_err(|_| "not a number")?);
+    } else if let Some(e) = w.downcast_ref::<gtk::Entry>() {
+        e.set_text(value);
+    } else if let Some(c) = w.downcast_ref::<gtk::CheckButton>() {
+        c.set_active(value == "on");
+    } else if let Some(c) = w.downcast_ref::<gtk::ComboBoxText>() {
+        c.set_active_id(Some(value));
+    } else {
+        return Err("cannot set that field".into());
+    }
+    Ok(())
 }
 
 /// The widget under `w` with this name.
@@ -340,22 +356,28 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let want = arg.to_string();
             wait(r, move |_| Ok(find_dialog(&want).is_none()));
         }
+        "network-add-server" => super::network::add_server(&w.current_pane())?,
+        "dialog-set" => {
+            // dialog-set <dialog text> : <field name> = <value>
+            let (dialog, rest) = arg.split_once(" : ").ok_or("usage: dialog-set <dialog> : <field> = <value>")?;
+            let (name, value) = rest.split_once(" = ").ok_or("usage: dialog-set <dialog> : <field> = <value>")?;
+            let d = find_dialog(dialog.trim()).ok_or("no such dialog")?;
+            set_field(&find_named(d.upcast_ref(), name.trim()).ok_or("no such field")?, value)?;
+        }
+        "expect-dialog-label" => {
+            // expect-dialog-label <dialog text> : <label text>
+            let (dialog, want) = arg.split_once(" : ").ok_or("usage: expect-dialog-label <dialog> : <text>")?;
+            let d = find_dialog(dialog.trim()).ok_or("no such dialog")?;
+            let texts = label_texts(d.upcast_ref());
+            if !texts.iter().any(|t| t == want) {
+                return Err(format!("labels: {texts:?}"));
+            }
+        }
         "batch-set" => {
             // batch-set <widget name> = <value>: a field of the batch rename dialog.
             let (name, value) = arg.split_once(" = ").map(|(n, v)| (n.trim(), v)).ok_or("need <field> = <value>")?;
             let d = super::batchrename::open_dialog().ok_or("no batch rename dialog")?;
-            let w = find_named(d.upcast_ref(), name).ok_or("no such field")?;
-            if let Some(spin) = w.downcast_ref::<gtk::SpinButton>() {
-                spin.set_value(value.parse().map_err(|_| "not a number")?);
-            } else if let Some(e) = w.downcast_ref::<gtk::Entry>() {
-                e.set_text(value);
-            } else if let Some(c) = w.downcast_ref::<gtk::CheckButton>() {
-                c.set_active(value == "on");
-            } else if let Some(c) = w.downcast_ref::<gtk::ComboBoxText>() {
-                c.set_active_id(Some(value));
-            } else {
-                return Err("cannot set that field".into());
-            }
+            set_field(&find_named(d.upcast_ref(), name).ok_or("no such field")?, value)?;
         }
         "expect-batch-preview" => {
             let got = super::batchrename::preview_rows().join(" | ");

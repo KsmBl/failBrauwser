@@ -118,6 +118,13 @@ through GVfs, asking for a password if needed, and opens as its local GVfs folde
 While you type one, the bar suggests addresses opened before, SMB servers found on the
 local network (searched in the background, about two seconds) and, once a server is typed
 with its slash, that server's shares. Home and Drives are in the side panel.
+**Servers by name:** *Add Server…* on the Network page keeps an SFTP, WebDAV (HTTPS or HTTP),
+FTP or Windows server under a name of your choice (server, port, user and folder; the address
+is shown as you type). They are listed below the computers; a double click mounts and opens
+one (asking for a password where needed), and the right-click menu edits, removes, pins or
+links them. They are kept in `~/.config/failbrauwser/servers`. WebDAV needs GVfs's WebDAV
+backend (`gvfs-dnssd` on Arch, `gvfs-backends` on Debian and Ubuntu).
+
 Network addresses also open from the command line (`failbrauwser smb://nas/share`) and from
 other applications. Mounted shares (SMB, SFTP, FTP, WebDAV, NFS) are listed with the drives in
 the side panel and on the drives page — "Music on nas", with a fill bar and free space where

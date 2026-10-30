@@ -15,6 +15,7 @@ pub mod network;
 pub mod ops;
 pub mod remote;
 pub mod search;
+pub mod servers;
 pub mod shortcuts;
 pub mod thumbs;
 pub mod trash;
