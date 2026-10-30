@@ -8,6 +8,7 @@ use super::util;
 use super::window::Window;
 use failbrauwser::location::Location;
 use failbrauwser::ops::copy::{self, Mode};
+use failbrauwser::ops::undo::{self, Step, Undoable};
 use failbrauwser::ops::{delete, names};
 use gtk::prelude::*;
 use gtk::gio;
@@ -34,7 +35,57 @@ pub fn install_actions(w: &Window) {
     w.add_action("new-folder", new_folder);
     w.add_action("new-file", new_file);
     w.add_action("link-on-desktop", link_on_desktop);
+    w.add_action("undo", undo_last);
     update_sensitivity(w);
+    update_undo(w);
+}
+
+/// Enables Ctrl+Z while there is something to take back, and says what in its tooltip.
+pub fn update_undo(w: &Window) {
+    set_enabled(w, "undo", w.app.next_undo().is_some());
+}
+
+/// Takes the last operation back.
+fn undo_last(w: &Window) {
+    let Some(u) = w.app.take_undo() else { return };
+    let weak = Rc::downgrade(&w.me());
+    let what = u.what.clone();
+    w.app.jobs.start(
+        w.win.upcast_ref(),
+        format!("Undoing: {}", u.what),
+        move |ctx| undo::undo(ctx, &u.step),
+        move |outcome| {
+            let Some(w) = weak.upgrade() else { return };
+            if let Outcome::Done(back) = outcome {
+                w.set_status(&format!("Undone: {what}"));
+                select_paths(&w, back);
+            }
+            for p in w.panes() {
+                if matches!(p.location(), Location::Search(_)) {
+                    p.reload();
+                }
+            }
+        },
+    );
+}
+
+/// Selects these paths in the tabs showing their folders, once they appear.
+pub fn select_paths(w: &Window, paths: &[PathBuf]) {
+    for p in w.panes() {
+        let Some(dir) = p.location().local_path().map(Path::to_path_buf) else { continue };
+        let names: Vec<OsString> = paths.iter().filter(|x| x.parent() == Some(&dir)).filter_map(|x| x.file_name().map(|n| n.to_os_string())).collect();
+        if !names.is_empty() {
+            p.select_when_present(names);
+        }
+    }
+}
+
+/// "“a.txt”" for one item, "3 items" for more.
+fn what(paths: &[PathBuf]) -> String {
+    match paths {
+        [one] => format!("“{}”", one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+        many => count_label(many.len(), "item"),
+    }
 }
 
 fn set_enabled(w: &Window, name: &str, on: bool) {
@@ -54,7 +105,9 @@ pub fn update_sensitivity(w: &Window) {
     set_enabled(w, "cut", n > 0 && writable);
     set_enabled(w, "paste", writable && browsable);
     set_enabled(w, "paste-into", n == 1 && writable);
-    set_enabled(w, "rename", n == 1 && writable);
+    // Several files on disk are renamed together.
+    let all_local = n > 0 && pane.selected_items().iter().all(|i| matches!(i, Item::Fs(_) | Item::Found(..)));
+    set_enabled(w, "rename", writable && (n == 1 || all_local));
     set_enabled(w, "trash", n > 0 && writable && matches!(loc, Location::Dir(_)));
     let in_trash = loc == Location::Trash;
     set_enabled(w, "delete", n > 0 && (writable || in_trash));
@@ -71,7 +124,7 @@ pub fn update_sensitivity(w: &Window) {
         set_enabled(w, "cut", on_disk);
         set_enabled(w, "trash", on_disk);
         set_enabled(w, "delete", on_disk);
-        set_enabled(w, "rename", on_disk && n == 1);
+        set_enabled(w, "rename", on_disk);
     }
 }
 
@@ -150,14 +203,32 @@ pub fn transfer(w: &Window, sources: Vec<ClipSource>, dest: Location, mode: Mode
             let weak = Rc::downgrade(&w.me());
             // Copies to the same drive wait for each other.
             let key = std::fs::metadata(&dir).ok().map(|m| std::os::unix::fs::MetadataExt::dev(&m));
+            // What went where, for Ctrl+Z.
+            let pairs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let p2 = pairs.clone();
             w.app.jobs.start_queued(
                 w.win.upcast_ref(),
                 title,
                 key,
-                move |ctx| copy::transfer(ctx, &paths, &dir, mode, &opts),
+                move |ctx| {
+                    let made = copy::transfer_pairs(ctx, &paths, &dir, mode, &opts)?;
+                    *p2.lock().unwrap() = made.clone();
+                    Ok(made.into_iter().map(|(_, dst)| dst).collect())
+                },
                 move |outcome| {
                     after();
-                    if let (Some(w), Outcome::Done(created)) = (weak.upgrade(), outcome) {
+                    let Some(w) = weak.upgrade() else { return };
+                    // Even a cancelled copy made what it made: Ctrl+Z takes that back.
+                    let pairs = std::mem::take(&mut *pairs.lock().unwrap());
+                    let made: Vec<PathBuf> = pairs.iter().map(|(_, d)| d.clone()).filter(|d| d.symlink_metadata().is_ok()).collect();
+                    if !made.is_empty() {
+                        let (verb, step) = match mode {
+                            Mode::Move => ("Move", Step::Moved(pairs)),
+                            Mode::Copy => ("Copy", Step::Copied(made.clone())),
+                        };
+                        w.app.remember(Undoable { what: format!("{verb} {}", what(&made)), step });
+                    }
+                    if let Outcome::Done(created) = outcome {
                         select_created(&w, &dest, created);
                     }
                 },
@@ -206,7 +277,18 @@ fn trash_selection(w: &Window) {
     }
     let title = format!("Moving {} to the trash", count_label(paths.len(), "item"));
     let done = refresh_search_after(w);
-    w.app.jobs.start(w.win.upcast_ref(), title, move |ctx| delete::trash(ctx, &paths).map(|_| Vec::new()), done);
+    let weak = Rc::downgrade(&w.me());
+    let p2 = paths.clone();
+    w.app.jobs.start(w.win.upcast_ref(), title, move |ctx| delete::trash(ctx, &paths).map(|_| Vec::new()), move |outcome| {
+        if let Some(w) = weak.upgrade() {
+            // Those that are gone are in the trash (or were deleted when asked to).
+            let gone: Vec<PathBuf> = p2.into_iter().filter(|p| p.symlink_metadata().is_err()).collect();
+            if !gone.is_empty() {
+                w.app.remember(Undoable { what: format!("Move {} to the trash", what(&gone)), step: Step::Trashed(gone) });
+            }
+        }
+        done(outcome);
+    });
 }
 
 fn delete_selection(w: &Window) {
@@ -237,7 +319,12 @@ fn delete_selection(w: &Window) {
 
 fn rename_selection(w: &Window) {
     let pane = w.current_pane();
-    let Some(item) = pane.selected_items().into_iter().next() else { return };
+    let items = pane.selected_items();
+    if items.len() > 1 {
+        super::batchrename::show(w, items);
+        return;
+    }
+    let Some(item) = items.into_iter().next() else { return };
     let initial = item.display_name();
     ask_rename(w, item, initial);
 }
@@ -264,6 +351,7 @@ fn ask_rename(w: &Window, item: Item, initial: String) {
                 match copy::rename_noreplace(&e.path, &target) {
                     Ok(()) => {
                         pane.select_when_present(vec![OsString::from(&new)]);
+                        w.app.remember(Undoable { what: format!("Rename “{old}”"), step: Step::Moved(vec![(e.path.clone(), target.clone())]) });
                         w.app.refresh_shares();
                     }
                     Err(err) if err.raw_os_error() == Some(libc::EEXIST) => {
@@ -358,6 +446,7 @@ fn create_named(w: &Window, title: &str, default: &str, folder: bool) {
                 match res {
                     Ok(()) => {
                         w.current_pane().select_when_present(vec![OsString::from(&name)]);
+                        w.app.remember(Undoable { what: format!("Create “{name}”"), step: Step::Created(path.clone()) });
                         w.app.refresh_shares();
                     }
                     Err(e) => util::show_error(&w.win, &format!("Cannot create “{name}”"), &e.to_string()),

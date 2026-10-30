@@ -5,6 +5,7 @@ pub mod app;
 pub mod appearance;
 pub mod archive;
 pub mod backend;
+pub mod batchrename;
 pub mod clipboard;
 pub mod compress;
 pub mod customactions;

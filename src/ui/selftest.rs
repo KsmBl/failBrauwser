@@ -16,7 +16,7 @@
 //! `shortcut-menu <entry> : <item>` (`Show Hidden Entry/<name>` for the submenu),
 //! `shortcut-drag <entry> > <before entry>`, `shortcut-drop <folder> > <before entry>`,
 //! `window-snapshot <png>`, `wait-error <text>`, `wait-dialog <text>`,
-//! `dialog-button <dialog text> : <button>`, `dialog-entry <dialog text> = <text>`, `expect-dialog-entry <dialog text> = <text>`, `wait-no-dialog <text>`, `properties-choose-app <desktop id>`, `clipboard-text <text>`, `properties-button <label>`, `wait-properties-text <text>`,
+//! `dialog-button <dialog text> : <button>`, `dialog-entry <dialog text> = <text>`, `expect-dialog-entry <dialog text> = <text>`, `wait-no-dialog <text>`, `properties-choose-app <desktop id>`, `clipboard-text <text>`, `batch-set <field> = <value>`, `expect-batch-preview <a -> b | …>`, `expect-batch-status <text>`, `properties-button <label>`, `wait-properties-text <text>`,
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
@@ -164,6 +164,14 @@ fn find_widget<T: IsA<gtk::Widget>>(w: &gtk::Widget) -> Option<T> {
         return Some(t.clone());
     }
     w.downcast_ref::<gtk::Container>()?.children().iter().find_map(find_widget::<T>)
+}
+
+/// The widget under `w` with this name.
+fn find_named(w: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
+    if w.widget_name() == name {
+        return Some(w.clone());
+    }
+    w.downcast_ref::<gtk::Container>()?.children().iter().find_map(|c| find_named(c, name))
 }
 
 /// The Properties dialog shown.
@@ -331,6 +339,37 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
         "wait-no-dialog" => {
             let want = arg.to_string();
             wait(r, move |_| Ok(find_dialog(&want).is_none()));
+        }
+        "batch-set" => {
+            // batch-set <widget name> = <value>: a field of the batch rename dialog.
+            let (name, value) = arg.split_once(" = ").map(|(n, v)| (n.trim(), v)).ok_or("need <field> = <value>")?;
+            let d = super::batchrename::open_dialog().ok_or("no batch rename dialog")?;
+            let w = find_named(d.upcast_ref(), name).ok_or("no such field")?;
+            if let Some(spin) = w.downcast_ref::<gtk::SpinButton>() {
+                spin.set_value(value.parse().map_err(|_| "not a number")?);
+            } else if let Some(e) = w.downcast_ref::<gtk::Entry>() {
+                e.set_text(value);
+            } else if let Some(c) = w.downcast_ref::<gtk::CheckButton>() {
+                c.set_active(value == "on");
+            } else if let Some(c) = w.downcast_ref::<gtk::ComboBoxText>() {
+                c.set_active_id(Some(value));
+            } else {
+                return Err("cannot set that field".into());
+            }
+        }
+        "expect-batch-preview" => {
+            let got = super::batchrename::preview_rows().join(" | ");
+            if got != arg {
+                return Err(format!("preview is {got:?}"));
+            }
+        }
+        "expect-batch-status" => {
+            let d = super::batchrename::open_dialog().ok_or("no batch rename dialog")?;
+            let w = find_named(d.upcast_ref(), "batch-status").ok_or("no status")?;
+            let text = w.downcast_ref::<gtk::Label>().map(|l| l.text().to_string()).unwrap_or_default();
+            if !text.contains(arg) {
+                return Err(format!("status is {text:?}"));
+            }
         }
         "clipboard-text" => gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_text(arg),
         "properties-button" => {
