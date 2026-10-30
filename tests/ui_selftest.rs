@@ -89,6 +89,11 @@ fn share_without_change_notices() {
 }
 
 #[test]
+fn checksums_in_properties() {
+    run("checksums.fbt", |t| std::fs::write(t.join("abc.txt"), "abc").unwrap());
+}
+
+#[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();
