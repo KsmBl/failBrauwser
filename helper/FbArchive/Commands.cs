@@ -36,6 +36,19 @@ public static class Commands {
   /// Every format that holds files: archives, file system images, tar combinations, single-file
   /// compressors and encoding wrappers (audio, video and image containers are left out).
   /// </summary>
+  /// <summary>
+  /// Images of whole disks that the library files with its archives: virtual machine disks,
+  /// optical and floppy images, and backup and forensic images of drives.
+  /// </summary>
+  static readonly HashSet<string> DiskImageIds = new(StringComparer.OrdinalIgnoreCase) {
+    "Vhd", "Vhdx", "Vmdk", "Vdi", "Qcow2", "Qed", "ParallelsHdd", "BochsDisk",
+    "Dmg", "Sparseimage", "Sparsebundle", "AndroidSparse", "Ffu", "Partclone",
+    "BinCue", "Cdi", "CloneCd", "Cso", "Mdf", "Nrg",
+    "Imd", "Td0", "Hfe", "Woz", "Dms", "Dcs", "PackDisk", "xDisk", "Zap", "LhF", "Nbi",
+    "Ewf", "Aff4", "AcronisTib", "AcronisTibx", "Aomei", "EaseUsPbd", "Ghost", "Macrium",
+    "MacriumPreX", "Paragon", "Veeam",
+  };
+
   public static void Formats(Utf8JsonWriter w) {
     w.WriteStartArray("formats");
     foreach (var d in FormatRegistry.All) {
@@ -51,7 +64,8 @@ public static class Commands {
       w.WriteStartObject();
       w.WriteString("id", d.Id);
       w.WriteString("name", d.DisplayName);
-      w.WriteString("kind", kind == "archive" && FormatRegistry.FilesystemFormatIds.Contains(d.Id) ? "filesystem" : kind);
+      var diskImage = FormatRegistry.FilesystemFormatIds.Contains(d.Id) || DiskImageIds.Contains(d.Id);
+      w.WriteString("kind", kind == "archive" && diskImage ? "filesystem" : kind);
       w.WriteBoolean("create", CanCreate(d));
       w.WriteBoolean("modify", caps.HasFlag(FormatCapabilities.CanModify));
       w.WriteBoolean("password", caps.HasFlag(FormatCapabilities.SupportsPassword));

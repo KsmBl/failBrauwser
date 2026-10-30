@@ -106,6 +106,19 @@ mod tests {
     }
 
     #[test]
+    fn disk_images_are_not_offered_as_archives() {
+        let groups = create_groups(false);
+        let ids = |name: &str| groups.iter().find(|(g, _)| *g == name).map(|(_, v)| v.iter().map(|f| f.id).collect::<Vec<_>>()).unwrap_or_default();
+        let (archives, disks) = (ids("Archives"), ids("Disk Images"));
+        for id in ["Vhd", "Vhdx", "Vmdk", "Vdi", "Qcow2", "Dmg", "Sparseimage", "Cso", "Ntfs", "Iso", "Fat"] {
+            assert!(disks.contains(&id) && !archives.contains(&id), "{id}");
+        }
+        for id in ["Rar", "Cab", "Lzh", "Wim"] {
+            assert!(archives.contains(&id) && !disks.contains(&id), "{id}");
+        }
+    }
+
+    #[test]
     fn every_creatable_format_is_offered_once() {
         let offered: Vec<&str> = create_groups(true).into_iter().flat_map(|(_, v)| v).map(|f| f.id).chain(COMMON.iter().copied()).collect();
         let mut sorted = offered.clone();
