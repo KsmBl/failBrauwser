@@ -3,6 +3,7 @@
 pub mod checksum;
 pub mod compare;
 pub mod dirsize;
+pub mod duplicates;
 pub mod entry;
 pub mod format;
 pub mod listing;

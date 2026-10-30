@@ -13,6 +13,7 @@ pub mod customactions;
 pub mod desktoplink;
 pub mod dirsize;
 pub mod dnd;
+pub mod duplicates;
 pub mod drives;
 pub mod extensions;
 pub mod fileops;
