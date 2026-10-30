@@ -100,7 +100,8 @@ that; windows then take a moment longer the first time).
 | <kbd>Alt</kbd>+<kbd>Home</kbd> / <kbd>Alt</kbd>+<kbd>D</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> | Home / Drives / Network |
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | Type a location (also paths through archives: `~/a.zip/docs`) |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> | Copy, cut, paste (works with other file managers too) |
-| <kbd>F2</kbd>, <kbd>Delete</kbd>, <kbd>Shift</kbd>+<kbd>Delete</kbd> | Rename, move to trash, delete |
+| <kbd>F2</kbd>, <kbd>Delete</kbd>, <kbd>Shift</kbd>+<kbd>Delete</kbd> | Rename (several: batch rename), move to trash, delete |
+| <kbd>Ctrl</kbd>+<kbd>Z</kbd> | Undo the last operation |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> | New folder |
 | <kbd>Ctrl</kbd>+<kbd>H</kbd> | Show hidden files |
 | <kbd>Ctrl</kbd>+<kbd>1</kbd> / <kbd>Ctrl</kbd>+<kbd>2</kbd> | Detailed list / icons |
@@ -239,6 +240,20 @@ that lists the files of all subfolders, however deep, in one list with a *Folder
 bar, until you turn it off; with *Files Only* it gives every file below a folder at once.
 The list fills in while the folders are read, and the window stays usable meanwhile, also
 for a hundred thousand files and more.
+
+**Renaming many files:** <kbd>F2</kbd> with several files selected opens one dialog for all
+of them: *Find* and *Replace with* (plain text or a regular expression with `$1` groups,
+case ignored if asked), a *New name* template — `{name}` the name, `{ext}` its extension,
+`{n}` a number counting up from *Number from* (`{n:03}` for 001, 002, …), `{date}` the day it
+was modified — and the case (lowercase, UPPERCASE, Title Case). The preview shows every new
+name and marks the ones that cannot be used (empty, the same twice, a file already there);
+names can be swapped. It works for search results from many folders too.
+
+**Undo:** <kbd>Ctrl</kbd>+<kbd>Z</kbd> (*Edit → Undo*) takes back the last operation, then the
+one before: a rename (one file or many) or move goes back, a copy goes to the trash, a new
+folder or document is removed again (to the trash if something was put into it), and what was
+moved to the trash comes back. What changed since (a name taken again, a file gone) is left as
+it is and reported. Deleting permanently and overwriting cannot be undone.
 
 **Checksums:** *Properties* of a file has *Calculate MD5 and SHA-256* (read once for both,
 with progress) and *Compare with Clipboard*, which finds an MD5 or SHA-256 in the copied text
