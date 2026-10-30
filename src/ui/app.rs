@@ -99,6 +99,11 @@ impl AppCtx {
         w
     }
 
+    /// Keeps a window built elsewhere (a file chooser) like the others until it closes.
+    pub fn adopt_window(&self, w: Rc<Window>) {
+        self.windows.borrow_mut().push(w);
+    }
+
     pub fn window_closed(&self, closed: &Rc<Window>) {
         self.windows.borrow_mut().retain(|w| !Rc::ptr_eq(w, closed));
         self.save_settings_now();
@@ -216,6 +221,7 @@ pub fn run() -> glib::ExitCode {
         });
         super::actions::install_app_actions(&actx);
         super::shares::follow_sleep(&actx);
+        super::portal::serve(&actx);
         let weak = Rc::downgrade(&actx);
         super::clipboard::connect_changed(move || {
             if let Some(a) = weak.upgrade() {

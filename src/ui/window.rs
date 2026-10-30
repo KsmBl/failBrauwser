@@ -23,6 +23,11 @@ pub struct Window {
     /// The side panel's container; filled by the sidebar.
     pub side: gtk::Box,
     statusbar: gtk::Statusbar,
+    pub menubar: gtk::MenuBar,
+    /// Between the files and the status bar: where a file chooser puts its bar.
+    pub bottom: gtk::Box,
+    /// Set when the window picks files for another application.
+    pub chooser: RefCell<Option<Rc<super::chooser::Chooser>>>,
     back_btn: gtk::ToolButton,
     fwd_btn: gtk::ToolButton,
     up_btn: gtk::ToolButton,
@@ -120,10 +125,12 @@ impl Window {
         statusbar.set_margin_top(0);
         statusbar.set_margin_bottom(0);
 
+        let bottom = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
         vbox.pack_start(&menubar, false, false, 0);
         vbox.pack_start(&toolbar, false, false, 0);
         vbox.pack_start(&paned, true, true, 0);
+        vbox.pack_start(&bottom, false, false, 0);
         vbox.pack_start(&statusbar, false, false, 0);
         win.add(&vbox);
 
@@ -136,6 +143,9 @@ impl Window {
             paned,
             side,
             statusbar,
+            menubar,
+            bottom,
+            chooser: RefCell::new(None),
             back_btn,
             fwd_btn,
             up_btn,
@@ -282,7 +292,11 @@ impl Window {
         }
         let pane = self.current_pane();
         let loc = pane.location();
-        self.win.set_title(&format!("{} - failBrauwser", loc.title()));
+        // A file chooser keeps the application's title ("Save report").
+        match self.chooser.borrow().as_ref().map(|c| c.title()) {
+            Some(t) if !t.is_empty() => self.win.set_title(&t),
+            _ => self.win.set_title(&format!("{} - failBrauwser", loc.title())),
+        }
         self.pathbar.set_location(&loc);
         let icon = match &loc {
             Location::Archive(_) => util::icon_for_type("application/x-archive"),
@@ -343,6 +357,12 @@ impl Window {
     }
 
     pub fn open_items(&self, items: &[Item]) {
+        // Picking files for another application: opening one picks it.
+        let chooser = self.chooser.borrow().clone();
+        if let Some(c) = chooser {
+            c.activated(items);
+            return;
+        }
         // One file no application is set for: if the archive library can read it (a format
         // known by its contents, or by a name that also belongs to other programs), it opens
         // as a folder; otherwise the application chooser comes up as before.
@@ -675,7 +695,7 @@ impl Window {
 
         let weak = self.weak.borrow().clone();
         self.win.connect_delete_event(move |win, _| {
-            if let Some(w) = weak.upgrade() {
+            if let Some(w) = weak.upgrade().filter(|w| w.chooser.borrow().is_none()) {
                 let (width, height) = win.size();
                 let mut s = w.app.settings.borrow_mut();
                 s.window_width = width;

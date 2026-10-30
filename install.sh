@@ -8,6 +8,8 @@
 #   ./install.sh --default       make failBrauwser the default file manager
 #   ./install.sh --no-network    do not install the GVfs SMB backend (smb:// addresses)
 #   ./install.sh --no-archives   do not build archive support (needs no .NET SDK then)
+#   ./install.sh --no-file-chooser  keep the desktop's own open and save dialogs for
+#                                applications that ask the desktop portal for one
 #   ./install.sh --uninstall     remove what an install with the same options put in place
 #
 # Archive support (opening, extracting, creating archives) is a helper built with the
@@ -27,6 +29,7 @@ AUTOSTART=1
 MAKE_DEFAULT=0
 NETWORK=1
 ARCHIVES=1
+FILE_CHOOSER=1
 UNINSTALL=0
 CWB_ROOT=${CWB_ROOT:-"$HERE/vendor/compressionworkbench"}
 
@@ -39,6 +42,7 @@ while [ $# -gt 0 ]; do
         --no-network) NETWORK=0 ;;
         --no-archives) ARCHIVES=0 ;;
         --uninstall) UNINSTALL=1 ;;
+        --no-file-chooser) FILE_CHOOSER=0 ;;
         -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -49,6 +53,42 @@ BIN_DIR="$PREFIX/bin"
 LIB_DIR="$PREFIX/lib/failbrauwser"
 SHARE="$PREFIX/share"
 AUTOSTART_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/failbrauwser.desktop"
+PORTAL_NAME=org.freedesktop.impl.portal.desktop.failbrauwser
+PORTAL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/portals.conf"
+PORTAL_LINE="org.freedesktop.impl.portal.FileChooser=failbrauwser"
+PORTAL_MARK="# Written by failBrauwser's install.sh"
+
+# xdg-desktop-portal reads one portals.conf: the user's takes the place of the system's, so a
+# new one starts from the system's default and only the file chooser goes to failBrauwser.
+portal_conf_add() {
+    mkdir -p "$(dirname "$PORTAL_CONF")"
+    if [ -f "$PORTAL_CONF" ]; then
+        sed -i '/^org\.freedesktop\.impl\.portal\.FileChooser=/d' "$PORTAL_CONF"
+        grep -q '^\[preferred\]' "$PORTAL_CONF" || printf '[preferred]\n' >> "$PORTAL_CONF"
+        sed -i "/^\[preferred\]/a $PORTAL_LINE" "$PORTAL_CONF"
+    else
+        local default=""
+        for f in /usr/share/xdg-desktop-portal/"$(echo "${XDG_CURRENT_DESKTOP%%:*}" | tr '[:upper:]' '[:lower:]')"-portals.conf \
+                 /usr/share/xdg-desktop-portal/portals.conf /usr/share/xdg-desktop-portal/*-portals.conf; do
+            [ -f "$f" ] && default=$(sed -n 's/^default=//p' "$f" | head -1) && [ -n "$default" ] && break
+        done
+        printf '%s\n[preferred]\ndefault=%s\n%s\n' "$PORTAL_MARK" "${default:-gtk}" "$PORTAL_LINE" > "$PORTAL_CONF"
+    fi
+}
+
+portal_conf_remove() {
+    [ -f "$PORTAL_CONF" ] || return 0
+    sed -i "/^$PORTAL_LINE\$/d" "$PORTAL_CONF"
+    # Ours alone: gone again, the system's settings apply as before.
+    if head -1 "$PORTAL_CONF" | grep -qF "$PORTAL_MARK" && [ "$(grep -cv '^\(#.*\|\[preferred\]\|default=.*\|\)$' "$PORTAL_CONF")" = 0 ]; then
+        rm -f "$PORTAL_CONF"
+    fi
+}
+
+# The portal reads its backends when it starts.
+restart_portal() {
+    systemctl --user try-restart xdg-desktop-portal.service 2>/dev/null || true
+}
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 
@@ -67,6 +107,9 @@ if [ "$UNINSTALL" = 1 ]; then
     $SUDO rm -f "$LIB_DIR/fb-archive"
     $SUDO rmdir "$LIB_DIR" 2>/dev/null || true
     rm -f "$AUTOSTART_FILE"
+    $SUDO rm -f "$SHARE/xdg-desktop-portal/portals/failbrauwser.portal" "$SHARE/dbus-1/services/$PORTAL_NAME.service"
+    portal_conf_remove
+    restart_portal
     refresh_caches
     say "Done. Settings in ~/.config/failbrauwser were kept."
     exit 0
@@ -179,6 +222,17 @@ else
     rm -f "$AUTOSTART_FILE"
 fi
 
+if [ "$FILE_CHOOSER" = 1 ]; then
+    say "Answering applications' open and save dialogs (through the desktop portal)"
+    $SUDO install -Dm644 "$HERE/data/failbrauwser.portal" "$SHARE/xdg-desktop-portal/portals/failbrauwser.portal"
+    $SUDO install -Dm644 "$HERE/data/$PORTAL_NAME.service" "$SHARE/dbus-1/services/$PORTAL_NAME.service"
+    $SUDO sed -i "s|^Exec=failbrauwser|Exec=$BIN_DIR/failbrauwser|" "$SHARE/dbus-1/services/$PORTAL_NAME.service"
+    portal_conf_add
+else
+    $SUDO rm -f "$SHARE/xdg-desktop-portal/portals/failbrauwser.portal" "$SHARE/dbus-1/services/$PORTAL_NAME.service"
+    portal_conf_remove
+fi
+
 if [ "$MAKE_DEFAULT" = 1 ]; then
     say "Making failBrauwser the default file manager"
     xdg-mime default "$APP_ID.desktop" inode/directory
@@ -189,6 +243,7 @@ fi
 if [ "$AUTOSTART" = 1 ] && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     (setsid "$BIN_DIR/failbrauwser" --daemon >/dev/null 2>&1 &)
 fi
+restart_portal
 
 say "Installed. Start it from your menu or run: failbrauwser"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "note: $BIN_DIR is not on your PATH" ;; esac

@@ -92,6 +92,8 @@ pub struct Pane {
     scroll_pending: Cell<bool>,
     /// Filter-as-you-type for the current folder (empty: everything).
     filter: RefCell<failbrauwser::search::Query>,
+    /// Files of a type a file chooser asks for (folders are always shown).
+    type_filter: RefCell<Option<failbrauwser::chooser::Filter>>,
     /// A search is running for this tab; cancelled when it goes elsewhere.
     search_cancel: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     searching: Cell<bool>,
@@ -107,6 +109,11 @@ const SHARE_POLL: Duration = Duration::from_secs(3);
 thread_local! {
     /// Self-test: local folders that act like shares (no change notices).
     static FAKE_SHARES: RefCell<Vec<std::path::PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether a file chooser's type filter lets `i` through.
+fn of_type(f: &Option<failbrauwser::chooser::Filter>, i: &Item) -> bool {
+    i.is_dir_like() || f.as_ref().is_none_or(|f| f.matches(&i.display_name(), &i.content_type()))
 }
 
 /// Self-test: `dir` acts like a share without change notices.
@@ -215,6 +222,7 @@ impl Pane {
             thumbs: RefCell::new(std::collections::VecDeque::new()),
             scroll_pending: Cell::new(false),
             filter: RefCell::new(failbrauwser::search::Query::new("")),
+            type_filter: RefCell::new(None),
             search_cancel: RefCell::new(None),
             searching: Cell::new(false),
         });
@@ -292,6 +300,12 @@ impl Pane {
 
     pub fn has_name(&self, name: &str) -> bool {
         self.st.borrow().all.iter().any(|i| i.display_name() == name)
+    }
+
+    /// Shows only files of this type (a file chooser's filter); folders stay.
+    pub fn set_type_filter(&self, f: Option<failbrauwser::chooser::Filter>) {
+        *self.type_filter.borrow_mut() = f;
+        self.refilter();
     }
 
     pub fn item_named(&self, name: &str) -> Option<Item> {
@@ -652,7 +666,8 @@ impl Pane {
         {
             let mut st = self.st.borrow_mut();
             let filter = self.filter.borrow();
-            let visible: Vec<Item> = st.all.iter().filter(|i| (show_hidden || !i.is_hidden()) && show_only.allows(i.is_dir_like()) && filter.matches(&i.display_name())).cloned().collect();
+            let types = self.type_filter.borrow();
+            let visible: Vec<Item> = st.all.iter().filter(|i| (show_hidden || !i.is_hidden()) && show_only.allows(i.is_dir_like()) && filter.matches(&i.display_name()) && of_type(&types, i)).cloned().collect();
             let names: Vec<String> = visible.iter().map(Item::display_name).collect();
             let ranks = model::ranks(names.iter().map(String::as_str));
             for (item, rank) in visible.into_iter().zip(ranks) {
@@ -830,7 +845,8 @@ impl Pane {
             }
             let mut added = false;
             let filter = self.filter.borrow().clone();
-            for item in items.iter().filter(|i| (show_hidden || !i.is_hidden()) && show_only.allows(i.is_dir_like()) && filter.matches(&i.display_name())) {
+            let types = self.type_filter.borrow().clone();
+            for item in items.iter().filter(|i| (show_hidden || !i.is_hidden()) && show_only.allows(i.is_dir_like()) && filter.matches(&i.display_name()) && of_type(&types, i)) {
                 let name = item.os_name();
                 match st.by_name.get(&name).copied() {
                     Some(key) => {
