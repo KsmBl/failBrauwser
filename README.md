@@ -255,6 +255,14 @@ folder or document is removed again (to the trash if something was put into it),
 moved to the trash comes back. What changed since (a name taken again, a file gone) is left as
 it is and reported. Deleting permanently and overwriting cannot be undone.
 
+**Disk images as drives:** right-click an `.iso`, `.img`, `.ntfs`, `.fat`, `.ext4`, `.udf`,
+`.squashfs` or other raw image and choose *Mount as Drive*: it is attached through UDisks2 (no
+root password) and every file system on it mounted, read-write where the file and the file
+system allow (a CD image is read-only, and one the kernel will not write to opens read-only),
+and the first one opens. It shows in the side panel and on the drives page under the image's
+name; *Eject* unmounts it and detaches it again. A double click still opens an image like a
+folder, which also works for VHD, VMDK, QCOW2 and other formats Linux cannot mount.
+
 **Checksums:** *Properties* of a file has *Calculate MD5 and SHA-256* (read once for both,
 with progress) and *Compare with Clipboard*, which finds an MD5 or SHA-256 in the copied text
 (also a `sha256sum` line or `sha256:…`) and says whether it is this file's.

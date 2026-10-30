@@ -127,6 +127,16 @@ fn undo_operations() {
 }
 
 #[test]
+fn disk_image_as_drive() {
+    run("mount_image.fbt", |t| {
+        std::fs::create_dir_all(t.join("inside")).unwrap();
+        std::fs::write(t.join("inside/report.txt"), "r").unwrap();
+        std::fs::write(t.join("backup.ntfs"), "not really").unwrap();
+        std::fs::write(t.join("photos.zip"), "PK").unwrap();
+    });
+}
+
+#[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();

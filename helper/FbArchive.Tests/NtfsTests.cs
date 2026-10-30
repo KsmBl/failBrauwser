@@ -99,6 +99,29 @@ public class NtfsTests {
   }
 
   [Test]
+  public void TheJournalIsBigEnoughForLinuxToMountReadWrite() {
+    // ntfs3 wants two restart pages and 48 record pages of 4 KiB in $LogFile (200 KiB);
+    // a new image's log is never written to, so it is all 0xFF.
+    var root = Directory.CreateTempSubdirectory("fb-ntfs-");
+    try {
+      var f = Path.Combine(root.FullName, "a.txt");
+      File.WriteAllText(f, "a");
+      var img = Path.Combine(root.FullName, "j.ntfs");
+      Commands.Add(img, [new(f, "a.txt")], null, "Ntfs");
+      var bytes = File.ReadAllBytes(img);
+      int longest = 0, run = 0;
+      foreach (var b in bytes) {
+        run = b == 0xFF ? run + 1 : 0;
+        longest = Math.Max(longest, run);
+      }
+      Assert.That(longest, Is.GreaterThanOrEqualTo(50 * 4096));
+    }
+    finally {
+      root.Delete(true);
+    }
+  }
+
+  [Test]
   public void AddingAndRemovingInTheRootKeepsTheIndexBlockSize() {
     // Files added one by one into the root until its index outgrows one block, then
     // most of them removed again: edits in place or laid out anew, never bigger blocks.

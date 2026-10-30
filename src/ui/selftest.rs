@@ -20,7 +20,7 @@
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
-//! `fake-share <folder>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
+//! `fake-share <folder>`, `fake-image <file> = <folder>`, `expect-menu-item <label>`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
 //! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
 //! `expect-side-drive-marked <name> : <place>`, `quit`. Blank lines and `#` comments are ignored.
@@ -526,6 +526,33 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             if got != want {
                 return Err(format!("jobs (running, waiting) are {got:?}"));
             }
+        }
+        "expect-menu-item" | "expect-no-menu-item" => {
+            // The right-click menu of the selection has (or has not) this item.
+            fn labels(m: &gio::MenuModel, out: &mut Vec<String>) {
+                for i in 0..m.n_items() {
+                    if let Some(l) = m.item_attribute_value(i, "label", None).and_then(|v| v.get::<String>()) {
+                        out.push(l.replace('_', ""));
+                    }
+                    for link in ["section", "submenu"] {
+                        if let Some(sub) = m.item_link(i, link) {
+                            labels(&sub, out);
+                        }
+                    }
+                }
+            }
+            let p = w.current_pane();
+            let model = super::extensions::context_menu_model(&w, &p, &p.selected_items());
+            let mut all = Vec::new();
+            labels(model.upcast_ref(), &mut all);
+            if all.iter().any(|l| l == arg) != (cmd == "expect-menu-item") {
+                return Err(format!("menu items: {all:?}"));
+            }
+        }
+        "fake-image" => {
+            // fake-image <image file> = <folder>: mounting the image shows the folder.
+            let (image, dir) = arg.split_once(" = ").ok_or("usage: fake-image <file> = <folder>")?;
+            super::drives::add_fake_image(PathBuf::from(image.trim()), PathBuf::from(dir.trim()));
         }
         "fake-share" => {
             // fake-share <folder>: the folder acts like a network share (no change notices).
