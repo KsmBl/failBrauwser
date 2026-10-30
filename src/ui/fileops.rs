@@ -49,6 +49,10 @@ pub fn install_actions(w: &Window) {
         };
         super::compare::show(w, left, right);
     });
+    w.add_action("find-duplicates", |w| {
+        let here = w.current_pane().location().local_path().map(Path::to_path_buf);
+        super::duplicates::show(w, here);
+    });
     w.add_action("mount-image", |w| {
         let image = w.current_pane().selected_items().first().and_then(|i| i.path().cloned());
         if let Some(image) = image {

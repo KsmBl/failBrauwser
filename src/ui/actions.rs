@@ -246,6 +246,7 @@ pub fn menubar_model() -> gio::Menu {
     let tools = gio::Menu::new();
     section(&tools, |s| {
         item(s, "_Compare Folders…", "win.compare-folders");
+        item(s, "Find _Duplicates…", "win.find-duplicates");
     });
     bar.append_submenu(Some("_Tools"), &tools);
 

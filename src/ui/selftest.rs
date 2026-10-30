@@ -20,7 +20,7 @@
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
-//! `fake-share <folder>`, `fake-image <file> = <folder>`, `sleep-begin`, `sleep-end`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
+//! `fake-share <folder>`, `fake-image <file> = <folder>`, `sleep-begin`, `sleep-end`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `wait-duplicates <n>`, `expect-duplicate-group <*kept | …>`, `duplicate-keep <name>`, `duplicate-click <delete|skip|previous>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
 //! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
 //! `expect-side-drive-marked <name> : <place>`, `quit`. Blank lines and `#` comments are ignored.
@@ -549,6 +549,20 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("jobs (running, waiting) are {got:?}"));
             }
         }
+        "wait-duplicates" => {
+            // wait-duplicates <groups>: the search in the duplicates window is done.
+            let n: usize = arg.parse().map_err(|_| "bad number")?;
+            wait(r, move |_| Ok(super::duplicates::current().is_some_and(|d| !d.is_busy() && d.group_count() == n)));
+        }
+        "expect-duplicate-group" => {
+            // expect-duplicate-group <*kept | other | …> (in the order found)
+            let got = super::duplicates::current().ok_or("no duplicates window")?.shown().join(" | ");
+            if got != arg {
+                return Err(format!("group shows {got:?}"));
+            }
+        }
+        "duplicate-keep" => super::duplicates::current().ok_or("no duplicates window")?.keep_only(arg)?,
+        "duplicate-click" => super::duplicates::current().ok_or("no duplicates window")?.click(arg),
         "wait-compare-rows" => {
             // wait-compare-rows <path state | …>: the compare window's rows, once it is done.
             let want = arg.to_string();

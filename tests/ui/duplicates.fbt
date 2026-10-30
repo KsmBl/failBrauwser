@@ -1,0 +1,19 @@
+# Find Duplicates: identical files, and the same picture at another resolution, reviewed side
+# by side; the unticked one goes to the trash and Ctrl+Z brings it back.
+open $T
+action win.find-duplicates
+wait-duplicates 2
+expect-duplicate-group *a.txt | copy of a.txt
+duplicate-click skip
+expect-duplicate-group *beach.png | beach-small.jpg
+duplicate-click previous
+expect-duplicate-group *a.txt | copy of a.txt
+duplicate-click skip
+duplicate-keep beach-small.jpg
+expect-duplicate-group beach.png | *beach-small.jpg
+duplicate-keep beach.png
+duplicate-click delete
+wait-missing $T/photos/small/beach-small.jpg
+wait-duplicates 1
+action win.undo
+wait-exists $T/photos/small/beach-small.jpg

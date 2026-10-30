@@ -177,6 +177,38 @@ fn servers_on_the_network_page() {
     });
 }
 
+/// A picture of soft colour shapes; `variant` moves them.
+fn picture(w: i32, h: i32, variant: i32) -> gtk::gdk_pixbuf::Pixbuf {
+    let pb = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, w, h).unwrap();
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f64 / w as f64, y as f64 / h as f64);
+            let r = ((fx * 6.0 + variant as f64).sin() * 0.5 + 0.5) * 255.0;
+            let g = ((fy * 5.0 - variant as f64 * 1.7).cos() * 0.5 + 0.5) * 255.0;
+            let b = (((fx + fy) * 4.0 + variant as f64 * 2.3).sin() * 0.5 + 0.5) * 255.0;
+            pb.put_pixel(x as u32, y as u32, r as u8, g as u8, b as u8, 255);
+        }
+    }
+    pb
+}
+
+#[test]
+fn find_duplicates() {
+    run("duplicates.fbt", |t| {
+        std::fs::create_dir_all(t.join("photos/small")).unwrap();
+        std::fs::create_dir_all(t.join("docs")).unwrap();
+        picture(1600, 1200, 0).savev(t.join("photos/beach.png"), "png", &[]).unwrap();
+        picture(1600, 1200, 0).scale_simple(400, 300, gtk::gdk_pixbuf::InterpType::Hyper).unwrap().savev(t.join("photos/small/beach-small.jpg"), "jpeg", &[("quality", "75")]).unwrap();
+        picture(1600, 1200, 3).savev(t.join("photos/other.png"), "png", &[]).unwrap();
+        std::fs::write(t.join("docs/a.txt"), "the same text").unwrap();
+        std::fs::write(t.join("docs/copy of a.txt"), "the same text").unwrap();
+        std::fs::write(t.join("docs/b.txt"), "something else").unwrap();
+        // The original is the older one.
+        let f = std::fs::File::options().write(true).open(t.join("docs/a.txt")).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)).unwrap();
+    });
+}
+
 #[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
