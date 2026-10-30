@@ -41,6 +41,15 @@ impl AppCtx {
         self.windows.borrow().clone()
     }
 
+    /// Reads every shown share again: they send no change notices of their own.
+    pub fn refresh_shares(&self) {
+        for w in self.windows() {
+            for p in w.panes() {
+                p.refresh_if_share();
+            }
+        }
+    }
+
     /// Runs `f` for every open window (after a global setting changed).
     pub fn for_each_window(&self, f: impl Fn(&Rc<Window>)) {
         for w in self.windows() {
@@ -161,6 +170,13 @@ pub fn run() -> glib::ExitCode {
             weak: RefCell::new(Weak::new()),
         });
         *actx.weak.borrow_mut() = Rc::downgrade(&actx);
+        // Shares send no change notices: after every operation they are read again.
+        let weak = Rc::downgrade(&actx);
+        actx.jobs.set_on_finished(move || {
+            if let Some(a) = weak.upgrade() {
+                a.refresh_shares();
+            }
+        });
         super::actions::install_app_actions(&actx);
         let weak = Rc::downgrade(&actx);
         super::clipboard::connect_changed(move || {

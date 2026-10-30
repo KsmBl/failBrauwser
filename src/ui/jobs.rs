@@ -77,6 +77,8 @@ pub struct Jobs {
     /// The window manager's chart colors, read each time the window shows (None: the GTK
     /// theme's).
     chart_style: Rc<RefCell<Option<ChartStyle>>>,
+    /// Runs after each operation ends.
+    on_finished: RefCell<Option<Box<dyn Fn()>>>,
     ticking: RefCell<Option<glib::SourceId>>,
     weak: RefCell<Weak<Jobs>>,
 }
@@ -86,7 +88,7 @@ const SHOW_AFTER: Duration = Duration::from_millis(500);
 
 impl Jobs {
     pub fn new() -> Rc<Jobs> {
-        let j = Rc::new(Jobs { jobs: RefCell::new(Vec::new()), window: RefCell::new(None), chart_style: Rc::new(RefCell::new(None)), ticking: RefCell::new(None), weak: RefCell::new(Weak::new()) });
+        let j = Rc::new(Jobs { jobs: RefCell::new(Vec::new()), window: RefCell::new(None), chart_style: Rc::new(RefCell::new(None)), on_finished: RefCell::new(None), ticking: RefCell::new(None), weak: RefCell::new(Weak::new()) });
         *j.weak.borrow_mut() = Rc::downgrade(&j);
         j
     }
@@ -100,6 +102,11 @@ impl Jobs {
         let jobs = self.jobs.borrow();
         let waiting = jobs.iter().filter(|j| j.waiting.is_some()).count();
         (jobs.len() - waiting, waiting)
+    }
+
+    /// `f` runs after each operation ends, whatever came of it.
+    pub fn set_on_finished(&self, f: impl Fn() + 'static) {
+        *self.on_finished.borrow_mut() = Some(Box::new(f));
     }
 
     /// The progress window while it is shown (tests).
@@ -279,6 +286,9 @@ impl Jobs {
             }
             if let Some(f) = job.on_done.take() {
                 f(&outcome);
+            }
+            if let Some(f) = self.on_finished.borrow().as_ref() {
+                f();
             }
         }
         self.update_window();

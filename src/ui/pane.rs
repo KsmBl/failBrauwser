@@ -49,6 +49,8 @@ struct State {
     generation: u64,
     monitor: Option<gio::FileMonitor>,
     refresh_scheduled: bool,
+    /// A re-read is on its way (polling waits for it).
+    reading: bool,
     /// A name to select once the load with this generation finishes.
     pending_select: Option<(u64, OsString)>,
     /// Names to select as soon as they show up (after create, paste, rename), and until when.
@@ -98,6 +100,19 @@ pub struct Pane {
 /// Thumbnails kept in memory per tab; older ones are dropped (and come back from the disk
 /// cache when scrolled into view again).
 const MAX_THUMBS: usize = 400;
+
+/// How often a shown share is read again while its window is in use.
+const SHARE_POLL: Duration = Duration::from_secs(3);
+
+thread_local! {
+    /// Self-test: local folders that act like shares (no change notices).
+    static FAKE_SHARES: RefCell<Vec<std::path::PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Self-test: `dir` acts like a share without change notices.
+pub fn add_fake_share(dir: std::path::PathBuf) {
+    FAKE_SHARES.with(|f| f.borrow_mut().push(dir));
+}
 
 impl Pane {
     pub fn new(settings: Rc<RefCell<Settings>>, location: Location) -> Rc<Pane> {
@@ -178,6 +193,7 @@ impl Pane {
                 next_key: 1,
                 generation: 0,
                 monitor: None,
+                reading: false,
                 refresh_scheduled: false,
                 pending_select: None,
                 select_when_present: Vec::new(),
@@ -676,7 +692,24 @@ impl Pane {
 
     // ── Live updates ─────────────────────────────────────────────────
 
+    /// Whether the folder shown sends no change notices: a share through GVfs, which GIO
+    /// watches through its SMB (or other) backend, and that has none.
+    pub fn on_share(&self) -> bool {
+        self.location().local_path().is_some_and(|p| failbrauwser::ops::gvfs::is_gvfs_path(p) || FAKE_SHARES.with(|f| f.borrow().iter().any(|s| p.starts_with(s))))
+    }
+
+    /// Reads a share again (after an operation that may have changed it).
+    pub fn refresh_if_share(&self) {
+        if self.on_share() && !self.is_loading() {
+            self.schedule_refresh();
+        }
+    }
+
     fn watch(&self, loc: &Location) {
+        if self.on_share() {
+            self.poll_share();
+            return;
+        }
         let Some(path) = backend::watch_path(loc) else { return };
         let file = gio::File::for_path(&path);
         let Ok(monitor) = file.monitor(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE) else {
@@ -692,6 +725,25 @@ impl Pane {
             }
         });
         self.st.borrow_mut().monitor = Some(monitor);
+    }
+
+    /// A share is read again every few seconds while its window is in use and the folder is
+    /// shown, so that changes made elsewhere show up too.
+    fn poll_share(&self) {
+        let generation = self.st.borrow().generation;
+        let weak = self.weak.borrow().clone();
+        glib::timeout_add_local(SHARE_POLL, move || {
+            let Some(p) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if p.st.borrow().generation != generation {
+                return glib::ControlFlow::Break;
+            }
+            let active = p.root.toplevel().and_then(|t| t.downcast::<gtk::Window>().ok()).is_some_and(|w| w.is_active()) || super::selftest::active();
+            let busy = { let st = p.st.borrow(); st.reading || st.refresh_scheduled || st.loading };
+            if active && p.root.is_mapped() && !busy {
+                p.refresh_incremental();
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     /// Coalesces bursts of change events into one re-read.
@@ -715,12 +767,15 @@ impl Pane {
         let (loc, generation) = {
             let mut st = self.st.borrow_mut();
             st.refresh_scheduled = false;
+            st.reading = true;
             (st.location.clone(), st.generation)
         };
         let me = self.me();
         glib::spawn_future_local(async move {
             let l2 = loc.clone();
-            let Ok(res) = gio::spawn_blocking(move || backend::read_location(&l2)).await else { return };
+            let res = gio::spawn_blocking(move || backend::read_location(&l2)).await;
+            me.st.borrow_mut().reading = false;
+            let Ok(res) = res else { return };
             if me.st.borrow().generation != generation {
                 return;
             }

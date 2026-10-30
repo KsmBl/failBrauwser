@@ -1,0 +1,37 @@
+# A network share sends no change notices: what is done to it shows anyway, at once, and
+# what others change shows within a few seconds.
+fake-share $T/share
+open $T/share
+expect-rows 1
+# Copying into it.
+open $T/src
+select a.txt
+action win.copy
+open $T/share
+action win.paste
+wait-row a.txt
+# Deleting from it.
+select existing.txt
+action win.delete
+wait-no-row existing.txt
+# Renaming in it and a new folder.
+select a.txt
+text b.txt
+action win.rename
+wait-row b.txt
+wait-no-row a.txt
+text Made Here
+action win.new-folder
+wait-row Made Here
+# Moving out of it from the side: cut here, paste into a folder of the share's parent.
+select b.txt
+action win.cut
+open $T/src
+action win.paste
+wait-exists $T/src/b.txt
+open $T/share
+wait-no-row b.txt
+# Changed by someone else.
+write-file $T/share/remote.txt = from another computer
+wait-row remote.txt
+expect-rows 2
