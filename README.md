@@ -119,7 +119,11 @@ While you type one, the bar suggests addresses opened before, SMB servers found 
 local network (searched in the background, about two seconds) and, once a server is typed
 with its slash, that server's shares. Home and Drives are in the side panel.
 Network addresses also open from the command line (`failbrauwser smb://nas/share`) and from
-other applications. Shares send no change notices: a share's view is read again as soon as a
+other applications. Mounted shares (SMB, SFTP, FTP, WebDAV, NFS) are listed with the drives in
+the side panel and on the drives page — "Music on nas", with a fill bar and free space where
+the server tells them — and *Eject* disconnects them. When the computer wakes up from sleep,
+the shares mounted before are checked: one that hangs is reconnected, one that sleep took
+away is mounted again, and the tabs showing them are read again. Shares send no change notices: a share's view is read again as soon as a
 copy, move, delete, rename or new folder ends, and every three seconds while its window is in
 use, so changes made from another computer show up too.
 

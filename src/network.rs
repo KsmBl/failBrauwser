@@ -32,9 +32,12 @@ pub struct Share {
 
 /// The short name of a host: `nas.fritz.box` is `nas`; addresses stay as they are.
 pub fn short_name(host: &str) -> String {
-    if host.parse::<std::net::IpAddr>().is_ok() {
+    // A port stays with an address (`10.0.0.5:8080`) and goes with a name (`nas:5005`: nas).
+    let base = host.rsplit_once(':').filter(|(_, p)| p.parse::<u16>().is_ok()).map_or(host, |(b, _)| b);
+    if base.parse::<std::net::IpAddr>().is_ok() || host.parse::<std::net::IpAddr>().is_ok() {
         return host.to_string();
     }
+    let host = base;
     host.split('.').next().filter(|s| !s.is_empty()).unwrap_or(host).to_string()
 }
 
@@ -178,6 +181,34 @@ pub fn probe_shares(host: &str, timeout: std::time::Duration) -> Probe {
     }
 }
 
+/// Address schemes of network shares GVfs mounts (phones and cameras are not among them).
+pub fn is_share_scheme(uri: &str) -> bool {
+    let scheme = uri.split_once("://").map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default();
+    matches!(scheme.as_str(), "smb" | "sftp" | "ssh" | "ftp" | "ftps" | "dav" | "davs" | "webdav" | "webdavs" | "nfs" | "afp")
+}
+
+/// What to do for a share after the computer woke up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AfterResume {
+    /// It was mounted before sleeping and is gone: mount it again.
+    Mount(String),
+    /// It is mounted but does not answer: unmount it and mount it again.
+    Reconnect(String),
+}
+
+/// The shares mounted before sleeping (`before`) and now, with whether each answers:
+/// what to mount again and what to reconnect.
+pub fn after_resume(before: &[String], now: &[(String, bool)]) -> Vec<AfterResume> {
+    let norm = |u: &str| u.trim_end_matches('/').to_ascii_lowercase();
+    let mut out: Vec<AfterResume> = now.iter().filter(|(_, answers)| !answers).map(|(u, _)| AfterResume::Reconnect(u.clone())).collect();
+    for b in before {
+        if !now.iter().any(|(u, _)| norm(u) == norm(b)) {
+            out.push(AfterResume::Mount(b.clone()));
+        }
+    }
+    out
+}
+
 /// The address of a shared folder: `smb://nas/My%20Files`.
 pub fn share_uri(address: &str, share: &str) -> String {
     format!("smb://{}/{}", address, glib::uri_escape_string(share, None::<&str>, false))
@@ -223,6 +254,17 @@ mod tests {
     }
 
     #[test]
+    fn shares_after_waking_up() {
+        let before = vec!["smb://nas/Music/".to_string(), "smb://nas/Photos".to_string(), "sftp://pi/home".to_string()];
+        // Music answers, Photos hangs, the SFTP one was dropped while sleeping.
+        let now = vec![("smb://NAS/Music".to_string(), true), ("smb://nas/Photos/".to_string(), false)];
+        assert_eq!(after_resume(&before, &now), [AfterResume::Reconnect("smb://nas/Photos/".into()), AfterResume::Mount("sftp://pi/home".into())]);
+        assert!(after_resume(&[], &[]).is_empty());
+        assert!(is_share_scheme("smb://nas/x") && is_share_scheme("davs://cloud/dav") && is_share_scheme("SFTP://pi/"));
+        assert!(!is_share_scheme("mtp://Pixel/") && !is_share_scheme("file:///tmp") && !is_share_scheme("/tmp"));
+    }
+
+    #[test]
     fn guest_listings() {
         let listed = "Disk|Music|Songs\nIPC|IPC$|IPC Service (Samba)\n";
         assert_eq!(classify_smbclient(listed, ""), Probe::Shares(vec![Share { name: "Music".into(), comment: "Songs".into() }]));
@@ -251,5 +293,8 @@ mod tests {
         assert_eq!(announced_host("dnssd://x/"), None);
         assert!(!visible_share("print$"));
         assert_eq!(short_name("10.0.0.1"), "10.0.0.1");
+        assert_eq!(short_name("127.0.0.1:8099"), "127.0.0.1:8099");
+        assert_eq!(short_name("nas.local:5005"), "nas");
+        assert_eq!(uri_name("davs://cloud.example.org/remote.php/dav/files/me/"), "me on cloud");
     }
 }

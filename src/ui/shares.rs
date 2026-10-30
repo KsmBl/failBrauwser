@@ -1,5 +1,7 @@
 //! Network shares: opening `smb://…` addresses (typed, given on the command line or from
-//! the side panel), and getting a share back that stopped answering.
+//! the side panel), showing the mounted ones like drives (with their free space), getting a
+//! share back that stopped answering, and after the computer wakes up, mounting again what
+//! sleep took away.
 
 use super::util;
 use super::window::Window;
@@ -14,6 +16,137 @@ use std::rc::Rc;
 thread_local! {
     /// Shares a "not responding" dialog is open for (one dialog per share).
     static ASKING: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    /// The shares mounted when the computer went to sleep.
+    static BEFORE_SLEEP: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// logind's sleep signal (dropped = unsubscribed).
+    static SLEEP: RefCell<Option<gio::SignalSubscription>> = const { RefCell::new(None) };
+}
+
+/// The network shares GVfs has mounted: (address, local folder).
+fn mounted_shares() -> Vec<(String, PathBuf, gio::Mount)> {
+    gio::VolumeMonitor::get()
+        .mounts()
+        .into_iter()
+        .filter_map(|m| {
+            let root = m.root();
+            let uri = root.uri().to_string();
+            failbrauwser::network::is_share_scheme(&uri).then(|| root.path().map(|p| (uri, p, m.clone()))).flatten()
+        })
+        .collect()
+}
+
+/// The mounted network shares as drives, with their fill level where the server tells it.
+pub async fn volumes() -> Vec<(failbrauwser::drives::Volume, Option<failbrauwser::drives::Usage>)> {
+    let mut out = Vec::new();
+    for (uri, path, m) in mounted_shares() {
+        let usage = super::phones::fs_usage(&m.root()).await;
+        let v = failbrauwser::drives::Volume {
+            device: uri.clone(),
+            share_uri: uri,
+            size: usage.map_or(0, |u| u.total),
+            mount_points: vec![path],
+            mountable: true,
+            ejectable: true,
+            rotation_rate: -1,
+            ..Default::default()
+        };
+        out.push((v, usage));
+    }
+    out
+}
+
+/// Unmounts a share shown as a drive; tabs showing it go to the drives page first.
+pub fn eject(w: &Rc<Window>, v: &failbrauwser::drives::Volume, leave: impl Fn(&[PathBuf])) {
+    leave(&v.mount_points);
+    let Some((_, _, m)) = mounted_shares().into_iter().find(|(u, ..)| *u == v.share_uri) else { return };
+    let weak = Rc::downgrade(w);
+    let name = failbrauwser::network::uri_name(&v.share_uri);
+    glib::spawn_future_local(async move {
+        if let Err(e) = m.unmount_with_operation_future(gio::MountUnmountFlags::NONE, gio::MountOperation::NONE).await {
+            if let Some(w) = weak.upgrade() {
+                util::show_error(&w.win, &format!("Cannot disconnect “{name}”"), &e.to_string());
+            }
+        }
+    });
+}
+
+/// Watches the computer going to sleep and waking up (systemd-logind): what was mounted
+/// before is checked afterwards, a share that hangs is reconnected and one that sleep
+/// unmounted is mounted again.
+pub fn follow_sleep(app: &Rc<super::app::AppCtx>) {
+    SLEEP.with(|s| {
+        if s.borrow().is_some() {
+            return;
+        }
+        let Ok(conn) = gio::bus_get_sync(gio::BusType::System, gio::Cancellable::NONE) else { return };
+        let app = Rc::downgrade(app);
+        *s.borrow_mut() = Some(conn.subscribe_to_signal(
+            Some("org.freedesktop.login1"),
+            Some("org.freedesktop.login1.Manager"),
+            Some("PrepareForSleep"),
+            Some("/org/freedesktop/login1"),
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |sig| {
+                let going = sig.parameters.child_value(0).get::<bool>().unwrap_or(false);
+                if going {
+                    sleeping();
+                } else if let Some(app) = app.upgrade() {
+                    // The network needs a moment after waking up.
+                    let app = Rc::downgrade(&app);
+                    glib::timeout_add_local_once(std::time::Duration::from_secs(4), move || {
+                        if let Some(app) = app.upgrade() {
+                            glib::spawn_future_local(async move { resumed(&app).await });
+                        }
+                    });
+                }
+            },
+        ));
+    });
+}
+
+/// Going to sleep (tests): remembers the shares mounted now.
+pub fn sleeping() {
+    let uris: Vec<String> = mounted_shares().into_iter().map(|(u, ..)| u).collect();
+    BEFORE_SLEEP.with(|b| *b.borrow_mut() = uris);
+}
+
+/// After waking up: reconnects shares that hang, mounts again those sleep took away, and
+/// reads the tabs showing them again.
+pub async fn resumed(app: &Rc<super::app::AppCtx>) {
+    let before = BEFORE_SLEEP.with(|b| std::mem::take(&mut *b.borrow_mut()));
+    let mut now = Vec::new();
+    for (uri, path, _) in mounted_shares() {
+        let p = path.clone();
+        let answers = gio::spawn_blocking(move || gvfs::check(&p, std::time::Duration::from_secs(5)).is_ok()).await.unwrap_or(false);
+        now.push((uri, answers));
+    }
+    let Some(w) = app.windows().into_iter().next() else { return };
+    for step in failbrauwser::network::after_resume(&before, &now) {
+        let (uri, hung) = match step {
+            failbrauwser::network::AfterResume::Reconnect(u) => (u, true),
+            failbrauwser::network::AfterResume::Mount(u) => (u, false),
+        };
+        if hung {
+            if let Ok(m) = gio::File::for_uri(&uri).find_enclosing_mount(gio::Cancellable::NONE) {
+                let _ = m.unmount_with_operation_future(gio::MountUnmountFlags::FORCE, gio::MountOperation::NONE).await;
+            }
+            if let Some(root) = gio::File::for_uri(&uri).path() {
+                gvfs::forget(&root);
+            }
+        }
+        let app2 = Rc::downgrade(app);
+        util::mount_remote(&w.win, &uri, move |res| {
+            let (Some(app), Ok(path)) = (app2.upgrade(), res) else { return };
+            for w in app.windows() {
+                for p in w.panes() {
+                    if p.location().local_path().is_some_and(|l| l.starts_with(&path)) {
+                        p.reload();
+                    }
+                }
+            }
+        });
+    }
 }
 
 /// Mounts a network address and opens it, in the current tab or a new one.
