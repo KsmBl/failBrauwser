@@ -137,10 +137,11 @@ public sealed class NtfsWriter {
          this._mftRecordSize, this.UsaOffset, BytesPerSector,
          this._version.StandardInformationLength(), fileName.Length);
 
-  // Size of the $LogFile data region in bytes. Real NTFS typically uses
-  // ≥2 MiB; for our minimal images we size proportionally to the volume
-  // but always allocate at least one cluster.
-  private const int LogFileBytes = 64 * 1024; // 64 KiB — enough for a clean log
+  // Size of the $LogFile data region in bytes (all 0xFF: a log never written to). Real
+  // NTFS typically uses ≥2 MiB. Linux's ntfs3 mounts a volume read-write only when the log
+  // holds two restart pages and 48 record pages of 4 KiB (200 KiB); a smaller one fails
+  // with "failed to replay log file. Can't mount rw!".
+  private const int LogFileBytes = 256 * 1024;
 
   // Size of the $UpCase data stream: 65 536 UTF-16 code units = 128 KiB.
   private const int UpCaseBytes = 65536 * 2;
