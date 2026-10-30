@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod appearance;
 pub mod archive;
+pub mod chooser;
 pub mod clipformat;
 pub mod fs;
 pub mod config;

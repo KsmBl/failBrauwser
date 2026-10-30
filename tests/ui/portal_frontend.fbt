@@ -1,0 +1,9 @@
+# Through xdg-desktop-portal itself: an application asks it for a file, the portal hands
+# the dialog to failBrauwser (named in portals.conf), and the answer comes back.
+open $T/home
+run python3 $UI/portal_call.py Frontend t1 $T/answer.txt 'Pick through the portal'
+wait-chooser
+chooser-open $T/home
+chooser-select pick.txt
+chooser-accept
+wait-file-text $T/answer.txt = 0 file://$T/home/pick.txt

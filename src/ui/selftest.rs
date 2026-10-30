@@ -20,7 +20,7 @@
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
-//! `fake-share <folder>`, `fake-image <file> = <folder>`, `sleep-begin`, `sleep-end`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `wait-duplicates <n>`, `expect-duplicate-group <*kept | …>`, `duplicate-keep <name>`, `duplicate-click <delete|skip|previous>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
+//! `fake-share <folder>`, `fake-image <file> = <folder>`, `sleep-begin`, `sleep-end`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `wait-duplicates <n>`, `run <command>`, `wait-file-text <path> = <text>`, `wait-chooser`, `chooser-open <folder>`, `chooser-select <a | b>`, `expect-chooser-rows <a | b>`, `chooser-name <text>`, `chooser-filter <n>`, `chooser-accept`, `chooser-cancel`, `chooser-activate`, `expect-duplicate-group <*kept | …>`, `duplicate-keep <name>`, `duplicate-click <delete|skip|previous>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
 //! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
 //! `expect-side-drive-marked <name> : <place>`, `quit`. Blank lines and `#` comments are ignored.
@@ -548,6 +548,44 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             if got != want {
                 return Err(format!("jobs (running, waiting) are {got:?}"));
             }
+        }
+        "run" => {
+            // run <shell command>: started, not waited for.
+            std::process::Command::new("sh").arg("-c").arg(arg).spawn().map_err(|e| e.to_string())?;
+        }
+        "wait-file-text" => {
+            // wait-file-text <path> = <text it contains>
+            let (path, want) = arg.split_once(" = ").ok_or("usage: wait-file-text <path> = <text>")?;
+            let (path, want) = (path.to_string(), want.to_string());
+            wait(r, move |_| Ok(std::fs::read_to_string(&path).is_ok_and(|t| t.contains(&want))));
+        }
+        "wait-chooser" => wait(r, |_| Ok(super::chooser::current().is_some_and(|(_, w)| !w.current_pane().is_loading()))),
+        "chooser-open" => {
+            let (_, cw) = super::chooser::current().ok_or("no chooser")?;
+            cw.navigate(Location::Dir(PathBuf::from(arg)));
+            wait(r, |_| Ok(super::chooser::current().is_some_and(|(_, w)| !w.current_pane().is_loading())));
+        }
+        "chooser-select" => {
+            let (_, cw) = super::chooser::current().ok_or("no chooser")?;
+            let names: Vec<OsString> = arg.split(" | ").map(OsString::from).collect();
+            let p = cw.current_pane();
+            let keys = p.keys_for_names(&names);
+            p.select_names(&keys);
+        }
+        "expect-chooser-rows" => {
+            let (_, cw) = super::chooser::current().ok_or("no chooser")?;
+            let got = cw.current_pane().shown_names().join(" | ");
+            if got != arg {
+                return Err(format!("chooser shows {got:?}"));
+            }
+        }
+        "chooser-name" => super::chooser::current().ok_or("no chooser")?.0.set_name(arg),
+        "chooser-filter" => super::chooser::current().ok_or("no chooser")?.0.set_filter(arg.parse().map_err(|_| "bad number")?),
+        "chooser-accept" => super::chooser::current().ok_or("no chooser")?.0.accept_now(),
+        "chooser-cancel" => super::chooser::current().ok_or("no chooser")?.0.cancel(),
+        "chooser-activate" => {
+            let (c, cw) = super::chooser::current().ok_or("no chooser")?;
+            c.activated(&cw.current_pane().selected_items());
         }
         "wait-duplicates" => {
             // wait-duplicates <groups>: the search in the duplicates window is done.
