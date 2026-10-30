@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs failBrauwser with a self-test script inside a headless sway session.
 #   harness.sh <binary> <script> <workdir>
-# The script may use $T for <workdir>. Config, data and trash live below <workdir>, so the
+# The script may use $T for <workdir> and $UI for this folder. Config, data and trash live below <workdir>, so the
 # user's settings and trash are never touched; the GTK theme settings are copied over.
 set -u
 BIN=$1; SCRIPT=$2; T=$3
@@ -24,7 +24,9 @@ fi
 # Icon themes installed per user live in the data dir; keep them visible.
 [ -d "$TH/.local/share/icons" ] && ln -sfn "$TH/.local/share/icons" "$T/data/icons"
 
-sed "s|\$T|$T|g" "$SCRIPT" > "$T/script.fbt"
+# $T: the work folder; $UI: this folder (helpers next to the scripts).
+UI=$(cd "$(dirname "$0")" && pwd)
+sed "s|\$T|$T|g; s|\$UI|$UI|g" "$SCRIPT" > "$T/script.fbt"
 CONF=$(mktemp)
 cat > "$CONF" <<SWAY
 output HEADLESS-1 resolution 1280x800 bg #2e3440 solid_color

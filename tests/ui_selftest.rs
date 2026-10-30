@@ -210,6 +210,35 @@ fn find_duplicates() {
 }
 
 #[test]
+fn file_chooser_for_other_applications() {
+    run("portal.fbt", |t| {
+        std::fs::create_dir_all(t.join("pics/sub")).unwrap();
+        std::fs::create_dir_all(t.join("docs")).unwrap();
+        for n in ["pics/a.png", "pics/b.png", "pics/notes.txt", "docs/old.txt"] {
+            std::fs::write(t.join(n), "x").unwrap();
+        }
+    });
+}
+
+#[test]
+fn file_chooser_through_xdg_desktop_portal() {
+    if !Path::new("/usr/lib/xdg-desktop-portal").exists() && !Path::new("/usr/libexec/xdg-desktop-portal").exists() {
+        eprintln!("xdg-desktop-portal not installed, skipping");
+        return;
+    }
+    run("portal_frontend.fbt", |t| {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // As install.sh registers it, below the test's own config and data folders.
+        std::fs::create_dir_all(t.join("data/xdg-desktop-portal/portals")).unwrap();
+        std::fs::copy(root.join("data/failbrauwser.portal"), t.join("data/xdg-desktop-portal/portals/failbrauwser.portal")).unwrap();
+        std::fs::create_dir_all(t.join("config/xdg-desktop-portal")).unwrap();
+        std::fs::write(t.join("config/xdg-desktop-portal/portals.conf"), "[preferred]\ndefault=gtk\norg.freedesktop.impl.portal.FileChooser=failbrauwser\n").unwrap();
+        std::fs::create_dir_all(t.join("home")).unwrap();
+        std::fs::write(t.join("home/pick.txt"), "x").unwrap();
+    });
+}
+
+#[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();

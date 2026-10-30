@@ -1,0 +1,41 @@
+# The file chooser for other applications, called as xdg-desktop-portal calls it
+# (tests/ui/portal_call.py writes "<response> <uris…>").
+open $T
+# Open several files, with a filter.
+run python3 $UI/portal_call.py OpenFile t1 $T/open.txt 'Import pictures' '{"multiple": true, "filters": [["Pictures", ["*.png"]], ["All files", ["*"]]], "current_folder": "$T/pics"}'
+wait-chooser
+expect-chooser-rows a.png | b.png | sub
+chooser-filter 1
+expect-chooser-rows a.png | b.png | notes.txt | sub
+chooser-filter 0
+chooser-select a.png | b.png
+chooser-accept
+wait-file-text $T/open.txt = 0 file://$T/pics/a.png file://$T/pics/b.png
+# Save under the name suggested.
+run python3 $UI/portal_call.py SaveFile t2 $T/save.txt 'Save report' '{"current_name": "report.txt", "current_folder": "$T/docs"}'
+wait-chooser
+chooser-accept
+wait-file-text $T/save.txt = 0 file://$T/docs/report.txt
+# Saving over a file that is there (the replace question answered yes in tests).
+run python3 $UI/portal_call.py SaveFile t3 $T/replace.txt 'Save' '{"current_name": "new.txt", "current_folder": "$T/docs"}'
+wait-chooser
+chooser-select old.txt
+chooser-activate
+wait-file-text $T/replace.txt = 0 file://$T/docs/old.txt
+# Cancelled.
+run python3 $UI/portal_call.py OpenFile t4 $T/cancel.txt 'Open'
+wait-chooser
+chooser-cancel
+wait-file-text $T/cancel.txt = 1
+# A folder.
+run python3 $UI/portal_call.py OpenFile t5 $T/dir.txt 'Pick a folder' '{"directory": true, "current_folder": "$T"}'
+wait-chooser
+expect-chooser-rows cache | config | data | docs | pics
+chooser-open $T/pics
+chooser-accept
+wait-file-text $T/dir.txt = 0 file://$T/pics
+# The application closes the dialog itself.
+run python3 $UI/portal_call.py OpenFile t6 $T/closed.txt 'Open'
+wait-chooser
+run python3 $UI/portal_call.py Close t6 -
+wait-file-text $T/closed.txt = 1
