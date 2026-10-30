@@ -22,6 +22,8 @@ enum Entry {
     Computer(Computer, Probe),
     /// A folder shared by the computer at this address.
     Share(String, Share),
+    /// A server added under a name (SFTP, WebDAV, FTP, SMB).
+    Server(failbrauwser::servers::Server),
 }
 
 impl Entry {
@@ -29,6 +31,7 @@ impl Entry {
         match self {
             Entry::Computer(c, _) => c.name.clone(),
             Entry::Share(_, s) => s.name.clone(),
+            Entry::Server(s) => s.name.clone(),
         }
     }
 
@@ -54,6 +57,7 @@ impl Entry {
             }
             Entry::Share(_, s) if !s.comment.is_empty() => s.comment.clone(),
             Entry::Share(..) => "Shared folder".into(),
+            Entry::Server(s) => failbrauwser::servers::describe(&s.uri),
         }
     }
 
@@ -62,6 +66,7 @@ impl Entry {
         match self {
             Entry::Computer(c, _) => Location::Network(c.address.clone()).display(),
             Entry::Share(host, s) => network::share_uri(host, &s.name),
+            Entry::Server(s) => s.uri.clone(),
         }
     }
 }
@@ -127,8 +132,12 @@ pub fn attach(w: &Window, pane: &Rc<Pane>) {
     bar.set_margin_end(6);
     bar.set_margin_top(6);
     bar.set_margin_bottom(6);
+    let add = gtk::Button::with_mnemonic("_Add Server…");
+    add.set_tooltip_text(Some("An SFTP, WebDAV, FTP or Windows server, kept here under a name"));
+    add.set_relief(gtk::ReliefStyle::None);
     bar.pack_start(&heading, true, true, 0);
     bar.pack_start(&spinner, false, false, 0);
+    bar.pack_start(&add, false, false, 0);
     bar.pack_start(&reload, false, false, 0);
     let status = gtk::Label::new(None);
     status.set_line_wrap(true);
@@ -157,6 +166,12 @@ pub fn attach(w: &Window, pane: &Rc<Pane>) {
         weak: RefCell::new(Weak::new()),
     });
     *page.weak.borrow_mut() = Rc::downgrade(&page);
+    let weak = Rc::downgrade(&page);
+    add.connect_clicked(move |_| {
+        if let Some(p) = weak.upgrade() {
+            p.server_dialog(None);
+        }
+    });
     let weak = Rc::downgrade(&page);
     reload.connect_clicked(move |_| {
         if let Some(p) = weak.upgrade() {
@@ -283,7 +298,7 @@ impl NetworkPage {
         let cached = FOUND.with(|f| f.borrow().clone());
         // What was found last shows at once; a new search replaces it.
         let known = cached.as_ref().map(|(_, list)| list.clone()).unwrap_or_default();
-        self.show(known.iter().cloned().map(|(c, p)| Entry::Computer(c, p)).collect());
+        self.show(with_servers(known.iter().cloned().map(|(c, p)| Entry::Computer(c, p)).collect()));
         let fresh = cached.as_ref().is_some_and(|(at, _)| at.elapsed() < FRESH);
         if fresh && !again {
             self.after_search(&known);
@@ -320,7 +335,7 @@ impl NetworkPage {
             }
             p.busy(false);
             p.say("");
-            p.show(found.iter().cloned().map(|(c, p)| Entry::Computer(c, p)).collect());
+            p.show(with_servers(found.iter().cloned().map(|(c, p)| Entry::Computer(c, p)).collect()));
             p.after_search(&found);
         });
     }
@@ -372,6 +387,7 @@ impl NetworkPage {
                     pane.navigate(loc);
                 }
             }
+            Entry::Server(s) => super::shares::open_remote(&w, &s.uri, new_tab),
             Entry::Share(host, s) => {
                 if let Some((dir, password)) = FAKES.with(|f| f.borrow().iter().find(|h| h.name == *host).and_then(|h| Some((h.shares.iter().find(|(n, _)| *n == s.name)?.1.clone(), h.password.clone())))) {
                     open_fake(&w, &pane, dir, password, new_tab);
@@ -416,6 +432,17 @@ impl NetworkPage {
         add("_Copy Address", Box::new(move |_| {
             gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&uri);
         }));
+        if let Entry::Server(server) = e {
+            menu.append(&gtk::SeparatorMenuItem::new());
+            let s2 = server.clone();
+            add("_Edit…", Box::new(move |p| p.server_dialog(Some(s2.clone()))));
+            let s2 = server.clone();
+            add("_Remove", Box::new(move |p| {
+                let mut list = failbrauwser::servers::load();
+                list.retain(|x| *x != s2);
+                p.save_servers(&list);
+            }));
+        }
         menu.show_all();
         menu
     }
@@ -425,6 +452,7 @@ fn row(e: &Entry) -> gtk::ListBoxRow {
     let icon = match e {
         Entry::Computer(..) => ["network-server", "computer"],
         Entry::Share(..) => ["folder-remote", "folder"],
+        Entry::Server(_) => ["network-server", "folder-remote"],
     };
     let image = gtk::Image::from_gicon(&gio::ThemedIcon::from_names(&icon), gtk::IconSize::Dnd);
     let title = gtk::Label::new(Some(&e.title()));
@@ -449,6 +477,144 @@ fn row(e: &Entry) -> gtk::ListBoxRow {
     row.set_tooltip_text(Some(&format!("{}\nDouble-click to open, right-click to pin it to the side panel", e.uri())));
     row.add(&content);
     row
+}
+
+/// The rows of the computers, with the servers added by hand after them.
+fn with_servers(mut entries: Vec<Entry>) -> Vec<Entry> {
+    entries.extend(failbrauwser::servers::load().into_iter().map(Entry::Server));
+    entries
+}
+
+impl NetworkPage {
+    fn save_servers(&self, list: &[failbrauwser::servers::Server]) {
+        let Some((w, _)) = self.context() else { return };
+        if let Err(e) = failbrauwser::servers::save(list) {
+            util::show_error(&w.win, "Cannot save the servers", &e.to_string());
+        }
+        // Every Network page lists them (taken out first: showing asks for the pages too).
+        let pages: Vec<Rc<NetworkPage>> = PAGES.with(|p| p.borrow().clone());
+        for page in pages {
+            if page.host().is_some_and(|h| h.is_empty()) {
+                let rows: Vec<Entry> = page.entries.borrow().iter().filter(|e| matches!(e, Entry::Computer(..))).cloned().collect();
+                page.show(with_servers(rows));
+            }
+        }
+    }
+
+    /// Adds a server, or changes one (`existing`).
+    fn server_dialog(self: &Rc<Self>, existing: Option<failbrauwser::servers::Server>) {
+        use failbrauwser::servers::{self, KINDS, Parts};
+        let Some((w, _)) = self.context() else { return };
+        let parts = existing.as_ref().and_then(|s| servers::parse_uri(&s.uri)).unwrap_or(Parts { scheme: "sftp".into(), ..Default::default() });
+        let d = gtk::MessageDialog::new(
+            Some(&w.win),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            gtk::MessageType::Other,
+            gtk::ButtonsType::None,
+            if existing.is_some() { "Edit Server" } else { "Add Server" },
+        );
+        d.add_button("_Cancel", gtk::ResponseType::Cancel);
+        d.add_button(if existing.is_some() { "_Save" } else { "_Add" }, gtk::ResponseType::Ok);
+        d.set_default_response(gtk::ResponseType::Ok);
+        let grid = gtk::Grid::new();
+        grid.set_row_spacing(6);
+        grid.set_column_spacing(8);
+        let entry = |name: &str, text: &str, hint: &str| {
+            let e = gtk::Entry::new();
+            e.set_widget_name(name);
+            e.set_text(text);
+            e.set_placeholder_text(Some(hint));
+            e.set_hexpand(true);
+            e.set_activates_default(true);
+            e
+        };
+        let name = entry("server-name", existing.as_ref().map_or("", |s| s.name.as_str()), "Raspberry Pi");
+        let kind = gtk::ComboBoxText::new();
+        kind.set_widget_name("server-kind");
+        for (id, text, _) in KINDS {
+            kind.append(Some(id), text);
+        }
+        kind.set_active_id(Some(&parts.scheme));
+        let host = entry("server-host", &parts.host, "pi.local or 192.168.1.20");
+        let port = gtk::SpinButton::with_range(0.0, 65535.0, 1.0);
+        port.set_widget_name("server-port");
+        port.set_value(parts.port as f64);
+        port.set_tooltip_text(Some("0: the usual port"));
+        let user = entry("server-user", &parts.user, "optional");
+        let folder = entry("server-folder", &parts.folder, "optional");
+        let address = gtk::Label::new(None);
+        address.set_xalign(0.0);
+        address.set_selectable(true);
+        address.style_context().add_class("dim-label");
+        let rows: [(&str, gtk::Widget); 7] = [
+            ("_Name:", name.clone().upcast()),
+            ("_Type:", kind.clone().upcast()),
+            ("_Server:", host.clone().upcast()),
+            ("_Port:", port.clone().upcast()),
+            ("_User:", user.clone().upcast()),
+            ("_Folder:", folder.clone().upcast()),
+            ("Address:", address.clone().upcast()),
+        ];
+        for (y, (text, widget)) in rows.into_iter().enumerate() {
+            let l = gtk::Label::with_mnemonic(text);
+            l.set_xalign(1.0);
+            l.set_mnemonic_widget(Some(&widget));
+            grid.attach(&l, 0, y as i32, 1, 1);
+            grid.attach(&widget, 1, y as i32, 1, 1);
+        }
+        if let Ok(area) = d.message_area().downcast::<gtk::Box>() {
+            area.pack_start(&grid, false, false, 0);
+        }
+        let current = {
+            let (kind, host, port, user, folder) = (kind.clone(), host.clone(), port.clone(), user.clone(), folder.clone());
+            move || Parts {
+                scheme: kind.active_id().map(|s| s.to_string()).unwrap_or_else(|| "sftp".into()),
+                host: host.text().trim().to_string(),
+                port: port.value() as u16,
+                user: user.text().trim().to_string(),
+                folder: folder.text().to_string(),
+            }
+        };
+        let update = {
+            let (current, address, d, name) = (current.clone(), address.clone(), d.clone(), name.clone());
+            move || {
+                let p = current();
+                let ok = !p.host.is_empty() && !name.text().trim().is_empty();
+                address.set_text(&if p.host.is_empty() { String::new() } else { servers::build_uri(&p) });
+                d.set_response_sensitive(gtk::ResponseType::Ok, ok);
+            }
+        };
+        for e in [&name, &host, &user, &folder] {
+            let u = update.clone();
+            e.connect_changed(move |_| u());
+        }
+        let u = update.clone();
+        kind.connect_changed(move |_| u());
+        let u = update.clone();
+        port.connect_value_changed(move |_| u());
+        update();
+        let weak = Rc::downgrade(self);
+        let answered = Cell::new(false);
+        let name2 = name.clone();
+        d.connect_response(move |d, resp| {
+            if answered.replace(true) {
+                return;
+            }
+            let (server_name, parts) = (name2.text().trim().to_string(), current());
+            // Not close(): see util::ask_text.
+            unsafe { d.destroy() };
+            let (gtk::ResponseType::Ok, Some(p)) = (resp, weak.upgrade()) else { return };
+            let server = servers::Server { name: server_name, uri: servers::build_uri(&parts) };
+            let mut list = servers::load();
+            match existing.as_ref().and_then(|e| list.iter().position(|x| x == e)) {
+                Some(i) => list[i] = server,
+                None => list.push(server),
+            }
+            p.save_servers(&list);
+        });
+        d.show_all();
+        name.grab_focus();
+    }
 }
 
 /// Computers GVfs's network browsing announces (DNS-SD, WS-Discovery), as (name, address).
@@ -609,6 +775,12 @@ pub fn row_titles(pane: &Rc<Pane>) -> Vec<String> {
 /// The second line of a row (tests).
 pub fn row_subtitle(pane: &Rc<Pane>, title: &str) -> Option<String> {
     page_for(pane)?.entries.borrow().iter().find(|e| e.title() == title).map(Entry::subtitle)
+}
+
+/// Opens the Add Server dialog (tests).
+pub fn add_server(pane: &Rc<Pane>) -> Result<(), String> {
+    page_for(pane).ok_or("no network page")?.server_dialog(None);
+    Ok(())
 }
 
 /// Opens a row by its title as a double click would (tests).
