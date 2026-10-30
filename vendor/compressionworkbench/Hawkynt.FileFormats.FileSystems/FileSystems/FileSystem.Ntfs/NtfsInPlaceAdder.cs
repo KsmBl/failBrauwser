@@ -936,6 +936,13 @@ public static class NtfsInPlaceAdder {
     CollectLeafEntriesFrom(block, entriesStart, contentEnd, result);
   }
 
+  // The INDX block size the boot sector announces (offset 68: clusters per index
+  // block, or the negative base-2 log of its bytes when smaller than a cluster).
+  private static int BootIndexBlockSize(byte[] image, Geo geo) {
+    var v = (sbyte)image[68];
+    return v > 0 ? v * geo.ClusterSize : v < 0 ? 1 << -v : 4096;
+  }
+
   // Bytes-per-INDX-block from the directory's index-root header (value offset 8).
   private static int ReadIndexBlockSize(byte[] dir, int rootPos) {
     var valueOffset = BinaryPrimitives.ReadUInt16LittleEndian(dir.AsSpan(rootPos + 20));
@@ -949,7 +956,7 @@ public static class NtfsInPlaceAdder {
   private static bool TryWriteResidentIndexRoot(byte[] image, Geo geo, uint dirRecord, byte[] dir,
       int rootPos, List<(string Name, uint Record)> entries) {
     using var es = new MemoryStream();
-    foreach (var (n, r) in entries) es.Write(BuildIndexEntry(r, n));
+    foreach (var (n, r) in entries) es.Write(BuildIndexEntry(image, geo, r, n));
     es.Write(BuildEndMarker());
     var entriesData = es.ToArray();
 
@@ -988,27 +995,25 @@ public static class NtfsInPlaceAdder {
   // Spills (or re-packs an existing spill of) the directory index into a single
   // INDX leaf block: a pointer-form $INDEX_ROOT (one end-marker pointer at VCN 0),
   // a non-resident $INDEX_ALLOCATION (type 0xA0, named "$I30") holding the leaf,
-  // and a resident $BITMAP (type 0xB0, named "$I30"). The INDX block size is grown
-  // (power-of-two, ≥ one cluster, ≤ 64 KiB) until all entries fit one leaf.
+  // and a resident $BITMAP (type 0xB0, named "$I30"). Entries that do not fit one
+  // leaf of the volume's INDX block size throw NotSupportedException.
   private static void WriteSpilledIndex(byte[] image, Geo geo, uint dirRecord, byte[] dir,
       int rootPos, List<(string Name, uint Record)> entries) {
     // Build the leaf entry stream once to size the block.
     using var es = new MemoryStream();
-    foreach (var (n, r) in entries) es.Write(BuildIndexEntry(r, n));
+    foreach (var (n, r) in entries) es.Write(BuildIndexEntry(image, geo, r, n));
     es.Write(BuildEndMarker());
     var entryStream = es.ToArray();
 
-    // Choose an INDX block size that fits the whole entry stream in one leaf.
-    var blockSize = 0;
-    for (var size = Math.Max(4096, geo.ClusterSize); size <= 64 * 1024; size *= 2) {
-      var usaBytes = (1 + size / geo.BytesPerSector) * 2;
-      var subHeaderOffset = (24 + usaBytes + 7) & ~7;
-      var capacity = size - (subHeaderOffset + 16);
-      if (entryStream.Length <= capacity) { blockSize = size; break; }
-    }
-    if (blockSize == 0)
+    // The leaf has the INDX block size the boot sector announces: readers refuse
+    // others (Linux's ntfs3 cannot read a folder with bigger blocks). Entries that need
+    // more than one leaf are beyond this editor; the caller lays the volume out anew.
+    var blockSize = BootIndexBlockSize(image, geo);
+    var usaBytes = (1 + blockSize / geo.BytesPerSector) * 2;
+    var leafStart = (24 + usaBytes + 7) & ~7;
+    if (entryStream.Length > blockSize - (leafStart + 16))
       throw new NotSupportedException(
-        $"NTFS in-place add: directory index too large for a single INDX leaf ({entryStream.Length} bytes).");
+        $"NTFS in-place edit: directory index too large for a single INDX leaf ({entryStream.Length} bytes).");
 
     var clustersPerBlock = Math.Max(1, blockSize / geo.ClusterSize);
 
@@ -1046,7 +1051,8 @@ public static class NtfsInPlaceAdder {
     // Pointer $INDEX_ROOT: a lone end-marker entry with the subnode flag pointing
     // at VCN 0 (the only leaf). 24-byte entry: header(16) + child VCN(8).
     var rootHeader = ReadOrBuildIndexRootHeader(dir, rootPos, indexBlockSize: blockSize);
-    rootHeader[12] = (byte)Math.Max(1, blockSize / geo.ClusterSize); // clusters per INDX block
+    // Clusters per INDX block, or 512-byte units for a block smaller than a cluster.
+    rootHeader[12] = (byte)(blockSize >= geo.ClusterSize ? blockSize / geo.ClusterSize : blockSize / geo.BytesPerSector);
     var pointerEntries = new byte[24];
     BinaryPrimitives.WriteUInt16LittleEndian(pointerEntries.AsSpan(8), 24);   // entry length
     BinaryPrimitives.WriteUInt16LittleEndian(pointerEntries.AsSpan(12), 0x03); // last + has subnode
@@ -1218,27 +1224,62 @@ public static class NtfsInPlaceAdder {
   private static void SetDirectoryFlag(byte[] record)
     => BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(22), 0x03); // in-use + directory
 
-  private static byte[] BuildIndexEntry(uint recordNum, string name) {
-    var nameBytes = Encoding.Unicode.GetBytes(name);
-    var keyLen = 66 + name.Length * 2;
-    var entryLen = (16 + keyLen + 7) & ~7;
+  private static byte[] BuildIndexEntry(byte[] image, Geo geo, uint recordNum, string name) {
+    // The key repeats the $FILE_NAME of the entry's own record, as NTFS keeps it:
+    // readers take the entry's type (folder or file), times and size from it.
+    var key = RecordFileName(image, geo, recordNum, name) ?? BuildFileNameKey(name);
+    var entryLen = (16 + key.Length + 7) & ~7;
     var e = new byte[entryLen];
     BinaryPrimitives.WriteInt64LittleEndian(e.AsSpan(0),
       (long)recordNum | ((long)NtfsWriter.SequenceOf(recordNum) << 48)); // MFT ref
     BinaryPrimitives.WriteUInt16LittleEndian(e.AsSpan(8), (ushort)entryLen);
-    BinaryPrimitives.WriteUInt16LittleEndian(e.AsSpan(10), (ushort)keyLen);
+    BinaryPrimitives.WriteUInt16LittleEndian(e.AsSpan(10), (ushort)key.Length);
     // flags @12 = 0 (leaf, not last)
-    // key = $FILE_NAME: parent ref @0, timestamps, sizes, name. ntfs-3g only needs
-    // parent ref + name + namespace for index lookups; fill the rest coherently.
-    var k = 16;
-    BinaryPrimitives.WriteInt64LittleEndian(e.AsSpan(k),
+    key.CopyTo(e, 16);
+    return e;
+  }
+
+  // The value of the $FILE_NAME attribute called `name` in record `recordNum`, or null
+  // when the record cannot be read.
+  private static byte[]? RecordFileName(byte[] image, Geo geo, uint recordNum, string name) {
+    long off;
+    try { off = MftRecordOffset(image, geo, (int)recordNum); } catch (Exception) { return null; }
+    if (off < 0 || off + geo.MftRecordSize > image.Length) return null;
+    var record = image.AsSpan((int)off, geo.MftRecordSize).ToArray();
+    if (record[0] != 'F' || record[1] != 'I' || record[2] != 'L' || record[3] != 'E') return null;
+    ApplyFixup(record);
+    var pos = (int)BinaryPrimitives.ReadUInt16LittleEndian(record.AsSpan(20));
+    var used = BinaryPrimitives.ReadUInt32LittleEndian(record.AsSpan(24));
+    while (pos + 24 <= used && pos + 24 <= record.Length) {
+      var type = BinaryPrimitives.ReadUInt32LittleEndian(record.AsSpan(pos));
+      if (type == 0xFFFFFFFF) break;
+      var len = (int)BinaryPrimitives.ReadUInt32LittleEndian(record.AsSpan(pos + 4));
+      if (len < 24 || pos + len > record.Length) break;
+      if (type == 0x30 && record[pos + 8] == 0) {
+        var valueLen = (int)BinaryPrimitives.ReadUInt32LittleEndian(record.AsSpan(pos + 16));
+        var v = pos + BinaryPrimitives.ReadUInt16LittleEndian(record.AsSpan(pos + 20));
+        if (valueLen >= 66 && v + valueLen <= record.Length) {
+          var chars = record[v + 64];
+          if (66 + chars * 2 <= valueLen && Encoding.Unicode.GetString(record, v + 66, chars * 2) == name)
+            return record.AsSpan(v, 66 + chars * 2).ToArray();
+        }
+      }
+      pos += len;
+    }
+    return null;
+  }
+
+  // A $FILE_NAME key made up from the name alone (no record to copy it from).
+  private static byte[] BuildFileNameKey(string name) {
+    var k = new byte[66 + name.Length * 2];
+    BinaryPrimitives.WriteInt64LittleEndian(k.AsSpan(0),
       (long)RootRecord | ((long)NtfsWriter.SequenceOf(RootRecord) << 48));
     var now = DateTime.UtcNow.ToFileTimeUtc();
-    for (var t = 0; t < 4; t++) BinaryPrimitives.WriteInt64LittleEndian(e.AsSpan(k + 8 + t * 8), now);
-    e[k + 64] = (byte)name.Length;
-    e[k + 65] = 1;
-    nameBytes.CopyTo(e, k + 66);
-    return e;
+    for (var t = 0; t < 4; t++) BinaryPrimitives.WriteInt64LittleEndian(k.AsSpan(8 + t * 8), now);
+    k[64] = (byte)name.Length;
+    k[65] = 1;
+    Encoding.Unicode.GetBytes(name).CopyTo(k, 66);
+    return k;
   }
 
   private static byte[] BuildEndMarker() {
