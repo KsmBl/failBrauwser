@@ -36,6 +36,12 @@ pub fn install_actions(w: &Window) {
     w.add_action("new-file", new_file);
     w.add_action("link-on-desktop", link_on_desktop);
     w.add_action("undo", undo_last);
+    w.add_action("mount-image", |w| {
+        let image = w.current_pane().selected_items().first().and_then(|i| i.path().cloned());
+        if let Some(image) = image {
+            super::drives::mount_image(&w.me(), image);
+        }
+    });
     update_sensitivity(w);
     update_undo(w);
 }

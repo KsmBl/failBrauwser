@@ -53,6 +53,10 @@ pub struct Volume {
     /// device. `device` then holds its address, `drive_name` its name and `label` the
     /// storage ("Internal shared storage").
     pub protocol: String,
+    /// The image file a loop device shows (a mounted `.iso`, `.img`, …).
+    pub backing_file: Option<PathBuf>,
+    /// The UDisks2 object of that loop device (detached on eject).
+    pub loop_object: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -74,6 +78,15 @@ impl Volume {
     pub fn title(&self) -> String {
         if self.is_device() {
             return if self.drive_name.is_empty() { "Phone".into() } else { self.drive_name.clone() };
+        }
+        if let Some(name) = self.backing_file.as_ref().and_then(|f| f.file_name()) {
+            // A mounted image: by its file, with the partition where it has several.
+            let name = name.to_string_lossy();
+            return match (self.partition_number, self.label.is_empty()) {
+                (0, _) => name.into_owned(),
+                (_, false) => format!("{} ({name})", self.label),
+                (n, true) => format!("{name} (partition {n})"),
+            };
         }
         if !self.label.is_empty() {
             return self.label.clone();
@@ -246,11 +259,12 @@ fn o(p: &Props, k: &str) -> String {
     p.get(k).and_then(|v| v.str().map(str::to_string)).unwrap_or_default()
 }
 
-/// Reads the answer of UDisks2's `GetManagedObjects` (`(a{oa{sa{sv}}})`).
-pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
+/// object path → interface name → properties, from UDisks2's `GetManagedObjects`.
+type Objects = HashMap<String, HashMap<String, Props>>;
+
+fn objects(reply: &glib::Variant) -> Objects {
     let objects = if reply.type_().as_str().starts_with('(') { reply.child_value(0) } else { reply.clone() };
-    // object path → interface name → properties
-    let mut all: HashMap<String, HashMap<String, Props>> = HashMap::new();
+    let mut all: Objects = HashMap::new();
     for i in 0..objects.n_children() {
         let entry = objects.child_value(i);
         let path = entry.child_value(0).str().unwrap_or_default().to_string();
@@ -263,6 +277,55 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
         }
         all.insert(path, map);
     }
+    all
+}
+
+/// The loop device a block object belongs to (itself, or the table it is a partition of),
+/// with its image file.
+fn loop_of(all: &Objects, path: &str) -> Option<(String, PathBuf)> {
+    let ifaces = all.get(path)?;
+    let loop_path = if ifaces.contains_key("org.freedesktop.UDisks2.Loop") {
+        path.to_string()
+    } else {
+        o(ifaces.get("org.freedesktop.UDisks2.Partition")?, "Table")
+    };
+    let lp = all.get(&loop_path)?.get("org.freedesktop.UDisks2.Loop")?;
+    let file = lp.get("BackingFile").map(bytes_to_string).filter(|f| !f.is_empty())?;
+    Some((loop_path, PathBuf::from(file)))
+}
+
+/// The loop device UDisks2 has set up for `file`, if any.
+pub fn loop_for_file(reply: &glib::Variant, file: &Path) -> Option<String> {
+    let all = objects(reply);
+    all.keys().filter_map(|p| loop_of(&all, p)).find(|(_, f)| f == file).map(|(l, _)| l)
+}
+
+/// The file systems on a loop device: itself, or its partitions. (block object, mounted)
+pub fn loop_filesystems(reply: &glib::Variant, loop_object: &str) -> Vec<(String, bool)> {
+    let all = objects(reply);
+    let mut out: Vec<(String, bool)> = all
+        .iter()
+        .filter(|(p, ifaces)| ifaces.contains_key("org.freedesktop.UDisks2.Filesystem") && loop_of(&all, p).is_some_and(|(l, _)| l == loop_object))
+        .map(|(p, ifaces)| {
+            let mounted = ifaces["org.freedesktop.UDisks2.Filesystem"].get("MountPoints").is_some_and(|m| m.n_children() > 0);
+            (p.clone(), mounted)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Names of disk images the system can mount itself (through a loop device): raw images of
+/// a file system or a whole disk, not containers such as VHD or QCOW2.
+pub fn is_mountable_image_name(name: &str) -> bool {
+    const EXTS: &[&str] = &[".iso", ".img", ".ima", ".raw", ".dd", ".ntfs", ".fat", ".exfat", ".ext2", ".ext3", ".ext4", ".btrfs", ".xfs", ".udf", ".hfs", ".hfsplus", ".squashfs", ".sqsh", ".f2fs"];
+    let lower = name.to_lowercase();
+    EXTS.iter().any(|e| lower.len() > e.len() && lower.ends_with(e))
+}
+
+/// Reads the answer of UDisks2's `GetManagedObjects` (`(a{oa{sa{sv}}})`).
+pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
+    let all = objects(reply);
     let mut out = Vec::new();
     for (path, ifaces) in &all {
         let Some(block) = ifaces.get("org.freedesktop.UDisks2.Block") else { continue };
@@ -303,6 +366,7 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
         if device.starts_with("/dev/loop") && mount_points.is_empty() {
             continue;
         }
+        let (loop_object, backing_file) = loop_of(&all, path).map(|(l, f)| (l, Some(f))).unwrap_or_default();
         out.push(Volume {
             device,
             label: s(block, "IdLabel"),
@@ -328,6 +392,8 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
             partition_type: s(part, "Type"),
             serial: s(d, "Serial"),
             revision: s(d, "Revision"),
+            backing_file,
+            loop_object,
             bus: s(d, "ConnectionBus"),
             rotation_rate: if drive.is_some() { i(d, "RotationRate") } else { -1 },
             drive_size: u(d, "Size"),
@@ -614,6 +680,32 @@ mod tests {
         assert_eq!(labelled.title(), "STICK");
         let phone = Volume { protocol: "mtp".into(), drive_name: "Pixel 7".into(), label: "SD card".into(), ..Default::default() };
         assert_eq!((phone.title(), drive_kind(&phone)), ("Pixel 7".to_string(), "Phone or tablet (MTP)".to_string()));
+    }
+
+    #[test]
+    fn mounted_images() {
+        // backup.ntfs mounted whole; disk.img with two partitions, one of them mounted.
+        let text = "({objectpath '/o/b/loop3': {'org.freedesktop.UDisks2.Block': {'Device': <b'/dev/loop3'>, 'IdUsage': <'filesystem'>, 'IdType': <'ntfs'>, 'IdLabel': <''>, 'Size': <uint64 6000000>, 'HintIgnore': <false>, 'Drive': <objectpath '/'>}, 'org.freedesktop.UDisks2.Filesystem': {'MountPoints': <[b'/run/media/me/A9C1']>}, 'org.freedesktop.UDisks2.Loop': {'BackingFile': <b'/home/me/backup.ntfs'>}}, \
+            objectpath '/o/b/loop4': {'org.freedesktop.UDisks2.Block': {'Device': <b'/dev/loop4'>, 'IdUsage': <''>, 'HintIgnore': <false>}, 'org.freedesktop.UDisks2.Loop': {'BackingFile': <b'/home/me/disk.img'>}, 'org.freedesktop.UDisks2.PartitionTable': {'Type': <'gpt'>}}, \
+            objectpath '/o/b/loop4p1': {'org.freedesktop.UDisks2.Block': {'Device': <b'/dev/loop4p1'>, 'IdUsage': <'filesystem'>, 'IdType': <'vfat'>, 'IdLabel': <'BOOT'>, 'HintIgnore': <false>}, 'org.freedesktop.UDisks2.Filesystem': {'MountPoints': <[b'/run/media/me/BOOT']>}, 'org.freedesktop.UDisks2.Partition': {'Number': <uint32 1>, 'Table': <objectpath '/o/b/loop4'>}}, \
+            objectpath '/o/b/loop4p2': {'org.freedesktop.UDisks2.Block': {'Device': <b'/dev/loop4p2'>, 'IdUsage': <'filesystem'>, 'IdType': <'ext4'>, 'IdLabel': <''>, 'HintIgnore': <false>}, 'org.freedesktop.UDisks2.Filesystem': {'MountPoints': <@aay []>}, 'org.freedesktop.UDisks2.Partition': {'Number': <uint32 2>, 'Table': <objectpath '/o/b/loop4'>}}},)";
+        let v = glib::Variant::parse(Some(glib::VariantTy::new("(a{oa{sa{sv}}})").unwrap()), text).unwrap();
+        let vols = parse_udisks(&v);
+        let ntfs = vols.iter().find(|x| x.device == "/dev/loop3").unwrap();
+        assert_eq!(ntfs.title(), "backup.ntfs");
+        assert_eq!(ntfs.loop_object, "/o/b/loop3");
+        let boot = vols.iter().find(|x| x.device == "/dev/loop4p1").unwrap();
+        assert_eq!(boot.title(), "BOOT (disk.img)");
+        assert_eq!(boot.backing_file.as_deref(), Some(Path::new("/home/me/disk.img")));
+        assert_eq!(boot.loop_object, "/o/b/loop4");
+        // The unmounted partition of a loop device stays out of the list.
+        assert!(!vols.iter().any(|x| x.device == "/dev/loop4p2"));
+        assert_eq!(loop_for_file(&v, Path::new("/home/me/disk.img")).as_deref(), Some("/o/b/loop4"));
+        assert_eq!(loop_for_file(&v, Path::new("/home/me/other.img")), None);
+        assert_eq!(loop_filesystems(&v, "/o/b/loop4"), vec![("/o/b/loop4p1".to_string(), true), ("/o/b/loop4p2".to_string(), false)]);
+        assert_eq!(loop_filesystems(&v, "/o/b/loop3"), vec![("/o/b/loop3".to_string(), true)]);
+        assert!(is_mountable_image_name("Ubuntu.ISO") && is_mountable_image_name("backup.ntfs") && is_mountable_image_name("sd.img"));
+        assert!(!is_mountable_image_name("disk.vhdx") && !is_mountable_image_name(".iso") && !is_mountable_image_name("a.zip"));
     }
 
     #[test]

@@ -46,6 +46,8 @@ thread_local! {
 struct FakeDrive {
     label: String,
     dir: PathBuf,
+    /// A disk image instead of a stick: it shows only while "mounted".
+    image: Option<PathBuf>,
     passphrase: Option<String>,
     unlocked: bool,
     mounted: bool,
@@ -57,6 +59,24 @@ impl FakeDrive {
     }
 
     fn volumes(&self) -> Vec<Volume> {
+        if let Some(image) = &self.image {
+            return if self.mounted {
+                vec![Volume {
+                    device: format!("/dev/fake-loop-{}", self.label),
+                    fs_type: "ntfs".into(),
+                    size: 6_000_000,
+                    mountable: true,
+                    mount_points: vec![self.dir.clone()],
+                    block_object: self.object(),
+                    loop_object: format!("/fake-loop/{}", self.label),
+                    backing_file: Some(image.clone()),
+                    rotation_rate: -1,
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+        }
         let base = Volume {
             drive_name: "Fake Stick".into(),
             drive_object: format!("/fake-drive/{}", self.label),
@@ -88,16 +108,29 @@ impl FakeDrive {
 
 /// A stand-in USB stick (self-test), not mounted; with a passphrase it is encrypted and locked.
 pub fn add_fake(label: &str, dir: PathBuf, passphrase: Option<String>) {
-    FAKES.with(|f| f.borrow_mut().push(FakeDrive { label: label.into(), dir, passphrase, unlocked: false, mounted: false }));
+    FAKES.with(|f| f.borrow_mut().push(FakeDrive { label: label.into(), dir, image: None, passphrase, unlocked: false, mounted: false }));
     changed();
+}
+
+/// A stand-in disk image (self-test): mounting it shows `dir`.
+pub fn add_fake_image(image: PathBuf, dir: PathBuf) {
+    let label = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    FAKES.with(|f| f.borrow_mut().push(FakeDrive { label, dir, image: Some(image), passphrase: None, unlocked: false, mounted: false }));
 }
 
 /// Answers a UDisks2 call on a stand-in stick like UDisks2 would.
 fn fake_call(object: &str, method: &str, args: &glib::Variant) -> Result<glib::Variant, String> {
     let reply = FAKES.with(|f| {
         let mut f = f.borrow_mut();
-        let d = f.iter_mut().find(|d| object == d.object() || object == format!("{}/clear", d.object()) || object == format!("/fake-drive/{}", d.label)).ok_or("No such object")?;
+        let d = f
+            .iter_mut()
+            .find(|d| object == d.object() || object == format!("{}/clear", d.object()) || object == format!("/fake-drive/{}", d.label) || object == format!("/fake-loop/{}", d.label))
+            .ok_or("No such object")?;
         match method {
+            "Delete" => {
+                d.mounted = false;
+                Ok(glib::Variant::tuple_from_iter(std::iter::empty::<glib::Variant>()))
+            }
             "Mount" if d.mounted => Err(format!("Device is already mounted at `{}'.", d.dir.display())),
             "Mount" => {
                 d.mounted = true;
@@ -984,6 +1017,10 @@ pub fn unmount_volume(w: &Rc<Window>, v: &Volume, eject: bool, all: &[Volume]) {
         eject_device(w, v);
         return;
     }
+    if eject && !v.loop_object.is_empty() {
+        eject_image(w, v, all);
+        return;
+    }
     let mounts: Vec<PathBuf> = if eject {
         all.iter().filter(|x| x.drive_object == v.drive_object).flat_map(|x| x.mount_points.clone()).collect()
     } else {
@@ -1034,6 +1071,128 @@ pub fn unmount_volume(w: &Rc<Window>, v: &Volume, eject: bool, all: &[Volume]) {
     });
 }
 
+/// Unmounts every file system of a mounted disk image and detaches it from its loop device.
+fn eject_image(w: &Rc<Window>, v: &Volume, all: &[Volume]) {
+    let parts: Vec<Volume> = all.iter().filter(|x| x.loop_object == v.loop_object).cloned().collect();
+    leave(w, &parts.iter().flat_map(|x| x.mount_points.clone()).collect::<Vec<_>>());
+    let win = Rc::downgrade(w);
+    let v = v.clone();
+    set_busy(&v.block_object, true);
+    glib::spawn_future_local(async move {
+        for p in parts.iter().filter(|p| !p.mount_points.is_empty()) {
+            if let Err(e) = call(&p.block_object, "org.freedesktop.UDisks2.Filesystem", "Unmount", empty_options()).await {
+                set_busy(&v.block_object, false);
+                error(&win, "Cannot unmount the image", &e);
+                return;
+            }
+        }
+        // Set to clear itself when unmounted; detached here in case it was not.
+        let _ = call(&v.loop_object, "org.freedesktop.UDisks2.Loop", "Delete", empty_options()).await;
+        set_busy(&v.block_object, false);
+    });
+}
+
+/// Mounts a disk image file (`.iso`, `.img`, …) through a loop device, like a drive, and
+/// opens it in the current tab. The loop device goes away again when the image is unmounted.
+pub fn mount_image(w: &Rc<Window>, image: PathBuf) {
+    let name = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let win = Rc::downgrade(w);
+    let pane = Rc::downgrade(&w.current_pane());
+    glib::spawn_future_local(async move {
+        let fake = FAKES.with(|f| f.borrow().iter().find(|d| d.image.as_ref() == Some(&image)).map(|d| d.object()));
+        let res = match fake {
+            Some(obj) => mount(&obj).await,
+            None => attach_and_mount(&image).await,
+        };
+        match res {
+            Ok(dir) => {
+                if let Some(p) = pane.upgrade() {
+                    p.navigate(Location::Dir(dir));
+                }
+            }
+            Err(e) => error(&win, &format!("Cannot mount “{name}”"), &e),
+        }
+    });
+}
+
+async fn managed_objects(conn: &gio::DBusConnection) -> Result<glib::Variant, String> {
+    conn.call_future(Some(UDISKS), "/org/freedesktop/UDisks2", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects", None, Some(glib::VariantTy::new("(a{oa{sa{sv}}})").unwrap()), gio::DBusCallFlags::NONE, 5000)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn attach_and_mount(image: &Path) -> Result<PathBuf, String> {
+    let conn = gio::bus_get_future(gio::BusType::System).await.map_err(|e| e.to_string())?;
+    let objects = managed_objects(&conn).await?;
+    let loop_object = match drives::loop_for_file(&objects, image) {
+        Some(l) => l,
+        None => {
+            // CD images are read-only anyway; others are written to when the file may be.
+            let iso = image.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso"));
+            let writable = !iso && std::fs::OpenOptions::new().read(true).write(true).open(image).is_ok();
+            let file = std::fs::OpenOptions::new().read(true).write(writable).open(image).map_err(|e| e.to_string())?;
+            let fds = gio::UnixFDList::new();
+            let index = fds.append(&file).map_err(|e| e.to_string())?;
+            let opts = glib::VariantDict::new(None);
+            opts.insert("read-only", !writable);
+            let args = glib::Variant::tuple_from_iter([glib::variant::Handle(index).to_variant(), opts.end()]);
+            let (reply, _) = conn
+                .call_with_unix_fd_list_future(Some(UDISKS), "/org/freedesktop/UDisks2/Manager", "org.freedesktop.UDisks2.Manager", "LoopSetup", Some(&args), Some(glib::VariantTy::new("(o)").unwrap()), auth_flags(), -1, Some(&fds))
+                .await
+                .map_err(|e| gio::DBusError::remote_error(&e).map(|_| strip_dbus_prefix(&e.to_string())).unwrap_or_else(|| e.to_string()))?;
+            reply.child_value(0).str().unwrap_or_default().to_string()
+        }
+    };
+    // UDisks2 looks at what is on the device a moment after setting it up.
+    let mut found = Vec::new();
+    for _ in 0..40 {
+        let objects = managed_objects(&conn).await?;
+        found = drives::loop_filesystems(&objects, &loop_object);
+        if !found.is_empty() {
+            break;
+        }
+        glib::timeout_future(std::time::Duration::from_millis(100)).await;
+    }
+    if found.is_empty() {
+        let _ = call(&loop_object, "org.freedesktop.UDisks2.Loop", "Delete", empty_options()).await;
+        return Err("There is no file system in it that Linux can mount. It still opens like a folder with a double click.".into());
+    }
+    let mut first = None;
+    for (obj, mounted) in &found {
+        let at = if *mounted {
+            let objects = managed_objects(&conn).await?;
+            drives::parse_udisks(&objects).into_iter().find(|v| &v.block_object == obj).and_then(|v| v.mount_point().map(|p| p.to_path_buf()))
+        } else {
+            // A file system the kernel will not write to (a journal it cannot replay, say)
+            // still opens read-only.
+            match mount(obj).await {
+                Ok(p) => Some(p),
+                Err(_) => {
+                    let opts = glib::VariantDict::new(None);
+                    opts.insert("options", "ro");
+                    call(obj, "org.freedesktop.UDisks2.Filesystem", "Mount", glib::Variant::tuple_from_iter([opts.end()]))
+                        .await
+                        .ok()
+                        .map(|r| PathBuf::from(r.child_value(0).get::<String>().unwrap_or_default()))
+                }
+            }
+        };
+        if first.is_none() {
+            first = at;
+        }
+    }
+    // Gone by itself once unmounted. Not earlier: the device would go as soon as UDisks2
+    // closed it after looking at it, before anything is mounted.
+    let _ = call(&loop_object, "org.freedesktop.UDisks2.Loop", "SetAutoclear", glib::Variant::tuple_from_iter([true.to_variant(), glib::VariantDict::new(None).end()])).await;
+    first.ok_or_else(|| "The image is attached, but none of its file systems could be mounted.".to_string())
+}
+
+/// May UDisks2 ask for a password? Not when `FB_NO_AUTH_PROMPTS` is set (tests on a desktop
+/// in use must not put up dialogs there).
+fn auth_flags() -> gio::DBusCallFlags {
+    if std::env::var_os("FB_NO_AUTH_PROMPTS").is_some() { gio::DBusCallFlags::NONE } else { gio::DBusCallFlags::ALLOW_INTERACTIVE_AUTHORIZATION }
+}
+
 /// Closes the connection to a phone or camera; tabs showing its files go to the drives
 /// page first.
 fn eject_device(w: &Rc<Window>, v: &Volume) {
@@ -1060,7 +1219,7 @@ pub fn can_unmount(v: &Volume) -> bool {
 
 /// Whether the volume can be ejected: a USB or ejectable drive, or an open phone.
 pub fn can_eject(v: &Volume) -> bool {
-    (v.usb || v.ejectable) && !v.drive_object.is_empty() || v.is_device() && v.mount_point().is_some()
+    (v.usb || v.ejectable) && !v.drive_object.is_empty() || v.is_device() && v.mount_point().is_some() || !v.loop_object.is_empty()
 }
 
 /// What marks a volume as busy: its UDisks2 object, or a device's address.
@@ -1093,7 +1252,7 @@ async fn call(object: &str, iface: &str, method: &str, args: glib::Variant) -> R
         return fake_call(object, method, &args);
     }
     let conn = gio::bus_get_future(gio::BusType::System).await.map_err(|e| e.to_string())?;
-    conn.call_future(Some(UDISKS), object, iface, method, Some(&args), None, gio::DBusCallFlags::ALLOW_INTERACTIVE_AUTHORIZATION, -1)
+    conn.call_future(Some(UDISKS), object, iface, method, Some(&args), None, auth_flags(), -1)
         .await
         .map_err(|e| gio::DBusError::remote_error(&e).map(|_| strip_dbus_prefix(&e.to_string())).unwrap_or_else(|| e.to_string()))
 }
