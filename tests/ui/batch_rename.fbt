@@ -1,0 +1,37 @@
+# Renaming several files at once, with a preview that refuses names in the way; Ctrl+Z
+# takes it back.
+open $T/pics
+expect-disabled win.undo
+select IMG_0001.JPG | IMG_0002.JPG | IMG_0003.JPG
+action win.rename
+wait-dialog Rename 3 Items
+expect-batch-status No name changes yet
+batch-set batch-template = Urlaub {n:03}{ext}
+batch-set batch-case = lower
+expect-batch-preview IMG_0001.JPG -> urlaub 001.jpg | IMG_0002.JPG -> urlaub 002.jpg | IMG_0003.JPG -> urlaub 003.jpg
+expect-batch-status 3 names change
+# Starting at 0 meets a file that is there already.
+batch-set batch-start = 0
+expect-batch-status 1 of the new names cannot be used
+batch-set batch-start = 1
+# A regular expression with a group.
+batch-set batch-template = {name}{ext}
+batch-set batch-case = keep
+batch-set batch-regex = on
+batch-set batch-find = ^IMG_0*(\d+)
+batch-set batch-replace = Bild $1
+expect-batch-preview IMG_0001.JPG -> Bild 1.JPG | IMG_0002.JPG -> Bild 2.JPG | IMG_0003.JPG -> Bild 3.JPG
+batch-set batch-find = ^IMG_(
+expect-batch-status The search pattern is not valid
+batch-set batch-find = ^IMG_0*(\d+)
+dialog-button Rename 3 Items : Rename
+wait-exists $T/pics/Bild 3.JPG
+wait-missing $T/pics/IMG_0001.JPG
+wait-idle
+expect-rows 4
+# Ctrl+Z: the old names are back.
+action win.undo
+wait-exists $T/pics/IMG_0001.JPG
+wait-exists $T/pics/IMG_0003.JPG
+wait-missing $T/pics/Bild 1.JPG
+expect-disabled win.undo

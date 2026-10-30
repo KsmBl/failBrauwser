@@ -94,6 +94,39 @@ fn checksums_in_properties() {
 }
 
 #[test]
+fn batch_rename_with_undo() {
+    run("batch_rename.fbt", |t| {
+        std::fs::create_dir_all(t.join("pics")).unwrap();
+        for n in ["IMG_0001.JPG", "IMG_0002.JPG", "IMG_0003.JPG", "urlaub 000.jpg"] {
+            std::fs::write(t.join("pics").join(n), n).unwrap();
+        }
+    });
+}
+
+#[test]
+fn undo_operations() {
+    run_checked(
+        "undo.fbt",
+        &[],
+        |t| {
+            std::fs::create_dir_all(t.join("src")).unwrap();
+            std::fs::create_dir_all(t.join("dest")).unwrap();
+            for n in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+                std::fs::write(t.join("src").join(n), n).unwrap();
+            }
+        },
+        |t| {
+            // Everything as before, and the copy that was taken back is in the trash.
+            for n in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+                assert_eq!(std::fs::read_to_string(t.join("src").join(n)).unwrap(), n);
+            }
+            assert_eq!(std::fs::read_dir(t.join("dest")).unwrap().count(), 0);
+            assert!(t.join("data/Trash/files/a.txt").exists());
+        },
+    );
+}
+
+#[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();
