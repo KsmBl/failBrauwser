@@ -118,7 +118,9 @@ While you type one, the bar suggests addresses opened before, SMB servers found 
 local network (searched in the background, about two seconds) and, once a server is typed
 with its slash, that server's shares. Home and Drives are in the side panel.
 Network addresses also open from the command line (`failbrauwser smb://nas/share`) and from
-other applications.
+other applications. Shares send no change notices: a share's view is read again as soon as a
+copy, move, delete, rename or new folder ends, and every three seconds while its window is in
+use, so changes made from another computer show up too.
 
 **Network:** the *Network* entry of the side panel (<kbd>Alt</kbd>+<kbd>N</kbd>, *Go →
 Network*) lists the computers sharing folders: the ones answering for SMB on the local network
