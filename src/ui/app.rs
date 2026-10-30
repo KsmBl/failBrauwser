@@ -22,11 +22,16 @@ pub fn icon_name() -> String {
     if has_own { APP_ID.to_string() } else { "system-file-manager".to_string() }
 }
 
+/// How many operations Ctrl+Z can take back.
+const UNDO_MAX: usize = 50;
+
 pub struct AppCtx {
     pub app: gtk::Application,
     pub settings: Rc<RefCell<Settings>>,
     pub jobs: Rc<super::jobs::Jobs>,
     windows: RefCell<Vec<Rc<Window>>>,
+    /// What Ctrl+Z takes back, the last done last.
+    undo: RefCell<Vec<failbrauwser::ops::undo::Undoable>>,
     hold: RefCell<Option<gio::ApplicationHoldGuard>>,
     save_pending: Cell<bool>,
     weak: RefCell<Weak<AppCtx>>,
@@ -39,6 +44,35 @@ impl AppCtx {
 
     pub fn windows(&self) -> Vec<Rc<Window>> {
         self.windows.borrow().clone()
+    }
+
+    /// Remembers an operation for Ctrl+Z (the last few dozen).
+    pub fn remember(&self, u: failbrauwser::ops::undo::Undoable) {
+        {
+            let mut stack = self.undo.borrow_mut();
+            stack.push(u);
+            let excess = stack.len().saturating_sub(UNDO_MAX);
+            stack.drain(..excess);
+        }
+        self.undo_changed();
+    }
+
+    /// The operation Ctrl+Z takes back next, taken off the list.
+    pub fn take_undo(&self) -> Option<failbrauwser::ops::undo::Undoable> {
+        let u = self.undo.borrow_mut().pop();
+        self.undo_changed();
+        u
+    }
+
+    /// What Ctrl+Z would take back.
+    pub fn next_undo(&self) -> Option<String> {
+        self.undo.borrow().last().map(|u| u.what.clone())
+    }
+
+    fn undo_changed(&self) {
+        for w in self.windows() {
+            super::fileops::update_undo(&w);
+        }
     }
 
     /// Reads every shown share again: they send no change notices of their own.
@@ -165,6 +199,7 @@ pub fn run() -> glib::ExitCode {
             settings,
             jobs: super::jobs::Jobs::new(),
             windows: RefCell::new(Vec::new()),
+            undo: RefCell::new(Vec::new()),
             hold: RefCell::new(None),
             save_pending: Cell::new(false),
             weak: RefCell::new(Weak::new()),

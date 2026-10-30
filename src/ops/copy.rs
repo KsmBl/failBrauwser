@@ -216,6 +216,11 @@ fn resolve_conflict(ctx: &JobCtx, src: &Path, src_meta: &fs::Metadata, dst: &Pat
 
 /// Copies or moves `sources` into `dest_dir`. Returns the top-level destinations written.
 pub fn transfer(ctx: &JobCtx, sources: &[PathBuf], dest_dir: &Path, mode: Mode, opts: &Options) -> io::Result<Vec<PathBuf>> {
+    transfer_pairs(ctx, sources, dest_dir, mode, opts).map(|pairs| pairs.into_iter().map(|(_, dst)| dst).collect())
+}
+
+/// Like [`transfer`], with each top-level item it made paired with its source (for undo).
+pub fn transfer_pairs(ctx: &JobCtx, sources: &[PathBuf], dest_dir: &Path, mode: Mode, opts: &Options) -> io::Result<Vec<(PathBuf, PathBuf)>> {
     ctx.set_phase(Phase::Preparing);
     // A share that stopped answering would hang the whole job (and Cancel with it).
     super::gvfs::check(dest_dir, super::gvfs::TIMEOUT)?;
@@ -250,7 +255,7 @@ pub fn transfer(ctx: &JobCtx, sources: &[PathBuf], dest_dir: &Path, mode: Mode, 
         if mode == Mode::Move && src_meta.dev() == dest_meta.dev() {
             ctx.set_current(name.to_string_lossy());
             move_by_rename(ctx, src, &src_meta, &dst)?;
-            tops.push(dst);
+            tops.push((src.clone(), dst));
             continue;
         }
 
@@ -262,7 +267,7 @@ pub fn transfer(ctx: &JobCtx, sources: &[PathBuf], dest_dir: &Path, mode: Mode, 
         };
         ctx.set_current(format!("Preparing {}", name.to_string_lossy()));
         plan_tree(ctx, src, &src_meta, &dst, mode, &mut plan)?;
-        tops.push(dst);
+        tops.push((src.clone(), dst));
     }
 
     let total: u64 = plan.files.iter().map(|f| f.size).sum();

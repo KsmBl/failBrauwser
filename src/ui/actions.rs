@@ -33,6 +33,7 @@ pub const ACCELS: &[(&str, &[&str])] = &[
     ("win.next-tab", &["<Control>Page_Down"]),
     ("win.prev-tab", &["<Control>Page_Up"]),
     ("win.open", &["<Control>o"]),
+    ("win.undo", &["<Control>z"]),
     ("win.copy", &["<Control>c"]),
     ("win.cut", &["<Control>x"]),
     ("win.paste", &["<Control>v"]),
@@ -166,6 +167,9 @@ pub fn menubar_model() -> gio::Menu {
     bar.append_submenu(Some("_File"), &file);
 
     let edit = gio::Menu::new();
+    section(&edit, |s| {
+        item(s, "_Undo", "win.undo");
+    });
     section(&edit, |s| {
         item(s, "Cu_t", "win.cut");
         item(s, "_Copy", "win.copy");

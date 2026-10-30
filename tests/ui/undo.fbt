@@ -1,0 +1,42 @@
+# Ctrl+Z takes back a copy, a move, moving to the trash, a new folder and a rename, the
+# last one first.
+open $T/src
+expect-disabled win.undo
+select a.txt
+action win.copy
+open $T/dest
+action win.paste
+wait-exists $T/dest/a.txt
+open $T/src
+select b.txt
+action win.cut
+open $T/dest
+action win.paste
+wait-exists $T/dest/b.txt
+wait-missing $T/src/b.txt
+open $T/src
+select c.txt
+action win.trash
+wait-missing $T/src/c.txt
+text Brand New
+action win.new-folder
+wait-exists $T/src/Brand New
+select d.txt
+text renamed.txt
+action win.rename
+wait-exists $T/src/renamed.txt
+# Back, step by step.
+action win.undo
+wait-exists $T/src/d.txt
+wait-missing $T/src/renamed.txt
+action win.undo
+wait-missing $T/src/Brand New
+action win.undo
+wait-exists $T/src/c.txt
+action win.undo
+wait-exists $T/src/b.txt
+wait-missing $T/dest/b.txt
+action win.undo
+wait-missing $T/dest/a.txt
+wait-exists $T/src/a.txt
+expect-disabled win.undo

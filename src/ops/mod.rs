@@ -1,6 +1,7 @@
 //! File operations: copy, move, delete, trash. No UI in here; progress and questions go
 //! through [`job::JobCtx`].
 
+pub mod batchrename;
 pub mod copy;
 pub mod delete;
 pub mod device;
@@ -9,3 +10,4 @@ pub mod gvfs;
 pub mod job;
 pub mod names;
 pub mod staging;
+pub mod undo;
