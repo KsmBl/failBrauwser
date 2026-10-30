@@ -20,7 +20,7 @@
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
-//! `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
+//! `fake-share <folder>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
 //! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
 //! `expect-side-drive-marked <name> : <place>`, `quit`. Blank lines and `#` comments are ignored.
@@ -438,6 +438,10 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             if got != want {
                 return Err(format!("jobs (running, waiting) are {got:?}"));
             }
+        }
+        "fake-share" => {
+            // fake-share <folder>: the folder acts like a network share (no change notices).
+            super::pane::add_fake_share(PathBuf::from(arg));
         }
         "fake-job" => {
             // fake-job <seconds> <megabytes>: a copy of 20 files at a steady pace.

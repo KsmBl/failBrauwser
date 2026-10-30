@@ -262,7 +262,10 @@ fn ask_rename(w: &Window, item: Item, initial: String) {
             Item::Fs(e) | Item::Found(e, _) => {
                 let target = e.path.with_file_name(&new);
                 match copy::rename_noreplace(&e.path, &target) {
-                    Ok(()) => pane.select_when_present(vec![OsString::from(&new)]),
+                    Ok(()) => {
+                        pane.select_when_present(vec![OsString::from(&new)]);
+                        w.app.refresh_shares();
+                    }
                     Err(err) if err.raw_os_error() == Some(libc::EEXIST) => {
                         let folder = target.symlink_metadata().is_ok_and(|m| m.is_dir());
                         let place = target.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into());
@@ -353,7 +356,10 @@ fn create_named(w: &Window, title: &str, default: &str, folder: bool) {
                 let path = dir.join(&name);
                 let res = if folder { std::fs::create_dir(&path) } else { create_empty_file(&path) };
                 match res {
-                    Ok(()) => w.current_pane().select_when_present(vec![OsString::from(&name)]),
+                    Ok(()) => {
+                        w.current_pane().select_when_present(vec![OsString::from(&name)]);
+                        w.app.refresh_shares();
+                    }
                     Err(e) => util::show_error(&w.win, &format!("Cannot create “{name}”"), &e.to_string()),
                 }
             }
