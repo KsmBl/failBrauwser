@@ -757,5 +757,9 @@ pub fn free_space(dir: &std::path::Path) -> Option<u64> {
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
         return None;
     }
+    // No size at all: a server that does not tell (FTP, some WebDAV), not a full drive.
+    if st.f_blocks == 0 {
+        return None;
+    }
     Some(st.f_bavail as u64 * st.f_frsize as u64)
 }

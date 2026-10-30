@@ -185,7 +185,9 @@ fn parse_args(args: &[std::ffi::OsString], cwd: Option<PathBuf>) -> (Vec<Locatio
 }
 
 pub fn run() -> glib::ExitCode {
-    let app = gtk::Application::new(Some(APP_ID), gio::ApplicationFlags::HANDLES_COMMAND_LINE);
+    // A self-test runs on its own, also next to a running failBrauwser on the same bus.
+    let flags = if super::selftest::script_path().is_some() { gio::ApplicationFlags::HANDLES_COMMAND_LINE | gio::ApplicationFlags::NON_UNIQUE } else { gio::ApplicationFlags::HANDLES_COMMAND_LINE };
+    let app = gtk::Application::new(Some(APP_ID), flags);
     let ctx: Rc<RefCell<Option<Rc<AppCtx>>>> = Rc::new(RefCell::new(None));
 
     let c = ctx.clone();
@@ -213,6 +215,7 @@ pub fn run() -> glib::ExitCode {
             }
         });
         super::actions::install_app_actions(&actx);
+        super::shares::follow_sleep(&actx);
         let weak = Rc::downgrade(&actx);
         super::clipboard::connect_changed(move || {
             if let Some(a) = weak.upgrade() {

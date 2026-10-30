@@ -20,7 +20,7 @@
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
-//! `fake-share <folder>`, `fake-image <file> = <folder>`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
+//! `fake-share <folder>`, `fake-image <file> = <folder>`, `sleep-begin`, `sleep-end`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
 //! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
 //! `expect-side-drive-marked <name> : <place>`, `quit`. Blank lines and `#` comments are ignored.
@@ -556,6 +556,11 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             if all.iter().any(|l| l == arg) != (cmd == "expect-menu-item") {
                 return Err(format!("menu items: {all:?}"));
             }
+        }
+        "sleep-begin" => super::shares::sleeping(),
+        "sleep-end" => {
+            let app = r.app.clone();
+            glib::spawn_future_local(async move { super::shares::resumed(&app).await });
         }
         "fake-image" => {
             // fake-image <image file> = <folder>: mounting the image shows the folder.

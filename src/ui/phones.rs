@@ -180,7 +180,7 @@ async fn subfolders(dir: &gio::File) -> Vec<(String, gio::File)> {
     v
 }
 
-async fn fs_usage(f: &gio::File) -> Option<Usage> {
+pub(super) async fn fs_usage(f: &gio::File) -> Option<Usage> {
     let ask = f.query_filesystem_info_future("filesystem::size,filesystem::free,filesystem::used", glib::Priority::DEFAULT);
     let info = glib::future_with_timeout(ASK_TIMEOUT, ask).await.ok()?.ok()?;
     let total = info.attribute_uint64("filesystem::size");

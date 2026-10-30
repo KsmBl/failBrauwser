@@ -57,6 +57,8 @@ pub struct Volume {
     pub backing_file: Option<PathBuf>,
     /// The UDisks2 object of that loop device (detached on eject).
     pub loop_object: String,
+    /// A network share mounted through GVfs: its address (`smb://nas/Music`).
+    pub share_uri: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -78,6 +80,9 @@ impl Volume {
     pub fn title(&self) -> String {
         if self.is_device() {
             return if self.drive_name.is_empty() { "Phone".into() } else { self.drive_name.clone() };
+        }
+        if !self.share_uri.is_empty() {
+            return crate::network::uri_name(&self.share_uri);
         }
         if let Some(name) = self.backing_file.as_ref().and_then(|f| f.file_name()) {
             // A mounted image: by its file, with the partition where it has several.
@@ -114,6 +119,9 @@ impl Volume {
     }
 
     pub fn icon_names(&self) -> Vec<&'static str> {
+        if !self.share_uri.is_empty() {
+            return vec!["folder-remote", "network-server", "network-workgroup", "drive-harddisk"];
+        }
         if let Some(kind) = self.device_kind() {
             kind.icon_names()
         } else if self.optical {
@@ -394,6 +402,7 @@ pub fn parse_udisks(reply: &glib::Variant) -> Vec<Volume> {
             revision: s(d, "Revision"),
             backing_file,
             loop_object,
+            share_uri: String::new(),
             bus: s(d, "ConnectionBus"),
             rotation_rate: if drive.is_some() { i(d, "RotationRate") } else { -1 },
             drive_size: u(d, "Size"),

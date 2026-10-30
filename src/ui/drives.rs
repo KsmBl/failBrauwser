@@ -225,8 +225,10 @@ pub async fn gather() -> Vec<(Volume, Option<Usage>)> {
     })
     .await
     .unwrap_or_default();
-    // Phones next to the USB sticks (their fill levels asked of GVfs, not statvfs).
+    // Phones next to the USB sticks (their fill levels asked of GVfs, not statvfs), and the
+    // network shares.
     with_usage.extend(super::phones::volumes().await);
+    with_usage.extend(super::shares::volumes().await);
     FAKES.with(|f| {
         for d in f.borrow().iter() {
             with_usage.extend(d.volumes().into_iter().map(|v| {
@@ -1021,6 +1023,11 @@ pub fn unmount_volume(w: &Rc<Window>, v: &Volume, eject: bool, all: &[Volume]) {
         eject_image(w, v, all);
         return;
     }
+    if !v.share_uri.is_empty() {
+        let w2 = w.clone();
+        super::shares::eject(w, v, move |mounts| leave(&w2, mounts));
+        return;
+    }
     let mounts: Vec<PathBuf> = if eject {
         all.iter().filter(|x| x.drive_object == v.drive_object).flat_map(|x| x.mount_points.clone()).collect()
     } else {
@@ -1219,7 +1226,7 @@ pub fn can_unmount(v: &Volume) -> bool {
 
 /// Whether the volume can be ejected: a USB or ejectable drive, or an open phone.
 pub fn can_eject(v: &Volume) -> bool {
-    (v.usb || v.ejectable) && !v.drive_object.is_empty() || v.is_device() && v.mount_point().is_some() || !v.loop_object.is_empty()
+    (v.usb || v.ejectable) && !v.drive_object.is_empty() || v.is_device() && v.mount_point().is_some() || !v.loop_object.is_empty() || !v.share_uri.is_empty()
 }
 
 /// What marks a volume as busy: its UDisks2 object, or a device's address.

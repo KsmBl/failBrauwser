@@ -217,6 +217,17 @@ pub fn is_remote_uri(text: &str) -> bool {
 pub fn mount_remote(parent: &impl IsA<gtk::Window>, uri: &str, done: impl FnOnce(Result<PathBuf, String>) + 'static) {
     let file = gio::File::for_uri(uri.trim());
     let op = gtk::MountOperation::new(Some(parent));
+    if super::selftest::active() {
+        // Nobody to answer in a test: servers that let anyone in are entered anonymously.
+        op.connect_ask_password(|op, _, _, _, flags| {
+            if flags.contains(gio::AskPasswordFlags::ANONYMOUS_SUPPORTED) {
+                op.set_anonymous(true);
+                op.reply(gio::MountOperationResult::Handled);
+            } else {
+                op.reply(gio::MountOperationResult::Aborted);
+            }
+        });
+    }
     let f = file.clone();
     file.mount_enclosing_volume(gio::MountMountFlags::NONE, Some(&op), gio::Cancellable::NONE, move |res| {
         let res = match res {
