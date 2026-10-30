@@ -113,6 +113,9 @@ pub fn show(w: &Window) {
             add("Owner:", &format!("{} / {}", util::user_name(e.uid), util::group_name(e.gid)));
             if !e.is_dir_like() {
                 add_widget("Opens with:", default_app_chooser(&d, &e.content_type).upcast_ref());
+                if e.kind != failbrauwser::fs::Kind::Symlink || !e.broken {
+                    add_widget("Checksums:", checksum_box(&d, e.path.clone(), e.size).upcast_ref());
+                }
             }
             if let Some(free) = Some(e.path.parent().unwrap_or(&e.path)).filter(|p| local(p)).and_then(super::window::free_space) {
                 add("Free space:", &human_size(free));
@@ -205,6 +208,97 @@ fn default_app_chooser(dialog: &gtk::Dialog, content_type: &str) -> gtk::AppChoo
         }
     });
     chooser
+}
+
+/// MD5 and SHA-256 on request (a big file takes a while), and comparing them with a
+/// checksum copied from a download page.
+fn checksum_box(dialog: &gtk::Dialog, path: std::path::PathBuf, size: u64) -> gtk::Box {
+    let b = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    b.set_widget_name("checksums");
+    let calc = gtk::Button::with_mnemonic("_Calculate MD5 and SHA-256");
+    calc.set_halign(gtk::Align::Start);
+    b.pack_start(&calc, false, false, 0);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let c2 = cancel.clone();
+    dialog.connect_destroy(move |_| c2.store(true, Ordering::Relaxed));
+    let b2 = b.clone();
+    let parent = dialog.clone();
+    calc.connect_clicked(move |btn| {
+        btn.set_sensitive(false);
+        btn.set_label("Calculating…");
+        let (tx, rx) = async_channel::unbounded::<Result<u64, std::io::Result<failbrauwser::fs::checksum::Checksums>>>();
+        let (path, cancel) = (path.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let mut last = std::time::Instant::now();
+            let res = failbrauwser::fs::checksum::file_checksums(&path, &cancel, |n| {
+                if last.elapsed() > std::time::Duration::from_millis(200) {
+                    last = std::time::Instant::now();
+                    let _ = tx.send_blocking(Ok(n));
+                }
+            });
+            let _ = tx.send_blocking(Err(res));
+        });
+        let (btn, b, parent) = (btn.clone(), b2.clone(), parent.clone());
+        glib::spawn_future_local(async move {
+            while let Ok(msg) = rx.recv().await {
+                match msg {
+                    Ok(n) if size > 0 => btn.set_label(&format!("Calculating… {}%", n * 100 / size)),
+                    Ok(_) => {}
+                    Err(Ok(sums)) => {
+                        btn.hide();
+                        show_checksums(&b, sums);
+                    }
+                    Err(Err(e)) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(Err(e)) => {
+                        btn.set_label("_Calculate MD5 and SHA-256");
+                        btn.set_sensitive(true);
+                        util::show_error(&parent, "Cannot read the file", &e.to_string());
+                    }
+                }
+            }
+        });
+    });
+    b
+}
+
+fn show_checksums(b: &gtk::Box, sums: failbrauwser::fs::checksum::Checksums) {
+    let grid = gtk::Grid::new();
+    grid.set_column_spacing(8);
+    for (i, (name, value)) in [("MD5", &sums.md5), ("SHA-256", &sums.sha256)].into_iter().enumerate() {
+        let n = gtk::Label::new(Some(name));
+        n.set_xalign(0.0);
+        n.style_context().add_class("dim-label");
+        let v = gtk::Label::new(Some(value));
+        v.set_xalign(0.0);
+        v.set_selectable(true);
+        v.set_line_wrap(true);
+        v.set_line_wrap_mode(gtk::pango::WrapMode::Char);
+        v.set_max_width_chars(36);
+        v.style_context().add_class("monospace");
+        grid.attach(&n, 0, i as i32, 1, 1);
+        grid.attach(&v, 1, i as i32, 1, 1);
+    }
+    let compare = gtk::Button::with_mnemonic("Compare with C_lipboard");
+    compare.set_halign(gtk::Align::Start);
+    let result = gtk::Label::new(None);
+    result.set_xalign(0.0);
+    result.set_line_wrap(true);
+    result.set_max_width_chars(48);
+    let r2 = result.clone();
+    compare.connect_clicked(move |_| {
+        let (r, sums) = (r2.clone(), sums.clone());
+        gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).request_text(move |_, text| {
+            let text = text.map(|t| t.to_string()).unwrap_or_default();
+            match failbrauwser::fs::checksum::compare(&text, &sums) {
+                Ok(kind) => r.set_markup(&format!("<b>✔ Matches</b> — the {kind} checksum in the clipboard is this file’s.")),
+                Err(why) => r.set_markup(&format!("<b>✘ No match</b> — {}", glib::markup_escape_text(&why))),
+            }
+        });
+    });
+    b.pack_start(&grid, false, false, 0);
+    b.pack_start(&compare, false, false, 0);
+    b.pack_start(&result, false, false, 0);
+    b.show_all();
 }
 
 /// Measures folders on a worker thread and writes "1.2 GB (3,456 files)" into `label`.
