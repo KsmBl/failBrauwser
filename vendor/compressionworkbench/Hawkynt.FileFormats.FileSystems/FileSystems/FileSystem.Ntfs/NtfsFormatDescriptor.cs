@@ -754,8 +754,15 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     using var ms = new MemoryStream();
     archive.CopyTo(ms);
     var image = ms.ToArray();
-    foreach (var name in entryNames)
-      NtfsRemover.Remove(image, name);
+    try {
+      foreach (var name in entryNames)
+        NtfsRemover.Remove(image, name);
+    } catch (Exception ex) when (ex is NotSupportedException or IOException or InvalidDataException) {
+      // A structural limit of the in-place remover (a root index needing more than one
+      // INDX leaf): the volume, still untouched, is laid out anew without the entries.
+      RebuildInPlaceStreaming(archive, [], new HashSet<string>(entryNames.Select(n => n.Replace('\\', '/').Trim('/')), StringComparer.OrdinalIgnoreCase));
+      return;
+    }
     archive.Position = 0;
     archive.Write(image);
     archive.SetLength(image.Length);
