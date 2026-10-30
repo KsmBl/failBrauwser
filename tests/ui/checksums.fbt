@@ -1,0 +1,14 @@
+# Properties of a file: MD5 and SHA-256 on request, compared with a copied checksum.
+open $T
+select abc.txt
+action win.properties
+wait-properties-text Checksums
+properties-button Calculate MD5 and SHA-256
+wait-properties-text ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+wait-properties-text 900150983cd24fb0d6963f7d28e17f72
+clipboard-text ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc.txt
+properties-button Compare with Clipboard
+wait-properties-text ✔ Matches — the SHA-256 checksum
+clipboard-text 900150983cd24fb0d6963f7d28e17f00
+properties-button Compare with Clipboard
+wait-properties-text ✘ No match — The MD5 checksum in the clipboard does not match

@@ -16,7 +16,7 @@
 //! `shortcut-menu <entry> : <item>` (`Show Hidden Entry/<name>` for the submenu),
 //! `shortcut-drag <entry> > <before entry>`, `shortcut-drop <folder> > <before entry>`,
 //! `window-snapshot <png>`, `wait-error <text>`, `wait-dialog <text>`,
-//! `dialog-button <dialog text> : <button>`, `dialog-entry <dialog text> = <text>`, `expect-dialog-entry <dialog text> = <text>`, `wait-no-dialog <text>`, `properties-choose-app <desktop id>`,
+//! `dialog-button <dialog text> : <button>`, `dialog-entry <dialog text> = <text>`, `expect-dialog-entry <dialog text> = <text>`, `wait-no-dialog <text>`, `properties-choose-app <desktop id>`, `clipboard-text <text>`, `properties-button <label>`, `wait-properties-text <text>`,
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
 //! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
@@ -166,6 +166,41 @@ fn find_widget<T: IsA<gtk::Widget>>(w: &gtk::Widget) -> Option<T> {
     w.downcast_ref::<gtk::Container>()?.children().iter().find_map(find_widget::<T>)
 }
 
+/// The Properties dialog shown.
+#[allow(deprecated)]
+fn properties_dialog() -> Option<gtk::Dialog> {
+    gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Dialog>().ok())
+        .find(|d| d.is_visible() && d.title().is_some_and(|t| t.ends_with("— Properties")))
+}
+
+/// A button under `w` whose label (without mnemonic marks) is `label`.
+fn find_button(w: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+    if let Some(b) = w.downcast_ref::<gtk::Button>() {
+        if b.label().is_some_and(|l| l.replace('_', "") == label) {
+            return Some(b.clone());
+        }
+    }
+    w.downcast_ref::<gtk::Container>()?.children().iter().find_map(|c| find_button(c, label))
+}
+
+/// The texts of the visible labels under `w`.
+fn label_texts(w: &gtk::Widget) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(l) = w.downcast_ref::<gtk::Label>() {
+        if l.is_visible() {
+            out.push(l.text().to_string());
+        }
+    }
+    if let Some(c) = w.downcast_ref::<gtk::Container>() {
+        for ch in c.children() {
+            out.extend(label_texts(&ch));
+        }
+    }
+    out
+}
+
 /// A visible message dialog whose text contains `text`.
 #[allow(deprecated)]
 fn find_dialog(text: &str) -> Option<gtk::MessageDialog> {
@@ -296,6 +331,20 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
         "wait-no-dialog" => {
             let want = arg.to_string();
             wait(r, move |_| Ok(find_dialog(&want).is_none()));
+        }
+        "clipboard-text" => gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_text(arg),
+        "properties-button" => {
+            // properties-button <label>: clicks a button of the open Properties dialog.
+            let d = properties_dialog().ok_or("no Properties dialog")?;
+            let b = find_button(d.upcast_ref(), arg).ok_or("no such button")?;
+            if !b.is_sensitive() {
+                return Err("the button is disabled".into());
+            }
+            b.clicked();
+        }
+        "wait-properties-text" => {
+            let want = arg.to_string();
+            wait(r, move |_| Ok(properties_dialog().is_some_and(|d| label_texts(d.upcast_ref()).iter().any(|t| t.contains(&want)))));
         }
         "properties-choose-app" => {
             // In the open Properties dialog, picks the application with this desktop id.

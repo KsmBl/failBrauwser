@@ -240,6 +240,10 @@ bar, until you turn it off; with *Files Only* it gives every file below a folder
 The list fills in while the folders are read, and the window stays usable meanwhile, also
 for a hundred thousand files and more.
 
+**Checksums:** *Properties* of a file has *Calculate MD5 and SHA-256* (read once for both,
+with progress) and *Compare with Clipboard*, which finds an MD5 or SHA-256 in the copied text
+(also a `sha256sum` line or `sha256:…`) and says whether it is this file's.
+
 **Renaming** (<kbd>F2</kbd>) onto a name that is taken asks what to do: *Overwrite* replaces
 what is there (a folder in the way is deleted with everything in it), *Rename…* asks for the
 name again with a free one suggested (`report (2).pdf`), *Cancel* leaves both as they are.
