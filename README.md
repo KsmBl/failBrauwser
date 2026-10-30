@@ -83,6 +83,17 @@ that; windows then take a moment longer the first time). It also makes failBrauw
 and save dialog of applications that ask the desktop portal for one (`--no-file-chooser` to
 keep the desktop's; see *File chooser for other applications* below).
 
+### Updating
+
+*Help → Check for Updates* says whether GitHub has a newer release and installs either the
+newest **release** — its ready-built package (`failbrauwser-<version>-<arch>-linux.tar.gz`,
+installed with `install.sh --prebuilt`) — or builds the current **source** (needs what a build
+needs, below). Both install into the same place with the options of the last install (kept in
+`~/.config/failbrauwser/install-options`); the download, source included, is deleted when it is
+done, and failBrauwser restarts as the new version. The window shows the installer's output. A
+copy installed for everyone (`--system`) is updated from a terminal. `scripts/package.sh`
+makes the release package.
+
 ### Requirements
 
 - Rust 1.92 or newer, GTK 3.24 (development files), `pkg-config`
