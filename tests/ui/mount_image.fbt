@@ -1,0 +1,15 @@
+# A disk image mounts like a drive from its right-click menu, shows in the side panel under
+# its file name, and Eject takes it away again.
+fake-image $T/backup.ntfs = $T/inside
+open $T
+select backup.ntfs
+expect-menu-item Mount as Drive
+select photos.zip
+expect-no-menu-item Mount as Drive
+select backup.ntfs
+action win.mount-image
+wait-location $T/inside
+wait-row report.txt
+wait-side-drive backup.ntfs : $T/inside
+side-drive-menu backup.ntfs : $T/inside : Eject
+wait-no-side-drive backup.ntfs
