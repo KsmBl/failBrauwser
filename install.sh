@@ -11,6 +11,8 @@
 #   ./install.sh --no-file-chooser  keep the desktop's own open and save dialogs for
 #                                applications that ask the desktop portal for one
 #   ./install.sh --uninstall     remove what an install with the same options put in place
+#   ./install.sh --prebuilt      install the program from a release package (bin/, lib/) as is
+#   ./install.sh --reopen        open a window when done (Help > Check for Updates uses it)
 #
 # Archive support (opening, extracting, creating archives) is a helper built with the
 # .NET 10 SDK from CompressionWorkbench (by Hawkynt, vendored in vendor/compressionworkbench).
@@ -31,9 +33,16 @@ NETWORK=1
 ARCHIVES=1
 FILE_CHOOSER=1
 UNINSTALL=0
+PREBUILT=0
+REOPEN=0
+# The options to remember for updates (Help > Check for Updates installs the same way).
+KEPT=()
 CWB_ROOT=${CWB_ROOT:-"$HERE/vendor/compressionworkbench"}
 
 while [ $# -gt 0 ]; do
+    case "$1" in
+        --system|--no-autostart|--default|--no-network|--no-archives|--no-file-chooser) KEPT+=("$1") ;;
+    esac
     case "$1" in
         --system) PREFIX=/usr/local; SUDO=sudo ;;
         --prefix) PREFIX=$2; shift ;;
@@ -43,7 +52,9 @@ while [ $# -gt 0 ]; do
         --no-archives) ARCHIVES=0 ;;
         --uninstall) UNINSTALL=1 ;;
         --no-file-chooser) FILE_CHOOSER=0 ;;
-        -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --prebuilt) PREBUILT=1 ;;
+        --reopen) REOPEN=1 ;;
+        -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -115,73 +126,83 @@ if [ "$UNINSTALL" = 1 ]; then
     exit 0
 fi
 
-command -v cargo >/dev/null || { echo "cargo (Rust) is required: https://rustup.rs" >&2; exit 1; }
-pkg-config --exists gtk+-3.0 || { echo "GTK 3 development files are required (gtk3)" >&2; exit 1; }
+APP_BIN="$HERE/target/release/failbrauwser"
+if [ "$PREBUILT" = 1 ]; then
+    # A release package: the program and the archive helper are built already.
+    APP_BIN="$HERE/bin/failbrauwser"
+    [ -x "$APP_BIN" ] || { echo "$APP_BIN is missing: not a release package" >&2; exit 1; }
+    HELPER=""
+    [ "$ARCHIVES" = 1 ] && [ -x "$HERE/lib/fb-archive" ] && HELPER="$HERE/lib/fb-archive"
+else
+    command -v cargo >/dev/null || { echo "cargo (Rust) is required: https://rustup.rs" >&2; exit 1; }
+    pkg-config --exists gtk+-3.0 || { echo "GTK 3 development files are required (gtk3)" >&2; exit 1; }
 
-HELPER=""
-HELPER_PID=""
-HELPER_LOG="$HERE/target/helper-build.log"
-DOTNET_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/failbrauwser/dotnet"
-
-# A .NET SDK that can build net10.0: on the PATH, from an earlier run, or downloaded now.
-has_sdk10() { "$1" --list-sdks 2>/dev/null | grep -Eq '^(1[0-9]|[2-9][0-9])\.'; }
-find_dotnet() {
-    if command -v dotnet >/dev/null && has_sdk10 dotnet; then command -v dotnet; return; fi
-    if [ -x "$DOTNET_HOME/dotnet" ] && has_sdk10 "$DOTNET_HOME/dotnet"; then echo "$DOTNET_HOME/dotnet"; return; fi
-    say "Downloading the .NET 10 SDK into $DOTNET_HOME (for building the archive helper)" >&2
-    local script
-    script=$(mktemp)
-    if command -v curl >/dev/null; then curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$script"
-    elif command -v wget >/dev/null; then wget -qO "$script" https://dot.net/v1/dotnet-install.sh
-    else echo "curl or wget is needed to download the .NET SDK" >&2; rm -f "$script"; return 1
-    fi || { rm -f "$script"; return 1; }
-    bash "$script" --channel 10.0 --install-dir "$DOTNET_HOME" --no-path >&2 || { rm -f "$script"; return 1; }
-    rm -f "$script"
-    has_sdk10 "$DOTNET_HOME/dotnet" && echo "$DOTNET_HOME/dotnet"
-}
-
-if [ "$ARCHIVES" = 1 ] && [ -f "$CWB_ROOT/Compression.Lib/Compression.Lib.csproj" ]; then
-    if DOTNET=$(find_dotnet); then
-        # The helper is compiled to native code, which needs a C toolchain to link.
-        AOT_LINKER=()
-        if ! command -v clang >/dev/null; then
-            if command -v gcc >/dev/null; then AOT_LINKER=(-p:CppCompilerAndLinker=gcc)
-            else echo "warning: neither clang nor gcc found — the archive helper cannot be linked" >&2
-            fi
-        fi
-        # Built alongside the app: most of the helper's native compile runs on one core,
-        # so the Rust build uses the others meanwhile.
-        say "Building the archive helper in the background (CompressionWorkbench at $CWB_ROOT; log: $HELPER_LOG)"
-        mkdir -p "$HERE/target"
-        (cd "$HERE" && PATH="$(dirname "$DOTNET"):$PATH" DOTNET_ROOT="$(dirname "$(readlink -f "$DOTNET")")" \
-            DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 \
-            make helper CWB_ROOT="$(cd "$CWB_ROOT" && pwd)" HELPER_FLAGS="${AOT_LINKER[*]}") >"$HELPER_LOG" 2>&1 &
-        HELPER_PID=$!
-        # Do not leave it running when the app build fails.
-        trap '[ -n "$HELPER_PID" ] && kill "$HELPER_PID" 2>/dev/null' EXIT
-    else
-        echo "warning: no .NET 10 SDK could be set up — installing without archive support" >&2
-    fi
-elif [ "$ARCHIVES" = 1 ]; then
-    echo "warning: $CWB_ROOT has no CompressionWorkbench — installing without archive support" >&2
-fi
-
-say "Building failBrauwser"
-(cd "$HERE" && cargo build --release --locked)
-
-if [ -n "$HELPER_PID" ]; then
-    say "Waiting for the archive helper"
-    if wait "$HELPER_PID"; then
-        HELPER="$HERE/target/helper/fb-archive"
-    else
-        grep -v 'warning CS' "$HELPER_LOG" | tail -20 >&2
-        echo "warning: the archive helper did not build (log: $HELPER_LOG) — installing without archive support" >&2
-    fi
+    HELPER=""
     HELPER_PID=""
+    HELPER_LOG="$HERE/target/helper-build.log"
+    DOTNET_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/failbrauwser/dotnet"
+
+    # A .NET SDK that can build net10.0: on the PATH, from an earlier run, or downloaded now.
+    has_sdk10() { "$1" --list-sdks 2>/dev/null | grep -Eq '^(1[0-9]|[2-9][0-9])\.'; }
+    find_dotnet() {
+        if command -v dotnet >/dev/null && has_sdk10 dotnet; then command -v dotnet; return; fi
+        if [ -x "$DOTNET_HOME/dotnet" ] && has_sdk10 "$DOTNET_HOME/dotnet"; then echo "$DOTNET_HOME/dotnet"; return; fi
+        say "Downloading the .NET 10 SDK into $DOTNET_HOME (for building the archive helper)" >&2
+        local script
+        script=$(mktemp)
+        if command -v curl >/dev/null; then curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$script"
+        elif command -v wget >/dev/null; then wget -qO "$script" https://dot.net/v1/dotnet-install.sh
+        else echo "curl or wget is needed to download the .NET SDK" >&2; rm -f "$script"; return 1
+        fi || { rm -f "$script"; return 1; }
+        bash "$script" --channel 10.0 --install-dir "$DOTNET_HOME" --no-path >&2 || { rm -f "$script"; return 1; }
+        rm -f "$script"
+        has_sdk10 "$DOTNET_HOME/dotnet" && echo "$DOTNET_HOME/dotnet"
+    }
+
+    if [ "$ARCHIVES" = 1 ] && [ -f "$CWB_ROOT/Compression.Lib/Compression.Lib.csproj" ]; then
+        if DOTNET=$(find_dotnet); then
+            # The helper is compiled to native code, which needs a C toolchain to link.
+            AOT_LINKER=()
+            if ! command -v clang >/dev/null; then
+                if command -v gcc >/dev/null; then AOT_LINKER=(-p:CppCompilerAndLinker=gcc)
+                else echo "warning: neither clang nor gcc found — the archive helper cannot be linked" >&2
+                fi
+            fi
+            # Built alongside the app: most of the helper's native compile runs on one core,
+            # so the Rust build uses the others meanwhile.
+            say "Building the archive helper in the background (CompressionWorkbench at $CWB_ROOT; log: $HELPER_LOG)"
+            mkdir -p "$HERE/target"
+            (cd "$HERE" && PATH="$(dirname "$DOTNET"):$PATH" DOTNET_ROOT="$(dirname "$(readlink -f "$DOTNET")")" \
+                DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 \
+                make helper CWB_ROOT="$(cd "$CWB_ROOT" && pwd)" HELPER_FLAGS="${AOT_LINKER[*]}") >"$HELPER_LOG" 2>&1 &
+            HELPER_PID=$!
+            # Do not leave it running when the app build fails.
+            trap '[ -n "$HELPER_PID" ] && kill "$HELPER_PID" 2>/dev/null' EXIT
+        else
+            echo "warning: no .NET 10 SDK could be set up — installing without archive support" >&2
+        fi
+    elif [ "$ARCHIVES" = 1 ]; then
+        echo "warning: $CWB_ROOT has no CompressionWorkbench — installing without archive support" >&2
+    fi
+
+    say "Building failBrauwser"
+    (cd "$HERE" && cargo build --release --locked)
+
+    if [ -n "$HELPER_PID" ]; then
+        say "Waiting for the archive helper"
+        if wait "$HELPER_PID"; then
+            HELPER="$HERE/target/helper/fb-archive"
+        else
+            grep -v 'warning CS' "$HELPER_LOG" | tail -20 >&2
+            echo "warning: the archive helper did not build (log: $HELPER_LOG) — installing without archive support" >&2
+        fi
+        HELPER_PID=""
+    fi
+
 fi
 
 say "Installing into $PREFIX"
-$SUDO install -Dm755 "$HERE/target/release/failbrauwser" "$BIN_DIR/failbrauwser"
+$SUDO install -Dm755 "$APP_BIN" "$BIN_DIR/failbrauwser"
 if [ -n "$HELPER" ]; then
     $SUDO install -Dm755 "$HELPER" "$LIB_DIR/fb-archive"
 fi
@@ -244,6 +265,15 @@ if [ "$AUTOSTART" = 1 ] && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     (setsid "$BIN_DIR/failbrauwser" --daemon >/dev/null 2>&1 &)
 fi
 restart_portal
+
+# Remembered for Help > Check for Updates.
+OPTIONS_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/failbrauwser/install-options"
+mkdir -p "$(dirname "$OPTIONS_FILE")"
+echo "${KEPT[*]:-}" > "$OPTIONS_FILE"
+
+if [ "$REOPEN" = 1 ] && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+    (setsid "$BIN_DIR/failbrauwser" >/dev/null 2>&1 &)
+fi
 
 say "Installed. Start it from your menu or run: failbrauwser"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "note: $BIN_DIR is not on your PATH" ;; esac

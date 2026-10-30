@@ -239,6 +239,40 @@ fn file_chooser_through_xdg_desktop_portal() {
 }
 
 #[test]
+fn update_from_release_or_source() {
+    run_checked(
+        "update.fbt",
+        &[],
+        |t| {
+            let fake = |dir: &Path, record: &str| {
+                std::fs::create_dir_all(dir).unwrap();
+                let script = format!("#!/bin/sh\necho \"$@\" > {}/{record}\necho installed\n", t.display());
+                std::fs::write(dir.join("install.sh"), script).unwrap();
+                std::process::Command::new("chmod").arg("+x").arg(dir.join("install.sh")).status().unwrap();
+            };
+            let pkg = format!("failbrauwser-99.0-{}-linux.tar.gz", std::env::consts::ARCH);
+            fake(&t.join("pkgroot/failbrauwser-99.0"), "installed-args");
+            assert!(std::process::Command::new("tar").args(["czf"]).arg(t.join(&pkg)).arg("-C").arg(t.join("pkgroot")).arg("failbrauwser-99.0").status().unwrap().success());
+            fake(&t.join("srcroot/failBrauwser-main"), "built-args");
+            assert!(std::process::Command::new("tar").args(["czf"]).arg(t.join("source.tar.gz")).arg("-C").arg(t.join("srcroot")).arg("failBrauwser-main").status().unwrap().success());
+            std::fs::write(
+                t.join("release.json"),
+                format!(r#"{{"tag_name": "v99.0", "name": "failBrauwser 99.0", "published_at": "2026-10-30T19:00:00Z", "assets": [{{"name": "{pkg}", "browser_download_url": "file://{}/{pkg}"}}]}}"#, t.display()),
+            )
+            .unwrap();
+            std::fs::create_dir_all(t.join("prefix/bin")).unwrap();
+            std::fs::create_dir_all(t.join("config/failbrauwser")).unwrap();
+            std::fs::write(t.join("config/failbrauwser/install-options"), "--default\n").unwrap();
+        },
+        |t| {
+            // The downloads are gone.
+            let left: Vec<_> = std::fs::read_dir(t.join("cache")).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("failbrauwser-update.")).collect();
+            assert!(left.is_empty(), "{left:?}");
+        },
+    );
+}
+
+#[test]
 fn sidebar_tree() {
     run("sidebar.fbt", |t| {
         std::fs::create_dir_all(t.join("a/b/c/d")).unwrap();

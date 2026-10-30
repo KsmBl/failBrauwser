@@ -20,4 +20,5 @@ pub mod servers;
 pub mod shortcuts;
 pub mod thumbs;
 pub mod trash;
+pub mod update;
 pub mod wmtheme;

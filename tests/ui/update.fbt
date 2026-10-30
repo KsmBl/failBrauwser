@@ -1,0 +1,18 @@
+# Help > Check for Updates with a stand-in release and source: both ways run their
+# install.sh with the options of the last install, and nothing downloaded stays behind.
+setenv FB_UPDATE_API=file://$T/release.json
+setenv FB_UPDATE_SOURCE=file://$T/source.tar.gz
+setenv FB_UPDATE_PREFIX=$T/prefix
+action win.check-updates
+wait-update-checked
+expect-update-status failBrauwser 99.0 (2026-10-30) is newer.
+update-choose release
+update-start
+wait-update-done
+expect-update-status Updated.
+wait-file-text $T/installed-args = --prebuilt --prefix $T/prefix --default --reopen
+update-choose source
+update-start
+wait-update-done
+expect-update-status Updated.
+wait-file-text $T/built-args = --prefix $T/prefix --default --reopen
