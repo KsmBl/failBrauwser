@@ -212,6 +212,11 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
     if items.len() == 1 && !items[0].is_dir_like() && !failbrauwser::archive::is_browsable_name(&items[0].display_name()) {
         arch.push(("Open as _Archive", "win.open-as-archive"));
     }
+    if let [a, b] = items {
+        if a.is_dir_like() && b.is_dir_like() && a.path().is_some() && b.path().is_some() {
+            arch.push(("Co_mpare", "win.compare-folders"));
+        }
+    }
     if let [Item::Fs(e) | Item::Found(e, _)] = items {
         if !e.is_dir_like() && failbrauwser::drives::is_mountable_image_name(&items[0].display_name()) {
             arch.push(("_Mount as Drive", "win.mount-image"));

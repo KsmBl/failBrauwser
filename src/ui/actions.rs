@@ -243,6 +243,12 @@ pub fn menubar_model() -> gio::Menu {
     });
     bar.append_submenu(Some("_Go"), &go);
 
+    let tools = gio::Menu::new();
+    section(&tools, |s| {
+        item(s, "_Compare Folders…", "win.compare-folders");
+    });
+    bar.append_submenu(Some("_Tools"), &tools);
+
     let help = gio::Menu::new();
     item(&help, "_About", "app.about");
     bar.append_submenu(Some("_Help"), &help);
