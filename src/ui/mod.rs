@@ -38,5 +38,6 @@ pub mod style;
 pub mod summary;
 pub mod thumbnails;
 pub mod trash;
+pub mod update;
 pub mod util;
 pub mod window;

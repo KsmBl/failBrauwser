@@ -251,6 +251,7 @@ pub fn menubar_model() -> gio::Menu {
     bar.append_submenu(Some("_Tools"), &tools);
 
     let help = gio::Menu::new();
+    item(&help, "Check for _Updates…", "win.check-updates");
     item(&help, "_About", "app.about");
     bar.append_submenu(Some("_Help"), &help);
     bar

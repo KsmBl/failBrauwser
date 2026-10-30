@@ -19,6 +19,7 @@ pub fn window_created(w: &Rc<Window>) {
     w.add_action("compress", archive::compress);
     w.add_action("open-as-archive", archive::open_as_archive);
     w.add_action("properties", super::properties::show);
+    w.add_action("check-updates", super::update::show);
     w.add_action("find", super::searchbar::open);
     super::customactions::install_actions(w);
     super::trash::install_actions(w);
