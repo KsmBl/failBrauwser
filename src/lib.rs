@@ -28,3 +28,5 @@ pub mod update;
 pub mod wmtheme;
 #[cfg(windows)]
 pub mod win;
+#[cfg(windows)]
+pub mod wpd;
