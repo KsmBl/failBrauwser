@@ -370,6 +370,13 @@ what is inside them, and inside audio and video files too. *Extract Here*, *Extr
 bytes done. Formats the library can only read are shown read-only, and the status bar says
 why.
 
+**Encrypted volumes:** TrueCrypt (4.3–7.1a) and VeraCrypt (1.0–2.1) container files
+(`.hc`, `.tc`, `.veracrypt`) open the same way: the password is asked for once (a wrong
+one asks again), and the FAT, exFAT, NTFS or ext4 volume inside is browsed and its files
+extracted like anywhere else. The whole volume shows as read-only — creating, resizing or
+re-keying a volume stays with the VeraCrypt program — and keyfiles and hidden volumes are
+not supported.
+
 **Compressed files** such as `notes.txt.gz` show the one file inside; open it, edit it and
 save, and the file is compressed again. *Extract Here* gives `notes.txt` itself.
 
