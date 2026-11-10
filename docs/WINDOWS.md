@@ -38,6 +38,13 @@ newer than the stamp, regenerates the loader cache for the new location, then st
 program and passes its exit code through. Nothing is registered in the system, and no
 DLLs or data ever sit next to the file itself.
 
+To start the plain `target\release\failbrauwser.exe` without any PATH setup, run
+`winpack\deps.ps1 -Exe target\release\failbrauwser.exe -Flat` once after building: it
+copies the DLL chain beside the program and the loaders and data trees inside its own
+folder — where GTK derives them when a loaded DLL's folder carries no `bin` name,
+unlike the packaged layout's `..\lib` — and rewrites the loader cache on the spot.
+The folder stays build output; cargo ignores it.
+
 ## Updating
 
 *Help → Check for Updates* on Windows installs the newest release's ready-built

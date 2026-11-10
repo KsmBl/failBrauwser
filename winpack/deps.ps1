@@ -5,11 +5,20 @@
 # trees (icons, fonts, schemas, licenses) those libraries read. System DLLs stay with
 # Windows; every sysroot DLL joins the staging bin folder.
 #   winpack\deps.ps1 -Exe target\release\failbrauwser.exe -Out winpack\out\staging
+#   winpack\deps.ps1 -Exe target\release\failbrauwser.exe -Flat
+# -Flat stages around the program where it lies: the DLLs land beside it and the
+# loader/data trees inside its own folder (lib, share), which is exactly where GTK
+# derives them when that folder carries no bin/lib name (target\release). The built
+# binary then starts on double-click: no PATH, nothing installed. The loader cache is
+# written on the spot, as install.ps1 does for its prefix; a staged -Out package gets
+# its cache on the target machine instead.
 param(
     [Parameter(Mandatory = $true)][string]$Exe,
-    [Parameter(Mandatory = $true)][string]$Out
+    [string]$Out,
+    [switch]$Flat
 )
 $ErrorActionPreference = 'Stop'
+if (-not $Flat -and -not $Out) { throw 'pass -Out <staging root>, or -Flat to stage around the program' }
 $sysroot = Join-Path $PSScriptRoot 'sysroot\ucrt64'
 $Exe = (Resolve-Path $Exe).Path
 
@@ -31,8 +40,13 @@ $sys32 = "$env:SystemRoot\System32"
 # Plugins (the gdk-pixbuf loaders) keep their home relative to the binaries — GTK looks
 # for <DLL folder>\..\lib\gdk-pixbuf-2.0\2.10.0\loaders — so they stage into lib and only
 # their own imports join bin. They are seeded into the queue like the program itself.
-$binOut = Join-Path $Out 'bin'
-$loadersOut = Join-Path $Out 'lib\gdk-pixbuf-2.0\2.10.0\loaders'
+# Where the loaders and data trees go follows how GTK derives them from a loaded DLL's
+# own file: strip the last path component, and another if that folder is named bin or
+# lib. A staging bin therefore takes ..\lib and ..\share; a program lying in a folder
+# with no such name (-Flat: target\release) takes lib and share inside its own folder.
+if ($Flat) { $binOut = Split-Path -Parent $Exe; $root = $binOut }
+else { $binOut = Join-Path $Out 'bin'; $root = $Out }
+$loadersOut = Join-Path $root 'lib\gdk-pixbuf-2.0\2.10.0\loaders'
 New-Item -ItemType Directory -Force -Path $binOut, $loadersOut | Out-Null
 $copied = @{}
 $queue = [System.Collections.Generic.Queue[string]]::new()
@@ -76,9 +90,17 @@ if ($unknown) { throw "dependencies neither in the sysroot nor in Windows: $((($
 foreach ($tree in 'share\glib-2.0\schemas\gschemas.compiled', 'share\icons\Adwaita', 'share\icons\AdwaitaLegacy', 'share\icons\hicolor', 'share\fontconfig', 'share\licenses') {
     $src = Join-Path $sysroot $tree
     if (-not (Test-Path -LiteralPath $src)) { throw "runtime asset missing: $tree" }
-    $dst = Join-Path $Out $tree
+    $dst = Join-Path $root $tree
     New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
     if ((Get-Item -LiteralPath $src).PSIsContainer) { Copy-Item $src $dst -Recurse -Force } else { Copy-Item $src $dst -Force }
+}
+
+# With -Flat the program's folder is its final home right now, so the cache gets its
+# fresh absolute paths here, exactly like install.ps1 writes it for an installed tree.
+if ($Flat) {
+    $text = & (Join-Path $binOut 'gdk-pixbuf-query-loaders.exe') | Out-String
+    if (-not $text -or $text -notmatch 'libpixbufloader') { throw 'writing the pixbuf loader cache failed' }
+    [IO.File]::WriteAllText((Join-Path $loadersOut 'loaders.cache'), $text.TrimEnd())
 }
 
 $binCount = (Get-ChildItem $binOut -Filter '*.dll' -File).Count
