@@ -9,8 +9,10 @@
 //! through `pkexec` as `failbrauwser --lvm open|close <encrypted partition>`.
 
 use serde_json::Value;
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::{Command, Stdio};
 
 /// What the device mapper volumes failBrauwser makes are recognized by.
@@ -208,7 +210,11 @@ pub fn mount_dir(base: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> Path
 }
 
 // ── The part that runs as root ───────────────────────────────────────────────────────────
+//
+// Linux through and through: /proc, /sys, device numbers, pkexec. It compiles nowhere else;
+// the portable half above is what the drive list on other systems talks to.
 
+#[cfg(unix)]
 fn run(cmd: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
     let mut c = Command::new(cmd);
     c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).env("LC_ALL", "C");
@@ -228,11 +234,13 @@ fn run(cmd: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> 
     }
 }
 
+#[cfg(unix)]
 fn blkid(dev: &str, tag: &str) -> String {
     run("blkid", &["-p", "-o", "value", "-s", tag, dev], None).unwrap_or_default().trim().to_string()
 }
 
 /// Where the device with this device number is mounted, deepest first.
+#[cfg(unix)]
 fn mounts_of(rdev: u64) -> Vec<PathBuf> {
     let (maj, min) = (libc::major(rdev), libc::minor(rdev));
     let text = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
@@ -247,6 +255,7 @@ fn mounts_of(rdev: u64) -> Vec<PathBuf> {
     v
 }
 
+#[cfg(unix)]
 fn rdev(dev: &str) -> Result<u64, String> {
     let m = std::fs::metadata(dev).map_err(|e| format!("{dev}: {e}"))?;
     if !m.file_type().is_block_device() {
@@ -256,6 +265,7 @@ fn rdev(dev: &str) -> Result<u64, String> {
 }
 
 /// The user who asked (pkexec says who): name, uid and gid.
+#[cfg(unix)]
 fn asking_user() -> Result<(String, u32, u32), String> {
     let uid: u32 = std::env::var("PKEXEC_UID").or_else(|_| std::env::var("SUDO_UID")).ok().and_then(|u| u.parse().ok()).ok_or("run through pkexec")?;
     // SAFETY: getpwuid returns a pointer to static storage, read right away.
@@ -271,6 +281,7 @@ fn asking_user() -> Result<(String, u32, u32), String> {
 
 /// The unlocked contents of the encrypted partition `partition`, checked to be an LVM
 /// physical volume: (kernel name, /dev path).
+#[cfg(unix)]
 fn physical_volume(partition: &str) -> Result<(String, String), String> {
     if !partition.starts_with("/dev/") {
         return Err(format!("{partition} is not a drive"));
@@ -288,6 +299,7 @@ fn physical_volume(partition: &str) -> Result<(String, String), String> {
 
 /// Maps the drive's LVM volumes (unless they are already) and mounts each file system on
 /// them below /run/media/<user>; prints `MOUNT <folder>` for each.
+#[cfg(unix)]
 fn open(partition: &str) -> Result<(), String> {
     let (clear, pv) = physical_volume(partition)?;
     let sys = Path::new("/sys");
@@ -361,6 +373,7 @@ fn open(partition: &str) -> Result<(), String> {
 
 /// Unmounts the drive's LVM volumes and removes their device mapper devices, so that the
 /// drive can be locked.
+#[cfg(unix)]
 fn close(partition: &str) -> Result<(), String> {
     let (clear, _) = physical_volume(partition)?;
     let sys = Path::new("/sys");
@@ -384,6 +397,7 @@ fn close(partition: &str) -> Result<(), String> {
 }
 
 /// `failbrauwser --lvm open|close /dev/sdX`: run as root through pkexec. Returns the exit code.
+#[cfg(unix)]
 pub fn helper_main(args: &[String]) -> i32 {
     // SAFETY: plain C call.
     if unsafe { libc::geteuid() } != 0 {
@@ -402,6 +416,14 @@ pub fn helper_main(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// LVM volumes and their device mapper live in the Linux kernel: on any other system there
+/// is nothing this helper could do, and it answers so rather than by accident.
+#[cfg(not(unix))]
+pub fn helper_main(_: &[String]) -> i32 {
+    eprintln!("failbrauwser --lvm needs Linux");
+    2
 }
 
 #[cfg(test)]
