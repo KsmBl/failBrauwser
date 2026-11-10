@@ -117,5 +117,16 @@ Scenarios that need Linux-only services skip with a printed reason:
 `desktop_links.fbt` (roaming-profile Desktop, see above), `summary.fbt` (symlink fixture),
 and the portal/default-app parts elsewhere. Timing budgets for the big-listing paints are
 widened for win32 GTK plus Defender (`big_listings.fbt`) — measured here, not guessed.
-All 42 scenarios pass on this host as of this writing, run serially
-(`RUST_TEST_THREADS=1 cargo test`).
+That makes 43 scripts across 44 scenario tests; run serially (`RUST_TEST_THREADS=1
+cargo test`), 41 answer green on this host as of this writing. Three fail, and all
+three sit with where this checkout lives rather than with the archive work: the work
+folder lies under a path with a space (`A:\Working Copies`), so `update.fbt` meets
+`curl: (3)` — the updater passes its `file://` fixtures unescaped — and
+`custom_actions.fbt` loses its `%f`-expanded marker command to the same space
+(the very scenario answers green when driven through a space-free work folder;
+harness.ps1 takes one, re-checked 2026-11-10). `lvm_drive.fbt` now reaches unlock,
+listing and remount on Windows, but its side-drive row never shows the mount path
+the way the script compares it. `trash.fbt` once timed out while the key-derivation
+tests held every core; run alone it passes. These failures surfaced when the app's
+Windows build compiled again after the `--lvm` helper stopped importing Linux; no
+Windows build had run these Linux-era update and drives paths before.
