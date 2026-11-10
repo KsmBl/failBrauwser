@@ -377,6 +377,13 @@ extracted like anywhere else. The whole volume shows as read-only — creating, 
 re-keying a volume stays with the VeraCrypt program — and keyfiles and hidden volumes are
 not supported.
 
+A VeraCrypt header's bytes are indistinguishable from random noise, so a container renamed
+to `.bin`, `.img` or no suffix at all cannot be recognized from the file: right-click such
+a file and choose *Open as Volume* → *VeraCrypt / TrueCrypt*, *BitLocker*, *LUKS* or
+*dm-crypt (plain)* to open it as that kind of container. The same password prompt asks
+once, and a wrong choice says so and opens nothing. (BitLocker and LUKS carry plaintext
+headers, so their images are also recognized by content when their names say nothing.)
+
 **Compressed files** such as `notes.txt.gz` show the one file inside; open it, edit it and
 save, and the file is compressed again. *Extract Here* gives `notes.txt` itself.
 
