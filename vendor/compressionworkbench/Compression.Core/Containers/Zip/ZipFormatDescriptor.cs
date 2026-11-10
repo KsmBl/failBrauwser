@@ -15,20 +15,38 @@ namespace FileFormat.Zip;
 ///   <item><description>Info-ZIP zip/unzip — long-standing open reference implementations</description></item>
 /// </list>
 /// </summary>
-public sealed class ZipFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IFormatValidator, IArchiveModifiable, IArchiveCreatable, IArchiveDefragmentable, IArchiveLayoutMap, IWipeEmpty, IArchiveShrinkable, IFormatOptionsSchema {
+public sealed class ZipFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IFormatValidator, IArchiveModifiable, IArchiveRenamable, IArchiveCreatable, IArchiveLayoutMap, IWipeEmpty, IArchiveShrinkable, IFormatOptionsSchema, ICompressionOptimizable, IArchiveRepackable {
 
   /// <inheritdoc />
   public IReadOnlyList<FormatOptionDescriptor> OptionsSchema => [
     new("Method", "Compression method", FormatOptionKind.Enum, "deflate",
-      AllowedValues: ["deflate", "store", "deflate64", "bzip2", "lzma", "zstd"]),
+      AllowedValues: ["deflate", "store", "deflate64", "bzip2", "lzma", "zstd", "xz"]),
     new("Level", "Compression level", FormatOptionKind.Integer, "5",
       AllowedValues: ["0", "1", "3", "5", "7", "9"],
       Description: "Compression level. 0 = fastest, 9 = max."),
     new("Password", "Password", FormatOptionKind.String, "",
       Description: "Optional ZipCrypto / AES password."),
     new("EncryptionMethod", "Encryption method", FormatOptionKind.Enum, "none",
-      AllowedValues: ["none", "zipcrypto", "aes-128", "aes-192", "aes-256"]),
+      AllowedValues: ["none", "zipcrypto", "aes-128", "aes-192", "aes-256", "pkware-aes-256"]),
   ];
+
+  /// <summary>
+  /// Re-deflates every entry that gets smaller at maximum effort, rewriting the archive
+  /// from its own directory so that names, extra fields, comments, attributes, flags and
+  /// timestamps are carried across as stored (<see cref="ZipRawRewriter"/>). Encrypted,
+  /// ZIP64-sized and non-Deflate/Stored entries are copied verbatim.
+  /// </summary>
+  public void OptimizeCompression(Stream input, Stream output, string? password = null)
+    => ZipRawRewriter.Recompress(input, output);
+
+  /// <summary>
+  /// Copies every entry the central directory lists, byte for byte, into a fresh archive —
+  /// dropping the space removed entries left behind — and writes the directory again with
+  /// the new offsets. The rewrite decodes nothing; verifying it reads every entry back, so
+  /// an encrypted archive needs its password to be repacked through <see cref="MaintenanceVerbs"/>.
+  /// </summary>
+  public void Repack(Stream input, Stream output, string? password = null)
+    => ZipRawRewriter.Repack(input, output);
 
   /// <inheritdoc />
   public IEnumerable<DefragBlockInfo> EnumerateLayout(Stream archive) => ZipLayoutMap.Enumerate(archive);
@@ -78,26 +96,10 @@ public sealed class ZipFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     }
   }
 
-  /// <summary>Rebuild-based defrag: extracts every entry then re-creates the archive in listing order.</summary>
-  public void Defragment(Stream archive)
-    => this.Defragment(archive, new DefragOptions { Mode = DefragMode.ConsolidateAtStart });
+  // Not IArchiveDefragmentable: an archive has no free-space layout to defragment,
+  // and the repack that stood in for it kept only names and bytes — Zip timestamps,
+  // attributes/modes, owners, comments, links and methods were reset or dropped.
 
-  /// <summary>Rebuild-based defrag: extracts every entry then re-creates the archive per the requested mode.</summary>
-  public void Defragment(Stream archive, DefragOptions options) {
-    DefragRebuilder.Rebuild(archive, options,
-      readEntries: stream => {
-        var r = new ZipReader(stream);
-        return r.Entries.Where(e => !e.IsDirectory).Select(e => (e.FileName, r.ExtractEntry(e)));
-      },
-      buildImage: files => {
-        using var ms = new MemoryStream();
-        using (var w = new ZipWriter(ms, leaveOpen: true)) {
-          foreach (var (n, d) in files) w.AddEntry(n, d);
-          w.Finish();
-        }
-        return ms.ToArray();
-      });
-  }
 
   /// <summary>
   /// Gets the id.
@@ -124,17 +126,21 @@ public sealed class ZipFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// Adds (or replaces by name) files inside an existing ZIP archive. Uses
   /// <see cref="ZipModifier"/> for true O(touched bytes) random-access I/O —
   /// only the central directory, the EOCD, and the appended file's local
-  /// file header + compressed data are read or written.
+  /// file header + compressed data are read or written. On-disk inputs are
+  /// streamed (no size limit) and keep their last-write time.
   /// </summary>
-  public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
-    foreach (var input in inputs) {
-      if (string.IsNullOrEmpty(input.ArchiveName)) continue;
-      // A directory is a zero-length entry whose name ends in '/'; dropping those made an
-      // empty folder added to an existing ZIP vanish.
-      var name = input.IsDirectory ? input.ArchiveName.TrimEnd('/') + "/" : input.ArchiveName;
-      ZipModifier.RemoveFile(archive, name, wipeData: true);
-      ZipModifier.AddFile(archive, name, input.IsDirectory ? [] : input.ReadContent(), input.SourceLastModifiedUtc?.ToLocalTime());
-    }
+  public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs)
+    => ZipModifier.AddOrReplace(archive, inputs);
+
+  /// <summary>
+  /// Renames entries by copying the archive with new names in the directory and local headers.
+  /// Entry data, data descriptors, extra fields, timestamps, attributes, the host that made each
+  /// entry and every comment are copied byte for byte; nothing is decoded or recompressed.
+  /// </summary>
+  public void Rename(Stream source, Stream destination, IReadOnlyList<ArchiveRename> renames) {
+    var (records, _, _) = ZipRawDirectory.Read(source);
+    var map = ArchiveRenames.Resolve(renames, [.. records.Select(r => r.Name)]);
+    ZipRawDirectory.CopyRenamed(source, destination, name => map.TryGetValue(name, out var renamed) ? renamed : null);
   }
 
   /// <summary>
@@ -171,7 +177,7 @@ public sealed class ZipFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   public IReadOnlyList<FormatMethodInfo> Methods => [
     new("deflate", "Deflate", SupportsOptimize: true),
     new("store", "Store"), new("deflate64", "Deflate64"),
-    new("bzip2", "BZip2"), new("lzma", "LZMA"), new("zstd", "Zstandard"), new("ppmd", "PPMd")
+    new("bzip2", "BZip2"), new("lzma", "LZMA"), new("zstd", "Zstandard"), new("ppmd", "PPMd"), new("xz", "XZ")
   ];
   /// <summary>
   /// Gets the tar compression format id.
@@ -292,7 +298,7 @@ public sealed class ZipFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     var w = new ZipWriter(output, leaveOpen: true, compressionLevel: level,
       password: password, encryptionMethod: encryption);
 
-    if (options.DictSize > 0 && zipMethod == ZipCompressionMethod.Lzma)
+    if (options.DictSize > 0 && zipMethod is ZipCompressionMethod.Lzma or ZipCompressionMethod.Xz)
       w.LzmaDictionarySize = ZipOptionsResolver.NormalizeDictSize(
         ZipOptionsResolver.ResolveLzmaDictSize(options.DictSize, options.Optimize));
     w.LzmaLevel = ZipOptionsResolver.ResolveLzmaLevel(options.Level, options.Optimize);
@@ -304,6 +310,7 @@ public sealed class ZipFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
       w.Bzip2BlockSize = ZipOptionsResolver.ResolveBzip2BlockSize(options.DictSize);
 
     foreach (var i in inputs) {
+      // DOS times are local times; the source's last-write time is kept.
       if (i.IsDirectory) { w.AddDirectory(i.ArchiveName, i.SourceLastModifiedUtc?.ToLocalTime()); continue; }
       // ReadContent() transparently handles both on-disk inputs and the
       // in-memory variant fed by the small-image ConvertArchive pipeline.

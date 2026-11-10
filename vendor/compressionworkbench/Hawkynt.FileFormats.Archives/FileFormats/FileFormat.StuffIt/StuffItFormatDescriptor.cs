@@ -15,7 +15,7 @@ namespace FileFormat.StuffIt;
 ///   <item><description>Aladdin Systems StuffIt — proprietary; no official spec published</description></item>
 /// </list>
 /// </summary>
-public sealed class StuffItFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveModifiable, IArchiveDefragmentable, IArchiveLayoutMap {
+public sealed class StuffItFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveModifiable, IArchiveDefragmentable, IArchiveLayoutMap, IFormatOptionsSchema {
 
   /// <summary>Rebuild-based defrag: extracts then re-creates the StuffIt archive in listing order.</summary>
   public void Defragment(Stream archive)
@@ -26,7 +26,7 @@ public sealed class StuffItFormatDescriptor : IFormatDescriptor, IArchiveFormatO
     DefragRebuilder.Rebuild(archive, options,
       readEntries: stream => {
         var r = new StuffItReader(stream);
-        return r.Entries.Select(e => (e.FileName, r.Extract(e)));
+        return r.Entries.Where(e => !e.IsDirectory).Select(e => (e.FileName, r.Extract(e)));
       },
       buildImage: files => {
         using var ms = new MemoryStream();
@@ -71,7 +71,7 @@ public sealed class StuffItFormatDescriptor : IFormatDescriptor, IArchiveFormatO
   public FormatCapabilities Capabilities =>
     FormatCapabilities.CanList | FormatCapabilities.CanExtract | FormatCapabilities.CanCreate |
     FormatCapabilities.CanModify |
-    FormatCapabilities.CanTest | FormatCapabilities.SupportsMultipleEntries;
+    FormatCapabilities.CanTest | FormatCapabilities.SupportsMultipleEntries | FormatCapabilities.SupportsDirectories;
   /// <summary>
   /// Gets the default extension.
   /// </summary>
@@ -87,7 +87,10 @@ public sealed class StuffItFormatDescriptor : IFormatDescriptor, IArchiveFormatO
   /// <summary>
   /// Gets the magic signatures.
   /// </summary>
-  public IReadOnlyList<MagicSignature> MagicSignatures => [new([(byte)'S', (byte)'I', (byte)'T', (byte)'!'], Confidence: 0.95)];
+  public IReadOnlyList<MagicSignature> MagicSignatures => [
+    new([(byte)'S', (byte)'I', (byte)'T', (byte)'!'], Confidence: 0.95),
+    new("StuffIt (c)1997-"u8.ToArray(), Confidence: 0.95),
+  ];
   /// <summary>
   /// Gets the methods.
   /// </summary>
@@ -103,25 +106,65 @@ public sealed class StuffItFormatDescriptor : IFormatDescriptor, IArchiveFormatO
   /// <summary>
   /// Gets the description.
   /// </summary>
-  public string Description => "Macintosh StuffIt archive, classic Mac compression";
+  public string Description => "Macintosh StuffIt archive (classic SIT! and StuffIt 5); reads methods None/RLE/Compress/Huffman/LZAH/LZ+Huffman/Arsenic, writes None/RLE/LZ+Huffman in classic and StuffIt 5 containers";
+
+  private const string Classic = "Classic";
+  private const string StuffIt5 = "StuffIt5";
+
+  /// <summary>The container the writer emits.</summary>
+  public IReadOnlyList<FormatOptionDescriptor> OptionsSchema { get; } = [
+    new FormatOptionDescriptor(
+      Key: FormatOptionKeys.TargetCompatibility,
+      DisplayName: "Container",
+      Kind: FormatOptionKind.Enum,
+      Default: Classic,
+      AllowedValues: [Classic, StuffIt5],
+      Description: "Classic writes a \"SIT!\" archive (StuffIt 1-4); StuffIt5 writes the container of StuffIt 5 and later.",
+      IsOptimizationAxis: false),
+    new FormatOptionDescriptor(
+      Key: "Compression",
+      DisplayName: "Compression",
+      Kind: FormatOptionKind.Enum,
+      Default: nameof(StuffItCompression.Smallest),
+      AllowedValues: Enum.GetNames<StuffItCompression>(),
+      Description: "Smallest tries Arsenic (method 15), LZ+Huffman (13) and RLE (1) for every fork and keeps the smallest; the others force one method (storing a fork it would enlarge)."),
+  ];
+
+  private static StuffItCompression CompressionOf(FormatCreateOptions options)
+    => Enum.TryParse<StuffItCompression>(options.GetString("Compression"), ignoreCase: true, out var c) ? c : StuffItCompression.Smallest;
+
+  /// <summary>Suffix under which a file's resource fork is listed and extracted.</summary>
+  public const string ResourceForkSuffix = ".rsrc";
+
+  private static IEnumerable<(StuffItEntry Entry, bool Resource, string Name)> Items(StuffItReader r) {
+    foreach (var e in r.Entries) {
+      if (e.IsDirectory) { yield return (e, false, e.FileName); continue; }
+      if (e.DataForkSize > 0 || !e.HasResourceFork) yield return (e, false, e.FileName);
+      if (e.HasResourceFork) yield return (e, true, e.FileName + ResourceForkSuffix);
+    }
+  }
 
   /// <summary>
   /// Lists the entries in the supplied container.
   /// </summary>
   public List<ArchiveEntryInfo> List(Stream stream, string? password) {
-    var r = new StuffItReader(stream);
-    return r.Entries.Select((e, i) => new ArchiveEntryInfo(i, e.FileName, e.DataForkSize,
-      e.CompressedDataSize, $"Method {e.DataMethod}", false, false, e.LastModified)).ToList();
+    var r = new StuffItReader(stream, leaveOpen: true);
+    return Items(r).Select((x, i) => new ArchiveEntryInfo(i, x.Name,
+      x.Entry.IsDirectory ? 0 : x.Resource ? x.Entry.ResourceForkSize : x.Entry.DataForkSize,
+      x.Entry.IsDirectory ? 0 : x.Resource ? x.Entry.CompressedResourceSize : x.Entry.CompressedDataSize,
+      x.Entry.IsDirectory ? "" : StuffItReader.MethodName(x.Resource ? x.Entry.ResourceMethod : x.Entry.DataMethod),
+      x.Entry.IsDirectory, x.Entry.IsEncrypted, x.Entry.LastModified)).ToList();
   }
 
   /// <summary>
   /// Decodes the supplied input.
   /// </summary>
   public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
-    var r = new StuffItReader(stream);
-    foreach (var e in r.Entries) {
-      if (files != null && !MatchesFilter(e.FileName, files)) continue;
-      WriteFile(outputDir, e.FileName, r.Extract(e));
+    var r = new StuffItReader(stream, leaveOpen: true);
+    foreach (var (e, resource, name) in Items(r)) {
+      if (files != null && !MatchesFilter(name, files)) continue;
+      if (e.IsDirectory) continue; // folders come into being with the files inside them
+      WriteFile(outputDir, name, resource ? r.ExtractResourceFork(e) : r.Extract(e));
     }
   }
 
@@ -136,9 +179,9 @@ public sealed class StuffItFormatDescriptor : IFormatDescriptor, IArchiveFormatO
     ArgumentNullException.ThrowIfNull(entryName);
     if (archive.CanSeek) archive.Position = 0;
     var r = new StuffItReader(archive, leaveOpen: true);
-    foreach (var e in r.Entries) {
-      if (!string.Equals(e.FileName, entryName, StringComparison.OrdinalIgnoreCase)) continue;
-      var bytes = r.Extract(e);
+    foreach (var (e, resource, name) in Items(r)) {
+      if (e.IsDirectory || !string.Equals(name, entryName, StringComparison.OrdinalIgnoreCase)) continue;
+      var bytes = resource ? r.ExtractResourceFork(e) : r.Extract(e);
       return new BoundedEntryStream(new MemoryStream(bytes, writable: false),
         bytes.Length, leaveOpen: false);
     }
@@ -157,9 +200,24 @@ public sealed class StuffItFormatDescriptor : IFormatDescriptor, IArchiveFormatO
   /// <summary>
   /// Performs the create operation.
   /// </summary>
+  /// <remarks>
+  /// Writes a classic "SIT!" archive, or a StuffIt 5 archive when
+  /// <see cref="FormatOptionKeys.TargetCompatibility"/> is <c>StuffIt5</c>. The compression option
+  /// selects store, RLE, LZ+Huffman, Arsenic, or the smallest encoding for each fork.
+  /// </remarks>
   public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
-    using var w = new StuffItWriter(output, leaveOpen: true);
-    foreach (var (name, data) in FormatHelpers.FlatFiles(inputs))
-      w.AddFile(name, data);
+    if (string.Equals(options.GetString(FormatOptionKeys.TargetCompatibility), StuffIt5, StringComparison.OrdinalIgnoreCase)) {
+      using var w5 = new StuffIt5Writer(output, CompressionOf(options), leaveOpen: true);
+      foreach (var i in inputs) {
+        if (i.IsDirectory) w5.AddDirectory(i.ArchiveName);
+        else w5.AddFile(i.ArchiveName, i.ReadContent());
+      }
+      return;
+    }
+    using var w = new StuffItWriter(output, CompressionOf(options), leaveOpen: true);
+    foreach (var i in inputs) {
+      if (i.IsDirectory) w.AddDirectory(i.ArchiveName);
+      else w.AddFile(i.ArchiveName, i.ReadContent());
+    }
   }
 }

@@ -15,15 +15,26 @@ public static class FormatHelpers {
   }
 
   /// <summary>
-  /// Gives an extracted file the timestamp its entry carries. Missing, pre-1980 placeholder
-  /// or unrepresentable times are left alone; the file then keeps its extraction time.
+  /// Gives an extracted file or folder the time its entry carries. A missing time, a Unix
+  /// epoch or DOS "no date" placeholder (1970 / 1980-01-01 00:00:00) or one the host cannot
+  /// represent is left alone; the file then keeps its extraction time. A time of unspecified
+  /// kind is taken as local, as the DOS-dated formats store it.
   /// </summary>
   public static void ApplyEntryTime(string path, DateTime? lastModified) {
-    if (lastModified is not { } t || t.Year < 1971) return;
+    if (lastModified is not { } t || t.Year < 1971 || t is { Year: 1980, Month: 1, Day: 1, TimeOfDay.Ticks: 0 }) return;
     try {
-      if (t.Kind == DateTimeKind.Utc) File.SetLastWriteTimeUtc(path, t);
-      else File.SetLastWriteTime(path, t);
-    } catch (IOException) { } catch (UnauthorizedAccessException) { } catch (ArgumentOutOfRangeException) { }
+      if (Directory.Exists(path)) {
+        if (t.Kind == DateTimeKind.Utc) Directory.SetLastWriteTimeUtc(path, t);
+        else Directory.SetLastWriteTime(path, t);
+      } else if (t.Kind == DateTimeKind.Utc) {
+        File.SetLastWriteTimeUtc(path, t);
+      } else {
+        File.SetLastWriteTime(path, t);
+      }
+    } catch (IOException) {
+    } catch (UnauthorizedAccessException) {
+    } catch (ArgumentOutOfRangeException) {
+    }
   }
 
   /// <summary>
@@ -33,12 +44,59 @@ public static class FormatHelpers {
   /// instead of materialising it, which an entry larger than a byte[] requires.
   /// </summary>
   public static FileStream CreateEntryFile(string baseDir, string entryName) {
-    var safeName = entryName.Replace('\\', '/').TrimStart('/');
-    if (safeName.Contains("..")) safeName = Path.GetFileName(safeName);
-    var fullPath = Path.Combine(baseDir, safeName);
+    var fullPath = SafeEntryPath(baseDir, entryName);
     var dir = Path.GetDirectoryName(fullPath);
     if (dir != null) Directory.CreateDirectory(dir);
     return File.Create(fullPath);
+  }
+
+  /// <summary>
+  /// Creates the folder an entry names under <paramref name="baseDir"/>, with the same
+  /// traversal sanitising as <see cref="CreateEntryFile" />, and returns its path; an empty
+  /// folder of an archive then survives extraction.
+  /// </summary>
+  public static string CreateEntryDirectory(string baseDir, string entryName) {
+    var fullPath = SafeEntryPath(baseDir, entryName.Replace('\\', '/').TrimEnd('/'));
+    Directory.CreateDirectory(fullPath);
+    return fullPath;
+  }
+
+  private static string SafeEntryPath(string baseDir, string entryName) {
+    var safeName = entryName.Replace('\\', '/').TrimStart('/');
+    if (safeName.Contains("..")) safeName = Path.GetFileName(safeName);
+    safeName = string.Join('/', safeName.Split('/').Select(static s => HostFileName(s, OperatingSystem.IsWindows())));
+    return Path.Combine(baseDir, safeName);
+  }
+
+  private static readonly HashSet<string> WindowsDeviceNames = new(StringComparer.OrdinalIgnoreCase) {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+  };
+
+  /// <summary>
+  /// <paramref name="name"/> as one path component the host can create: every character it
+  /// cannot hold becomes '_'. Everywhere that is U+0000; on Windows also the control
+  /// characters and <c>&lt; &gt; : " | ? *</c>, a trailing dot or blank (which Windows would
+  /// silently drop) and a device name such as <c>CON</c> (which it would open instead). An
+  /// entry name that is legal in its own file system — HFS+'s <c>forward:slash</c>, a
+  /// metadata name with U+0000 or a carriage return in it — therefore extracts under a
+  /// recognisable name instead of failing the extraction or, for ':' on NTFS, landing in an
+  /// alternate data stream.
+  /// </summary>
+  internal static string HostFileName(string name, bool windows) {
+    if (name is "" or "." or "..") return name;
+    var chars = name.ToCharArray();
+    for (var i = 0; i < chars.Length; ++i)
+      if (chars[i] == '\0' || (windows && (chars[i] < ' ' || chars[i] is '<' or '>' or ':' or '"' or '|' or '?' or '*')))
+        chars[i] = '_';
+    if (windows) {
+      for (var i = chars.Length - 1; i >= 0 && chars[i] is '.' or ' '; --i)
+        chars[i] = '_';
+      var result = new string(chars);
+      return WindowsDeviceNames.Contains(result.Split('.')[0].TrimEnd()) ? "_" + result : result;
+    }
+    return new string(chars);
   }
 
   /// <summary>

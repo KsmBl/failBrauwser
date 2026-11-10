@@ -130,22 +130,78 @@ public sealed class GenuineStackerReader : IDisposable {
     }
   }
 
-  // Physical sector (1-based) + on-disk sector count of a cluster, from the
-  // interleaved AMAP. Sectors == s_spc ⇒ stored; fewer ⇒ DS-compressed.
-  private (int Phys, int Sectors) AmapEntry(int cluster) {
+  // Physical sector + on-disk sector count + flag nibble (bits 7..5 of the third
+  // byte) of a cluster, from the interleaved AMAP.
+  private (int Phys, int Sectors, int Flags) AmapEntry(int cluster) {
     var bytesPer = this._fat16 ? 4 : 3;
     var pos = cluster * bytesPer;
     var area = pos / Ss;
     var amapSector = (area / 6) * 9 + (area % 6) + 3 + this._fatStart;
     var p = amapSector * Ss + (pos % Ss);
-    if (p + bytesPer > this._data.Length) return (0, 0);
+    if (p + bytesPer > this._data.Length) return (0, 0, 0);
     var sec = this._data[p] | (this._data[p + 1] << 8);
     var sizeLo = this._data[p + 2] & 0x0f;
     if (this._fat16) {
       sec |= (this._data[p + 3] & 0x3f) << 16;
       sizeLo += (this._data[p + 3] >> 2) & 0x30;
     }
-    return (sec, sizeLo + 1);
+    return (sec, sizeLo + 1, (this._data[p + 2] >> 5) & 7);
+  }
+
+  private enum ClusterKind { Compressed, Stored, Fragmented, Suballocated }
+
+  // Flag bits 7..5: bit 6 marks a deleted cluster and does not change the kind;
+  // a full-length run (sectors == spc) is never compressed.
+  private ClusterKind Classify(int sectors, int flags) {
+    if ((flags & 0b101) == 0b101) return ClusterKind.Suballocated;
+    if (sectors >= this._spc) return ClusterKind.Stored;
+    return (flags & 0b101) switch {
+      0b000 => ClusterKind.Compressed,
+      0b001 => ClusterKind.Stored,
+      _ => ClusterKind.Fragmented,
+    };
+  }
+
+  // A fragmented cluster (docs/CVF-CODECS-ON-DISK.md, "Stacker fragmented clusters"): the AMAP run is
+  // the first piece; its first sector starts 0xED, the number n of further pieces, a 16-bit total of
+  // their sectors minus one, and n entries (16-bit sector, sectors - 1, a byte that must be 0). The
+  // compressed payload starts right after the entries and continues through the pieces in order.
+  private byte[] FragmentedPayload(int cluster, int phys, int sectors) {
+    var first = phys * Ss;
+    if (first + sectors * Ss > this._data.Length)
+      throw new InvalidDataException($"Stacker (genuine): fragmented cluster {cluster} lies past the end of the volume.");
+    if (this._data[first] != 0xED)
+      throw new InvalidDataException($"Stacker (genuine): fragmented cluster {cluster} lacks its 0xED piece list.");
+
+    var pieces = this._data[first + 1];
+    var headerBytes = 4 + 4 * pieces;
+    if (headerBytes > sectors * Ss)
+      throw new InvalidDataException($"Stacker (genuine): fragmented cluster {cluster} has a piece list longer than its first run.");
+
+    var listed = new List<(int Sector, int Count)>(pieces);
+    var sum = 0;
+    for (var i = 0; i < pieces; ++i) {
+      var e = first + 4 + 4 * i;
+      if (this._data[e + 3] != 0)
+        throw new NotSupportedException($"Stacker (genuine): fragmented cluster {cluster} uses a piece entry whose fourth byte is set; its meaning has not been verified.");
+      var count = this._data[e + 2] + 1;
+      listed.Add((this._data[e] | this._data[e + 1] << 8, count));
+      sum += count;
+    }
+    if (BinaryPrimitives.ReadUInt16LittleEndian(this._data.AsSpan(first + 2)) != sum - 1)
+      throw new InvalidDataException($"Stacker (genuine): fragmented cluster {cluster} piece total does not match its piece list.");
+
+    var payload = new byte[sectors * Ss - headerBytes + sum * Ss];
+    this._data.AsSpan(first + headerBytes, sectors * Ss - headerBytes).CopyTo(payload);
+    var at = sectors * Ss - headerBytes;
+    foreach (var (sector, count) in listed) {
+      var off = (long)sector * Ss;
+      if (sector == 0 || off + count * Ss > this._data.Length)
+        throw new InvalidDataException($"Stacker (genuine): fragmented cluster {cluster} names a piece past the end of the volume.");
+      this._data.AsSpan((int)off, count * Ss).CopyTo(payload.AsSpan(at));
+      at += count * Ss;
+    }
+    return payload;
   }
 
   private int NextCluster(int cluster) {
@@ -171,22 +227,36 @@ public sealed class GenuineStackerReader : IDisposable {
     var guard = 0;
 
     while (cluster >= 2 && cluster < eoc && written < entry.Size && guard++ <= this._maxCluster + 2) {
-      var (phys, sectors) = this.AmapEntry(cluster);
+      var (phys, sectors, flags) = this.AmapEntry(cluster);
       if (phys > 0) {
         var srcOff = phys * Ss;
         var clusterBytes = this._spc * Ss;
         var want = Math.Min(clusterBytes, (int)entry.Size - written);
-        if (sectors >= this._spc) {                       // stored
-          if (want > 0 && srcOff + want <= this._data.Length)
-            Array.Copy(this._data, srcOff, output, written, want);
-        } else {                                          // DS-compressed
-          var inLen = sectors * Ss;
-          if (srcOff + inLen <= this._data.Length) {
-            var payload = new byte[inLen];
-            Array.Copy(this._data, srcOff, payload, 0, inLen);
-            var full = Compression.Registry.Cvf.CvfLzCodec.Decompress(payload, inLen, clusterBytes);
-            Array.Copy(full, 0, output, written, want);
+        switch (this.Classify(sectors, flags)) {
+          case ClusterKind.Stored:
+            if (want > 0 && srcOff + want <= this._data.Length)
+              Array.Copy(this._data, srcOff, output, written, Math.Min(want, sectors * Ss));
+            break;
+          case ClusterKind.Compressed: {
+            var inLen = sectors * Ss;
+            if (srcOff + inLen <= this._data.Length) {
+              var payload = new byte[inLen];
+              Array.Copy(this._data, srcOff, payload, 0, inLen);
+              var full = Compression.Core.FileSystems.Cvf.CvfLzCodec.DecompressStacker(payload, inLen, clusterBytes);
+              Array.Copy(full, 0, output, written, want);
+            }
+            break;
           }
+          case ClusterKind.Fragmented: {
+            var payload = this.FragmentedPayload(cluster, phys, sectors);
+            var full = Compression.Core.FileSystems.Cvf.CvfLzCodec.DecompressStacker(payload, payload.Length, clusterBytes);
+            Array.Copy(full, 0, output, written, want);
+            break;
+          }
+          case var kind:
+            // Suballocated runs exist on real volumes, but their layout has not been verified, so
+            // they are refused rather than guessed at.
+            throw new NotSupportedException($"Stacker (genuine): cluster {cluster} of '{entry.Name}' is {kind.ToString().ToLowerInvariant()}; reading such clusters is not supported.");
         }
         written += want;
       }

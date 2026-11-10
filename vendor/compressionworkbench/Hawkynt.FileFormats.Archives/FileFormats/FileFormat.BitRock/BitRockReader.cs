@@ -1,4 +1,6 @@
-using System.IO.Compression;
+using Compression.Core.Streams;
+using FileFormat.Gzip;
+using FileFormat.Zlib;
 using System.Text;
 
 namespace FileFormat.BitRock;
@@ -6,7 +8,7 @@ namespace FileFormat.BitRock;
 /// <summary>
 /// Reader for BitRock / InstallBuilder self-extracting installers.
 ///
-/// Layout (recovered by binary inspection of real installers):
+/// Layout (as found in real installers):
 ///   [PE stub] [content region] [embedded Metakit VFS] [16-byte trailer]
 ///   ["bitrock-lzma-4.0" 16 bytes] ["mFC3acAOJrQinu5aEHu0uH7N5XSQ3Z14" 32-byte magic]
 ///
@@ -361,8 +363,8 @@ public sealed class BitRockReader {
     try {
       using var src = new MemoryStream(this._vfs, offset, length, writable: false);
       using Stream dec = gzip
-        ? new GZipStream(src, CompressionMode.Decompress, leaveOpen: true)
-        : new ZLibStream(src, CompressionMode.Decompress, leaveOpen: true);
+        ? new GzipStream(src, CompressionStreamMode.Decompress, leaveOpen: true)
+        : new ZlibStream(src, CompressionStreamMode.Decompress, leaveOpen: true);
       using var outMs = new MemoryStream();
       dec.CopyTo(outMs);
       return outMs.ToArray();

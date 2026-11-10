@@ -16,8 +16,8 @@ failBrauwser builds on its own:
 | `Hawkynt.FileFormats.Archives`, `.FileSystems`, `.Audio` | the formats themselves |
 | `Hawkynt.Algorithms.Checksums`, `.Hashing` | checksums and hashes |
 
-Upstream: https://github.com/Hawkynt/CompressionWorkbench, based on commit `8a4df931`
-("README rewritten for the Linux GTK desktop app").
+Upstream: https://github.com/Hawkynt/CompressionWorkbench, based on commit `fada50f6`
+("VeraCrypt/TrueCrypt containers: open, mount and create (#808)").
 
 License: LGPL-3.0-or-later (`LICENSE` here); third-party notices in
 `THIRD-PARTY-NOTICES.md`. The NuGet package `Hawkynt.FileFormats.Images` (also by Hawkynt)
@@ -47,6 +47,16 @@ is fetched at build time.
 - (bug) the shared rebuild path dropped entries by leaf name; it keeps folders now
 - (bug) MFS-1 adds cut the other names down to their extension
 - (fix) behind a generic suffix (.bin, .img, .dat, …) a clear signature decides the format
+- (keep) formats upstream has since dropped stay vendored and working: the Ctw, Lzham,
+  Lzturbo and MsLzh dictionaries, ContextMixing entropy coders, ODS-1 (Cvf), Cmix, LhF, Lzs,
+  PackBits, PackDisk, Paq8, Zap, the GroovyCodecs audio codecs and MFS-1
+- (keep) `FileSystem.Ntfs` stays at the failBrauwser version — it carries the folder-editing
+  fixes and the Linux mount work; upstream's new `NtfsWof` (WOFF compression) was added on top
+- (adapt) MFS-1 follows upstream's rebuild API: `ModifyRebuilder.AddLargeVolume` /
+  `RemoveLargeVolume` replace the removed `AddViaCreate` / `RemoveViaCreate`
+- (build) `Compression.Registry.Generator` pins Roslyn (`Microsoft.CodeAnalysis.CSharp`
+  5.0.*, analyzers 3.11.0) so the source generator runs on the host compiler
+- (feat) VeraCrypt/TrueCrypt containers are also found by the `.veracrypt` extension
 
 Later changes are in failBrauwser's git history (`git log -- vendor/compressionworkbench`);
 their tests are in `helper/FbArchive.Tests`. They are candidates for upstream pull requests.

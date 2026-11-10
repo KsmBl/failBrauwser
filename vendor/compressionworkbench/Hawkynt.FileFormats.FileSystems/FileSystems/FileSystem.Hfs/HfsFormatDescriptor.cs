@@ -145,7 +145,7 @@ public sealed class HfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
 
     var skip = new HashSet<string>(unresolved, StringComparer.OrdinalIgnoreCase);
     RebuildVerb.EditViaRebuild(archive, this, this, tmpDir => {
-      RebuildStaging.RemoveEntries(tmpDir, skip);
+      RebuildVerb.DeleteNamedEntries(tmpDir, skip);
     });
   }
 

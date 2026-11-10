@@ -113,8 +113,8 @@ public static class Commands {
   }
 
   /// <summary>
-  /// Formats whose writer does not store files so they can be read back (found by the format
-  /// matrix test): they are not offered for new archives.
+  /// Formats that are not offered for new archives: writers whose files do not read back again
+  /// (found by the format matrix test), and formats failBrauwser deliberately never writes (M13).
   /// </summary>
   private static readonly HashSet<string> NoCreate = new(StringComparer.OrdinalIgnoreCase) {
     "StuffItX",    // writes the header only
@@ -123,6 +123,7 @@ public static class Commands {
     "Mtree",       // a manifest: names and sizes, no file contents
     "Umx",         // the music module comes back empty
     "DiskDoubler", // keeps only the first file
+    "VeraCrypt",   // encrypted volumes are opened, never created here (M13)
   };
 
   /// <summary>True when new archives of this format are offered (it can create, and what it writes reads back).</summary>
@@ -132,6 +133,7 @@ public static class Commands {
   private static readonly Dictionary<string, string> NotEditable = new(StringComparer.OrdinalIgnoreCase) {
     ["BinCue"] = "BIN/CUE images are changed a sector at a time, not file by file.",
     ["Ods1"] = "Editing ODS-1 volumes damages file contents.",
+    ["VeraCrypt"] = "An encrypted volume opens read-only; creating, resizing or re-keying a container stays with the VeraCrypt program.",
   };
 
   /// <summary>Why an archive of this format cannot be changed, if that is the case.</summary>
@@ -274,7 +276,7 @@ public static class Commands {
     Progress.Current?.Phase("adding", inputBytes + existing0);
 
     if (!File.Exists(archive) || new FileInfo(archive).Length == 0) {
-      if (format != null && NoCreate.Contains(format)) throw new NotSupportedException($"{format} archives cannot be written so that their files read back.");
+      if (format != null && NoCreate.Contains(format)) throw new NotSupportedException($"{format} archives are not written here.");
       if (format == null) {
         ArchiveOperations.Create(archive, WithParents(inputs), opts);
       } else {

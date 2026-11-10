@@ -49,7 +49,16 @@ internal static class ZipLocalFileHeader {
   /// <summary>
   /// Writes a local file header.
   /// </summary>
-  public static void Write(BinaryWriter writer, ZipEntry entry, bool encrypted = false) {
+  /// <param name="writer">The destination.</param>
+  /// <param name="entry">The entry whose header is written.</param>
+  /// <param name="encrypted">Whether the encryption flag is set.</param>
+  /// <param name="forceZip64">
+  /// Emits the ZIP64 extended-information field (both sizes, APPNOTE.TXT 4.5.3) even when
+  /// the current sizes fit in 32 bits. A streaming writer that does not know the final
+  /// sizes up front reserves the field this way so the header can be patched in place
+  /// once the data is written, without changing its length.
+  /// </param>
+  public static void Write(BinaryWriter writer, ZipEntry entry, bool encrypted = false, bool forceZip64 = false) {
     var (date, time) = ZipEntry.ToMsDosDateTime(entry.LastModified);
     var fileNameBytes = Encoding.UTF8.GetBytes(entry.FileName);
     if (fileNameBytes.Length > ushort.MaxValue)
@@ -57,9 +66,9 @@ internal static class ZipLocalFileHeader {
 
     var flags = ZipConstants.FlagUtf8;
     if (encrypted)
-      flags |= ZipConstants.FlagEncrypted;
-    // Implode: set bits 1 (8K dict) and 2 (literal tree) when method is Implode
-    if (entry.CompressionMethod == ZipCompressionMethod.Implode)
+      flags |= (ushort)(ZipConstants.FlagEncrypted | (entry.GeneralPurposeFlags & ZipStrongEncryption.FlagStrongEncryption));
+    // Implode: bits 1 (8K dict) and 2 (literal tree). LZMA: bit 1, the stream ends with an end marker.
+    if (entry.CompressionMethod is ZipCompressionMethod.Implode or ZipCompressionMethod.Lzma)
       flags |= (ushort)(entry.GeneralPurposeFlags & 0x0006);
 
     // A local header needs ZIP64 values only when one of its size fields overflows.
@@ -67,14 +76,15 @@ internal static class ZipLocalFileHeader {
     var compSize = (uint)Math.Min(entry.CompressedSize, uint.MaxValue);
     var uncompSize = (uint)Math.Min(entry.UncompressedSize, uint.MaxValue);
 
-    if (entry.NeedsZip64Sizes) {
+    var zip64 = forceZip64 || entry.NeedsZip64Sizes;
+    if (zip64) {
       compSize = ZipConstants.Zip64Sentinel32;
       uncompSize = ZipConstants.Zip64Sentinel32;
       zip64Extra = BuildZip64ExtraField(entry.UncompressedSize, entry.CompressedSize);
     }
 
     var combinedExtra = MergeExtraFields(zip64Extra, entry.ExtraField);
-    var versionNeeded = ZipCompatibility.GetVersionNeeded(entry);
+    var versionNeeded = Math.Max(ZipCompatibility.GetVersionNeeded(entry), zip64 ? ZipConstants.VersionNeeded45 : (ushort)0);
 
     writer.Write(ZipConstants.LocalFileHeaderSignature);
     writer.Write(versionNeeded);

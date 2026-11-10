@@ -56,7 +56,8 @@ public static partial class FormatDetector {
     var maxMagicExtent = FastProbeBytes;
 
     foreach (var desc in Reg.All) {
-      if (!Enum.TryParse<Format>(desc.Id, ignoreCase: true, out var f)) 
+      // An id that differs from its generated enum member only in case is the same format.
+      if (!Enum.TryParse<Format>(desc.Id, ignoreCase: true, out var f))
         continue;
 
       idToFormat[desc.Id] = f;
@@ -152,7 +153,7 @@ public static partial class FormatDetector {
   }
 
   /// <summary>Get the descriptor for a format, or null if no descriptor exists (Sfx, Iso, Udf).</summary>
-  private static IFormatDescriptor? GetDesc(Format f) {
+  internal static IFormatDescriptor? GetDesc(Format f) {
     EnsureRegistryMapped();
     return FormatDetector._formatToDesc!.GetValueOrDefault(f);
   }
@@ -202,6 +203,16 @@ public static partial class FormatDetector {
 
     // Special cases not handled by registry
     var singleExt = Path.GetExtension(lower);
+
+    // A generic disk-image name (".img", ".raw", ".dd", ".bin", ".iso", …) says nothing about
+    // what is inside: a partitioned whole disk, a bare filesystem, an optical image. Ask the
+    // bytes first; an extension claimant only gets the file when the content proves nothing.
+    if (GenericDiskImageExtensions.Contains(singleExt)) {
+      var byContent = DetectDiskImageByContent(path, includeSuperblocks: true);
+      if (byContent != Format.Unknown)
+        return byContent;
+    }
+
     if (singleExt == ".exe") 
       return DetectInstaller(path);
 
@@ -211,19 +222,22 @@ public static partial class FormatDetector {
     if (lower.EndsWith(".sz_") || lower.EndsWith("._"))
       return Format.Szdd;
 
-    // Generic disk-image extension claimed by many filesystems. The extension
-    // carries no information here, so ask the content first — otherwise every
-    // ext4/btrfs/ISO/NTFS image named ".img" is reported as FAT and routed to
-    // the FAT reader, which rejects it. Only when the content says nothing do we
-    // fall back to FAT as the most common writable target; that fallback is what
-    // keeps Create working and stops the registry's first-claim-wins map from
-    // routing ".img" to a niche read-only descriptor (Bfs, alphabetically).
-    // Other ambiguous extensions (.bin, .dd, .raw) are NOT special-cased: .bin
-    // belongs to BinCue (CD images), .dd is dd-image (raw), .raw is generic —
-    // those correctly resolve via the registry to specific descriptors.
+    // ".img" is claimed by a dozen filesystems and the content has already been asked above.
+    // What is left: a claimant whose only signature is too weak for that probe (BFS, JFFS2),
+    // a FAT volume with an unusual boot sector, or nothing — and bytes that prove nothing are not claimed, so noise stays Unknown
+    // instead of being handed to the FAT reader. A path with no content yet (a Create target,
+    // or an empty file) still resolves to FAT, the common writable target; that is what stops
+    // the registry's first-claim-wins map from routing ".img" to a niche read-only descriptor.
     if (singleExt == ".img") {
-      var img = DetectByMagicFromFile(path);
-      return img != Format.Unknown ? img : Format.Fat;
+      if (!File.Exists(path) || new FileInfo(path).Length == 0)
+        return Format.Fat;
+      var claimed = FormatDetector._extToFormats!.TryGetValue(singleExt, out var imgClaimants)
+        ? ResolveSharedExtension(path, imgClaimants)
+        : Format.Unknown;
+      if (claimed != Format.Unknown) return claimed;
+      // A FAT volume whose boot sector the strict probe rejects — no 0x55AA, or a 68000 branch
+      // instead of an x86 jump, as on Atari ST floppies — still carries a coherent BPB.
+      return HasPlausibleFatBpb(ReadHeader(path)) ? Format.Fat : Format.Unknown;
     }
 
     // The ".wad" extension is shared by Doom WADs (IWAD/PWAD magic, the "Wad"
@@ -277,6 +291,13 @@ public static partial class FormatDetector {
     // PowerPoint template to the catalogue reader on the other. ResolveSharedExtension below
     // cannot settle it: it only consults a claimant's own signatures, and no view of the CFB
     // container claims that signature, because every CFB-based format shares it.
+    // ".cab" is a Microsoft cabinet unless it starts with "ISc(": an InstallShield cabinet volume.
+    if (singleExt == ".cab" && File.Exists(path)) {
+      var head = ReadHeader(path);
+      if (head.Length >= 4 && head[0] == 'I' && head[1] == 'S' && head[2] == 'c' && head[3] == '(')
+        return Format.InstallShieldCab;
+    }
+
     if (singleExt == ".pot")
       return DetectPotByContent(path);
 
@@ -297,6 +318,13 @@ public static partial class FormatDetector {
       var arc = DetectArcByMagic(path);
       if (arc != Format.Unknown)
         return arc;
+    }
+
+    // CP/M LBR has no magic signature. Retain it as the default while letting
+    // the Commodore DWB signature select the other .lbr reader.
+    if (singleExt == ".lbr") {
+      var library = ResolveSharedExtension(path, [Format.Lbr, Format.CommodoreLbr]);
+      return library != Format.Unknown ? library : Format.Lbr;
     }
 
     // Single extension lookup from registry
@@ -361,6 +389,14 @@ public static partial class FormatDetector {
         if (magic[0] == 'P' && magic[1] == 'A' && magic[2] == 'C' && magic[3] == 'K')
           return Format.Pak;
       }
+
+      // A Chromium resource pack leads with a bare version word (4 or 5); its tables must end exactly
+      // where its first resource begins, which noise and the other two .pak layouts never satisfy.
+      var head = new byte[(int)Math.Min(fs.Length, 18)];
+      fs.Position = 0;
+      fs.ReadExactly(head);
+      if (FileFormat.ChromiumPak.ChromiumPak.IsPak(head, fs.Length))
+        return Format.ChromiumPak;
 
       // The footer is 44 bytes for the versions that keep the magic at its front;
       // later revisions prepend fields, so scan the tail rather than fix an offset.
@@ -455,6 +491,11 @@ public static partial class FormatDetector {
         return Format.FreeArc;
       if (magic[0] == 0x1A)
         return Format.Arc;
+      // Internet Archive crawl files share the extension and open with a "filedesc://" record.
+      Span<byte> crawl = stackalloc byte[11];
+      fs.Position = 0;
+      if (fs.Read(crawl) == crawl.Length && crawl.SequenceEqual("filedesc://"u8))
+        return Format.IaArc;
     } catch {
       /* ignore detection failure */
     }
@@ -491,10 +532,40 @@ public static partial class FormatDetector {
       var buf = new byte[2];
       var isPe = fs.Read(buf, 0, 2) >= 2 && buf[0] == 'M' && buf[1] == 'Z';
 
-      // NSIS/InnoSetup markers can live anywhere in the file (our own stub-less
-      // NSIS writer puts the "NullsoftInst" signature in a leading overlay
-      // header, not a PE overlay), so scan the whole file when it is small and
-      // the tail otherwise — independent of the MZ check, so a stub-less
+      // WiX Burn: the engine's ".wixburn" section lists the cabinets appended to it.
+      if (isPe && FileFormat.WixBurn.WixBurnFormatDescriptor.IsWixBurn(fs)) return Format.WixBurn;
+
+      // IExpress / wextract: the cabinet lives in the RT_RCDATA resource "CABINET".
+      if (isPe && FileFormat.IExpress.IExpressFormatDescriptor.IsIExpress(fs)) return Format.IExpress;
+
+      // Wise Installation System: its overlay header follows the 16- or 32-bit stub (or the stub
+      // a launcher carries as a resource), and its first stream must inflate to the size it gives.
+      if (isPe && FileFormat.WiseInstaller.WiseReader.IsWise(fs)) return Format.WiseInstaller;
+
+      // An NSIS first header sits right after the exe stub, at a multiple of 512 bytes (the
+      // exehead itself only looks there), so a large installer keeps it far from the tail.
+      if (HasNsisFirstHeader(fs)) return Format.Nsis;
+
+      // Setup Factory: its signature sits at a fixed offset (versions 5, 6) or where the PE
+      // overlay starts (7 to 9).
+      if (isPe && FileFormat.SetupFactory.SetupFactoryReader.IsSetupFactory(fs)) return Format.SetupFactory;
+
+      // Inno Setup: the setup loader's offset table (at 0x30 or in RCDATA #11111) points at the
+      // setup-0 version tag, wherever in the file that is.
+      if (isPe && FileFormat.InnoSetup.InnoSetupReader.IsInnoSetup(fs)) return Format.InnoSetup;
+
+      // Clickteam Install Creator: its block overlay starts right after the PE sections.
+      if (isPe && FileFormat.ClickteamInstaller.ClickteamReader.IsClickteam(fs)) return Format.ClickteamInstaller;
+
+      // install4j: its overlay starts with the D5 13 E4 E8 marker right after the launcher.
+      if (isPe && FileFormat.Install4j.Install4jReader.IsInstall4j(fs)) return Format.Install4j;
+      // Gentee launcher (CreateInstall): a "Gentee Launcher" header in the stub that points at itself.
+      if (isPe && FileFormat.GenteeInstaller.GenteeInstallerReader.IsGentee(fs)) return Format.GenteeInstaller;
+      // Enigma Virtual Box: the virtual filesystem's "EVB\0" header in the ".enigma1" section.
+      if (isPe && FileFormat.EnigmaVirtualBox.EnigmaVirtualBoxReader.IsEnigmaVirtualBox(fs)) return Format.EnigmaVirtualBox;
+
+      // Other installer markers can live anywhere in the file, so scan the whole file when it
+      // is small and the tail otherwise — independent of the MZ check, so a stub-less
       // installer image still re-detects as its own format.
       var scanLen = (int)Math.Min(fs.Length, 65536L);
       if (scanLen > 0) {
@@ -503,8 +574,6 @@ public static partial class FormatDetector {
         var tail = new byte[scanLen];
         var bytesRead = fs.Read(tail, 0, tail.Length);
         var tailSpan = tail.AsSpan(0, bytesRead);
-        if (ContainsBytes(tailSpan, "NullsoftInst"u8)) return Format.Nsis;
-        if (ContainsBytes(tailSpan, "Inno Setup"u8)) return Format.InnoSetup;
         // PyInstaller "onefile" build: the CArchive MEI cookie sits near EOF,
         // after the PE image (and before any appended Authenticode signature).
         if (ContainsBytes(tailSpan, PyInstallerCookie)) return Format.PyInstaller;
@@ -543,6 +612,28 @@ public static partial class FormatDetector {
 
   private static bool ContainsBytes(ReadOnlySpan<byte> haystack, ReadOnlySpan<byte> needle)
     => haystack.IndexOf(needle) >= 0;
+
+  /// <summary>
+  /// Looks for NSIS's <c>firstheader</c> (flags with only the low four bits in use, 0xDEADBEEF,
+  /// "NullsoftInst") at 512-byte boundaries in the first 8 MiB.
+  /// </summary>
+  private static bool HasNsisFirstHeader(Stream fs) {
+    const int alignment = 512;
+    var limit = Math.Min(fs.Length, 8L << 20);
+    var chunk = new byte[64 * 1024];
+    for (long start = 0; start < limit; start += chunk.Length) {
+      fs.Position = start;
+      var read = fs.ReadAtLeast(chunk, chunk.Length, throwOnEndOfStream: false);
+      for (var i = 0; i + 20 <= read; i += alignment)
+        if ((chunk[i] & 0xF0) == 0 && chunk[i + 1] == 0 && chunk[i + 2] == 0 && chunk[i + 3] == 0
+            && chunk[i + 4] == 0xEF && chunk[i + 5] == 0xBE && chunk[i + 6] == 0xAD && chunk[i + 7] == 0xDE
+            && chunk.AsSpan(i + 8, 12).SequenceEqual("NullsoftInst"u8))
+          return true;
+      if (read < chunk.Length)
+        break;
+    }
+    return false;
+  }
 
   /// <summary>The 8-byte PyInstaller CArchive magic cookie (MEI + version bytes).</summary>
   private static readonly byte[] PyInstallerCookie =
@@ -696,17 +787,14 @@ public static partial class FormatDetector {
 
   public static Format Detect(string path) {
     var byExt = DetectByExtension(path);
-    if (byExt != Format.Unknown) {
-      // The name decides, except for suffixes that say nothing about the contents (".bin",
-      // ".img", …): there a clear signature wins, so a ZIP saved as "backup.bin" (claimed by
-      // BIN/CUE, which has no signature) is a ZIP. Specific suffixes stay decisive: a ".jar"
-      // or ".docx" is a ZIP underneath and must still open as what its name says.
-      if (!GenericSuffixes.Contains(Path.GetExtension(path))) return byExt;
-      var header = ReadHeader(path);
-      if (header.Length == 0 || OwnMagicMatches(header, byExt)) return byExt;
-      var (byContent, confidence) = BestMagic(header);
-      return byContent != Format.Unknown && byContent != byExt && confidence >= ContentOverridesName ? byContent : byExt;
-    }
+    if (byExt != Format.Unknown)
+      return GenericSuffixes.Contains(Path.GetExtension(path)) ? ClearSignatureBehindGenericSuffix(path, byExt) : byExt;
+
+    // No extension, or one nobody claims: a disk image named "sda", "disk" or "backup.001" is
+    // still recognisable by its partition table or its optical volume descriptors. Superblock
+    // signatures are left to the confidence-ranked magic scan below, which already covers them.
+    var disk = DetectDiskImageByContent(path, includeSuperblocks: false);
+    if (disk != Format.Unknown) return disk;
 
     var byMagic = DetectByMagicFromFile(path);
 
@@ -722,7 +810,35 @@ public static partial class FormatDetector {
         return overlay;
     }
 
+    if (byMagic == Format.Unknown && IsBarePyInstallerArchive(path))
+      return Format.PyInstaller;
+
     return byMagic;
+  }
+
+  /// <summary>
+  /// A bare PyInstaller CArchive (the PKG PyInstaller builds before appending it to a
+  /// bootloader) has no leading magic: it ends in the 88-byte cookie, whose package length
+  /// then covers the whole file and whose TOC ends exactly where the cookie starts.
+  /// </summary>
+  private static bool IsBarePyInstallerArchive(string path) {
+    const int cookieLength = 88;
+    try {
+      using var fs = File.OpenRead(path);
+      if (fs.Length < cookieLength || fs.Length > uint.MaxValue) return false;
+      Span<byte> cookie = stackalloc byte[cookieLength];
+      fs.Seek(-cookieLength, SeekOrigin.End);
+      fs.ReadExactly(cookie);
+      if (!cookie[..8].SequenceEqual(PyInstallerCookie)) return false;
+      var packageLength = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(cookie[8..]);
+      var tocOffset = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(cookie[12..]);
+      var tocLength = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(cookie[16..]);
+      return packageLength == fs.Length && (long)tocOffset + tocLength == fs.Length - cookieLength;
+    } catch (IOException) {
+      return false;
+    } catch (UnauthorizedAccessException) {
+      return false;
+    }
   }
 
   /// <summary>
@@ -760,6 +876,12 @@ public static partial class FormatDetector {
     // The read-side claimant cannot create, so this is a shared extension whose first claimant is
     // read-only. Take the first one that can write instead.
     var singleExt = Path.GetExtension(path.ToLowerInvariant());
+
+    // An existing ".img" whose content is a partitioned disk, or proves nothing, is being
+    // overwritten: FAT stays the target, as for a new file, rather than the first claimant.
+    if (singleExt == ".img")
+      return Format.Fat;
+
     if (!string.IsNullOrEmpty(singleExt)
         && FormatDetector._extToFormats!.TryGetValue(singleExt, out var claimants))
       foreach (var candidate in claimants)
@@ -771,36 +893,6 @@ public static partial class FormatDetector {
 
   private static bool CanCreate(Format format)
     => GetDesc(format) is { } desc && desc.Capabilities.HasFlag(FormatCapabilities.CanCreate);
-
-  /// <summary>Suffixes many unrelated formats use; the contents decide for them.</summary>
-  private static readonly HashSet<string> GenericSuffixes = new(StringComparer.OrdinalIgnoreCase) {
-    ".bin", ".dat", ".img", ".dsk", ".raw", ".data", ".dump", ".out", ".image",
-  };
-
-  /// <summary>How sure a signature must be to overrule the file name.</summary>
-  private const double ContentOverridesName = 0.8;
-
-  private static bool OwnMagicMatches(ReadOnlySpan<byte> header, Format format) {
-    if (GetDesc(format) is not { } desc) return false;
-    foreach (var sig in desc.MagicSignatures)
-      if (MatchesMagic(header, sig)) return true;
-    return false;
-  }
-
-  /// <summary>The registered format whose signature matches most confidently.</summary>
-  private static (Format Format, double Confidence) BestMagic(ReadOnlySpan<byte> header) {
-    var best = Format.Unknown;
-    var bestConfidence = 0.0;
-    foreach (var desc in Reg.All) {
-      if (!FormatDetector._idToFormat!.TryGetValue(desc.Id, out var f)) continue;
-      foreach (var sig in desc.MagicSignatures)
-        if (sig.Confidence > bestConfidence && MatchesMagic(header, sig)) {
-          bestConfidence = sig.Confidence;
-          best = f;
-        }
-    }
-    return (best, bestConfidence);
-  }
 
   private static Format ResolveSharedExtension(string path, List<Format> claimants) {
     var header = ReadHeader(path);
@@ -818,6 +910,51 @@ public static partial class FormatDetector {
       }
     }
     return best;
+  }
+
+  /// <summary>Suffixes many unrelated formats use; behind them a clear signature decides.</summary>
+  private static readonly HashSet<string> GenericSuffixes = new(StringComparer.OrdinalIgnoreCase) {
+    ".bin", ".dat", ".img", ".dsk", ".raw", ".data", ".dump", ".out", ".image",
+  };
+
+  /// <summary>How sure a signature must be to overrule the claimant of a generic suffix.</summary>
+  private const double ContentOverridesGenericSuffix = 0.8;
+
+  /// <summary>
+  /// The name decides, except behind a suffix that says nothing about the contents: there a
+  /// clear signature wins, so a ZIP saved as "backup.bin" (a suffix BIN/CUE claims, which has
+  /// no signature) is a ZIP. The claimant stays when its own signature matches, when the
+  /// disk-image content probe chose it, or when no signature is sure enough. Specific suffixes
+  /// are never overruled: a ".jar" or ".docx" is a ZIP underneath and opens as what it is named.
+  /// </summary>
+  private static Format ClearSignatureBehindGenericSuffix(string path, Format byExt) {
+    var header = ReadHeader(path);
+    if (header.Length == 0 || OwnMagicMatches(header, byExt)) return byExt;
+    if (DetectDiskImageByContent(path, includeSuperblocks: true) == byExt) return byExt;
+    var (byContent, confidence) = BestMagic(header);
+    return byContent != Format.Unknown && confidence >= ContentOverridesGenericSuffix ? byContent : byExt;
+  }
+
+  private static bool OwnMagicMatches(ReadOnlySpan<byte> header, Format format) {
+    if (GetDesc(format) is not { } desc) return false;
+    foreach (var sig in desc.MagicSignatures)
+      if (MatchesMagic(header, sig)) return true;
+    return false;
+  }
+
+  /// <summary>The registered format whose signature matches <paramref name="header"/> most confidently.</summary>
+  private static (Format Format, double Confidence) BestMagic(ReadOnlySpan<byte> header) {
+    var best = Format.Unknown;
+    var bestConfidence = 0.0;
+    foreach (var desc in Reg.All) {
+      if (!FormatDetector._idToFormat!.TryGetValue(desc.Id, out var format)) continue;
+      foreach (var sig in desc.MagicSignatures)
+        if (sig.Confidence > bestConfidence && MatchesMagic(header, sig)) {
+          bestConfidence = sig.Confidence;
+          best = format;
+        }
+    }
+    return (best, bestConfidence);
   }
 
   /// <summary>Reads as much of the file as the deepest registered signature needs.</summary>

@@ -25,6 +25,7 @@ public sealed class LzhFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
 
   /// <summary>Rebuild-based defrag: extracts then re-creates the LHA archive per the requested mode.</summary>
   public void Defragment(Stream archive, DefragOptions options) {
+    RefuseSelfExtractor(archive);
     DefragRebuilder.Rebuild(archive, options,
       readEntries: stream => {
         var r = new LhaReader(stream);
@@ -64,6 +65,7 @@ public sealed class LzhFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// Remove walks the chain and shifts trailing bytes (no central directory).
   /// </summary>
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
+    RefuseSelfExtractor(archive);
     foreach (var (name, data) in FilesOnly(inputs)) {
       LhaModifier.RemoveFile(archive, name, wipeData: true);
       LhaModifier.AddFile(archive, name, data);
@@ -72,8 +74,20 @@ public sealed class LzhFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
 
   /// <summary>Removes named entries; uses <see cref="LhaModifier"/>.</summary>
   public void Remove(Stream archive, string[] entryNames) {
+    RefuseSelfExtractor(archive);
     foreach (var name in entryNames)
       LhaModifier.RemoveFile(archive, name, wipeData: true);
+  }
+
+  /// <summary>
+  /// Self-extracting archives are read here but not edited: no tool has confirmed that a stub
+  /// still extracts an archive changed behind it, and a rebuild would drop the stub.
+  /// </summary>
+  private static void RefuseSelfExtractor(Stream archive) {
+    if (archive.CanSeek && LhaReader.FindArchiveOffset(archive) > 0)
+      throw new NotSupportedException("Self-extracting LHA archives are read-only: editing them behind their stub is not proven.");
+    if (archive.CanSeek)
+      archive.Position = 0;
   }
 
   /// <summary>
@@ -98,7 +112,7 @@ public sealed class LzhFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   public IReadOnlyList<FormatMethodInfo> Methods => [
     new("lh5", "LH5"), new("lh0", "LH0 (Store)"), new("lh1", "LH1"), new("lh4", "LH4"),
     new("lh6", "LH6"), new("lh7", "LH7"), new("lzs", "LZS"), new("lz5", "LZ5"),
-    new("pm0", "PM0"), new("pm1", "PM1"), new("pm2", "PM2")
+    new("pm0", "PM0")
   ];
   /// <summary>
   /// Gets the tar compression format id.

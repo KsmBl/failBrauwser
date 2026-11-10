@@ -76,7 +76,7 @@ public sealed class SharFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
   public void Remove(Stream archive, string[] entryNames) {
     var skip = new HashSet<string>(entryNames ?? [], StringComparer.OrdinalIgnoreCase);
     RebuildVerb.EditViaRebuild(archive, this, this, tmpDir => {
-      RebuildStaging.RemoveEntries(tmpDir, skip);
+      RebuildVerb.DeleteNamedEntries(tmpDir, skip);
     });
   }
   /// <summary>

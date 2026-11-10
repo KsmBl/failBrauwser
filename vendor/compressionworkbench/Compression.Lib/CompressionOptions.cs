@@ -39,9 +39,16 @@ public sealed class CompressionOptions {
   /// keyed by <see cref="Compression.Registry.FormatOptionDescriptor.Key"/>.</summary>
   public IReadOnlyDictionary<string, string>? FormatSpecific { get; init; }
 
+  /// <summary>
+  /// When positive, the created archive is cut into volumes of this many bytes, named as 7-Zip
+  /// names them (<c>backup.7z.001</c>, <c>backup.7z.002</c>, …); 0 writes a single file.
+  /// </summary>
+  public long VolumeSize { get; init; }
+
   /// <summary>Resolves the ZIP encryption method enum from the string option.</summary>
   public FileFormat.Zip.ZipEncryptionMethod ResolveZipEncryption() => ZipEncryption switch {
     "zipcrypto" => FileFormat.Zip.ZipEncryptionMethod.PkzipTraditional,
+    "pkware-aes-256" => FileFormat.Zip.ZipEncryptionMethod.PkwareStrongAes256,
     _ => FileFormat.Zip.ZipEncryptionMethod.Aes256,
   };
 
@@ -58,22 +65,7 @@ public sealed class CompressionOptions {
   /// Snaps a dictionary size to the nearest valid LZMA/LZMA2 value (2^n or 3×2^(n-1)).
   /// These are the only sizes 7-Zip recognizes as valid for LZMA format detection.
   /// </summary>
-  public static int NormalizeDictSize(int size) {
-    if (size <= 4096) return 4096;
-    // Find the two candidate sizes: 2^n and 3×2^(n-1)
-    var bits = 31 - int.LeadingZeroCount(size);
-    var pow2 = 1 << bits;             // e.g. for 5MB → 4MB
-    var pow2Next = 1 << (bits + 1);   // e.g. for 5MB → 8MB
-    var threeHalf = 3 << (bits - 1);  // e.g. for 5MB → 6MB
-
-    // Pick the closest that's >= size (round up to next valid)
-    var best = pow2Next; // worst case
-    if (pow2 >= size) best = pow2;
-    if (threeHalf >= size && threeHalf < best) best = threeHalf;
-    if (pow2Next < best) best = pow2Next;
-
-    return Math.Min(best, 1 << 30); // cap at 1GB
-  }
+  public static int NormalizeDictSize(int size) => Compression.Core.Dictionary.Lzma.LzmaDictionarySize.Normalize(size);
 
   /// <summary>
   /// Resolves the effective LZMA compression level.

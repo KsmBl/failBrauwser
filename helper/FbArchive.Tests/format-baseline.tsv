@@ -1,18 +1,24 @@
 # Outcome of each writable format in FormatMatrixTests: the step it reached (ok = all),
 # and what it does differently (flat = folders not kept, case = names change case,
 # extra = entries of its own besides the files). Regenerate with FB_REGEN_MATRIX=1.
+A2r	fail create: ArgumentException: 'a.txt' is not an A2R member; accepts: chunks/NN_ID.bin (raw chunk), chunks/NN_ID/header.bin and chunks/NN_ID/MMMM_*.bin (capture entries), metadata.ini (version=2|3)
+Aar	ok
 Ace	ok
 Adf	ok
 Adfs	ok	case,flat
 AdvFs	ok	extra
+Aff	fail create: ArgumentException: AFF holds exactly one image. (Parameter 'inputs')
+Aff4	fail add: ArgumentException: 'container.description' is reserved by the AFF4 container. (Parameter 'inputs')	extra
 Afio	ok
 Afs	ok
-AlZip	ok	flat
+AlZip	ok
 AmigaPfs	ok
 Ampk	ok
+AndroidBootImage	fail create: ArgumentException: Android boot image: 'a.txt' is not a boot image component (kernel, ramdisk, second, recovery_dtbo, dtb, boot_signature, vendor_ramdisk[NN], bootconfig, trailer.bin, metadata.ini).
 AndroidBundle	ok	extra
 AndroidOta	fail list: Exception: listed: FULL.bin, metadata.ini, manifest.pb, metadata_signature.bin, data.bin
 AndroidSparse	fail list: Exception: listed: metadata.ini, image.raw
+AndroidVbmeta	fail create: ArgumentException: vbmeta: 'a.txt' is not a vbmeta member (descriptors/NN_*.bin, public_key_metadata.bin, trailer.bin, metadata.ini).
 Ani	fail create: ArgumentException: ANI: input 'a.txt' is not an ICO or CUR file (expected magic 00 00 01 00 or 00 00 02 00). (Parameter 'inputs')
 Aomei	ok
 ApLib	ok
@@ -20,6 +26,7 @@ Apfs	ok
 Apk	ok
 ApkNativeLibs	fail detect: Exception: recognised as Apk
 AppImage	fail list: Exception: listed: metadata.ini, filesystem/a.txt, filesystem/d/b.bin
+AppleArchive	ok
 AppleDos	ok	case
 AppleDouble	fail create: ArgumentException: AppleSingle: cannot map name 'a.txt' to an entry id. (Parameter 'name')
 ApplePascal	ok	case
@@ -31,8 +38,10 @@ Arj	ok
 Asar	ok
 Atari8	ok	case
 Awb	fail list: Exception: listed: cue_00000.bin, cue_00001.bin, metadata.ini
+B1	ok
 B64Encoding	ok
 Ba2	ok
+BagIt	fail detect: Exception: recognised as Zip
 Balz	ok
 Bbc	ok	case
 BcacheFs	ok	extra
@@ -42,42 +51,58 @@ Big	ok
 BinCue	fail detect: Exception: recognised as Iso
 BinHex	ok
 BinaryII	ok	case
+BitLocker	fail create: ArgumentException: BitLocker creation needs a password. (Parameter 'options')
 Bkf	ok
 BriefLz	ok
 Brotli	ok
 Bsa	ok
 Bsc	ok
 Btrfs	ok
+Bza	ok
+Bzip021	ok
 Bzip2	ok
+C64Tap	fail create: ArgumentException: A C64 TAP holds one pulse stream. (Parameter 'inputs')
 Cab	ok
 Cb7	ok
+Cba	ok
 Cbr	ok
+Cbt	ok
 Cbz	ok
-Cdi	ok	case
+CdXa	fail create: ArgumentException: 'a.txt' is not a CD-XA member; accepts: track.mpg (an MPEG program stream with packs of at most 2324 bytes), metadata.ini
+Cdi	ok
 CephFs	fail list: Exception: listed: rados/@default/a.txt, rados/@default/b.bin
-Chm	ok
+Chm	ok	extra
+ChromiumPak	fail create: ArgumentException: PAK: 'a.txt' is not a resource id (0..65535). (Parameter 'name')
+CloneCd	fail create: ArgumentException: CloneCD: exactly one ISO image is needed, not 2 files.
 Cmix	ok
 Coherent	ok	flat
-CompactPro	ok	flat
+CommodoreLbr	ok
+CompactPro	ok
 Compress	ok
 CpcDsk	fail extract: Exception: a.txt differs	case
 Cpio	ok
 Cpm	fail extract: Exception: a.txt differs	case
 CramFs	ok
 Crate	fail list: Exception: listed: metadata.ini, crate-0.0.0/a.txt, crate-0.0.0/d/b.bin, crate-0.0.0/Cargo.toml
+Creg	fail create: NotSupportedException: CREG cannot represent value entries directly on the unnamed root key: its hierarchy entry has no key-name record to hold them. Put files under a key (a folder).
 Cromemco	ok	case
 Crunch	ok
 Crx	ok
 Csc	ok
 Cso	fail list: Exception: listed: FULL.cso, metadata.ini, index.bin, blocks/block_00000.bin, blocks/block_00001.bin
+Ctw	ok
 Cur	fail create: ArgumentException: ICO: input is neither a PNG nor a BMP file
 Cxfs	ok
 D64	ok	case
 D71	ok	case
 D81	ok	case
+Daa	fail create: ArgumentException: DAA holds exactly one image. (Parameter 'inputs')
+Dar	ok
 Dcs	fail list: Exception: listed: track_000.raw, track_001.raw
 Deb	ok
 Density	ok
+DiskCopy42	fail create: ArgumentException: Disk Copy 4.2 holds exactly one disk image. (Parameter 'inputs')
+DmCryptPlain	fail create: ArgumentException: dm-crypt plain creation needs a passphrase. (Parameter 'options')
 Dmg	ok
 Dms	fail create: ArgumentException: DMS format requires exactly one input file (disk image).
 Doc	ok
@@ -87,8 +112,10 @@ DragonFs	ok	flat
 DriveSpace	ok
 DriveSpace3	fail detect: Exception: recognised as DoubleSpace
 Dtb	fail list: Exception: listed: metadata.ini, _root/#size-cells.bin, _root/#address-cells.bin, _root/a.txt, d/b.bin
+Dxbc	fail create: ArgumentException: DXBC entry 'a.txt' must be named by a four-character chunk code (e.g. SHEX, RDEF).
 Dzip	ok
 Ear	ok
+Ecm	ok
 Ecryptfs	fail create: ArgumentException: A passphrase is required to create an eCryptfs lower file. (Parameter 'options')
 Efs	ok
 Egg	ok
@@ -97,6 +124,7 @@ Epub	ok
 Erofs	ok
 Esd	fail detect: Exception: recognised as Wim
 Ewf	fail list: Exception: listed: media.raw, metadata.ini, section_00_header2.bin, section_01_header2.bin, section_02_header.bin, section_03_volume.bin, section_04_sectors.bin, section_05_table.bin, section_06_table2.bin, section_07_data.bin, section_08_hash.bin, section_09_done.bin
+Ewf2	fail create: ArgumentException: One raw media image, exposed as media.raw; source filenames and file trees are not stored. (Parameter 'inputs')
 ExFat	ok
 Ext	ok
 Ext1	ok	extra,flat
@@ -105,7 +133,9 @@ Fat	ok
 FatPlus	ok	case,flat
 Fatx	ok
 Fits	fail list: Exception: listed: FULL.fits, hdu_00_primary.header, hdu_00_primary.data, hdu_01_image.header, hdu_01_image.data, metadata.ini
-Flac	fail extract: Exception: content differs: RIGHT.wav, LEFT.wav, FULL.flac
+Fla	fail create: ArgumentException: A compressed XFL FLA must contain a root DOMDocument.xml project document. (Parameter 'inputs')
+Flac	fail extract: Exception: content differs: FULL.flac, LEFT.wav, RIGHT.wav
+Flex	fail extract: Exception: a.txt differs	case
 FreeArc	ok
 Freeze	ok
 G64	fail list: Exception: listed: metadata.ini, track_00.bin, track_02.bin, track_04.bin, track_06.bin, track_08.bin, track_10.bin, track_12.bin, track_14.bin, track_16.bin, track_18.bin, track_20.bin, track_22.bin, track_24.bin, track_26.bin, track_28.bin, track_30.bin, track_32.bin, track_34.bin, track_36.bin, track_38.bin, track_40.bin, track_42.bin, track_44.bin, track_46.bin, track_48.bin, track_50.bin, track_52.bin, track_54.bin, track_56.bin, track_58.bin, track_60.bin, track_62.bin, track_64.bin, track_66.bin, track_68.bin
@@ -119,40 +149,50 @@ Ghost	fail list: Exception: listed: metadata.ini, partition1.bin, partition2.bin
 Gob	ok
 GodotPck	ok
 Grp	ok
+Grzip	ok
 GsOs	ok	case
+Gza	ok
 Gzip	ok
 Ha	ok
 Hammer	ok
 Hammer2	ok
+Hfe	fail create: ArgumentException: 'a.txt' is not an HFE member; accepts: tracks/trackNNN.bin (side-interleaved track blocks), metadata.ini, or one whole FULL.hfe
 Hfs	ok
 HfsPlus	ok
+HighSierra	ok	case
 Hog	ok
 Hpfs	ok
 Hpi	ok
 Htfs	ok
 Human68k	ok	case,flat
+IaArc	ok
 IcePacker	ok
 Ico	fail create: ArgumentException: ICO: input is neither a PNG nor a BMP file
 IffCdaf	ok
-IntelHex	fail list: Exception: listed: metadata.ini, firmware.bin
+IntelHex	fail create: InvalidDataException: IntelHex represents one logical firmware payload; multiple payload inputs are ambiguous.
 Ipa	ok
 Ipsw	ok	extra
 Iso	ok
+Isz	fail create: ArgumentException: ISZ holds exactly one image. (Parameter 'inputs')
 Jar	ok
 Jffs2	ok	extra
 Jfs	ok
 Jfs1	ok
 Json	ok
+Kgb	ok
 Kmz	ok
 Kwaj	ok
 Lbr	ok
 Lfd	fail list: Exception: listed: RMAP.resource, DATA.a, DATA.b
+Lfs	ok
 LhF	fail list: Exception: listed: track_000.raw, track_001.raw
 Lif	fail extract: Exception: a.txt differs
 LittleFs	ok
+LiveMaker	ok
 Lizard	ok
 Lnk	fail list: Exception: listed: FULL.lnk, metadata.ini, header.bin, linkinfo.bin, strings/working_dir.txt
 Lrzip	fail list: Exception: listed: data
+Luks	fail create: ArgumentException: LUKS creation needs a passphrase. (Parameter 'options')
 Lynx	ok
 Lz4	ok
 Lzfse	ok
@@ -167,32 +207,40 @@ LzxAmiga	ok
 MacBinary	fail detect: Exception: recognised as BinCue
 Macrium	ok
 Maff	ok
+Mar	ok
 Mbox	fail list: Exception: listed: message_00.eml, message_01.eml
+Mca	fail create: ArgumentException: MCA entry name 'a.txt' must be chunk_X_Z.nbt with X and Z in 0..31. (Parameter 'inputs')
 Mcm	ok
-Mdf	ok	case
+Mdf	ok
 MessagePack	ok
 Mfs	ok
 Mfs1	ok	case
 Mhk	fail list: Exception: listed: tDAT_1000, tDAT_1001
+Mht	ok
 MinixFs	ok
 MinixV1	ok
 MinixV2	ok
 Mix	fail list: Exception: listed: 92845CD2.bin, B0A85CD6.bin
 Mo	fail list: Exception: listed: 0000_a.txt, 0001_b_bin.txt
+Mobi	fail create: ArgumentException: MOBI creation requires exactly one HTML document input. (Parameter 'inputs')
+Moof	fail create: ArgumentException: 'a.txt' is not a MOOF member; accepts: tracks/trackNNN.bin, info.bin, tmap.bin, flux.bin, meta.ini, metadata.ini (track_NNN_bits)
 MpegTs	fail create: ArgumentException: MPEG-TS: unsupported input 'a.txt'. Expected metadata.ini or stream_XXXX_<type>.bin. (Parameter 'inputs')
 Mpq	ok	extra
 Msa	ok	case
 Msg	ok
 Msi	ok
 Msix	fail detect: Exception: recognised as Appx
+Mxl	ok
 Narc	ok
 Nds	ok	flat
+NetgearChk	fail create: ArgumentException: CHK: 'a.txt' is not a CHK member (kernel.bin, rootfs.bin, trailer.bin, metadata.ini).
 Nib	fail list: Exception: listed: metadata.ini, track_00.bin, track_02.bin, track_04.bin, track_06.bin, track_08.bin, track_10.bin, track_12.bin, track_14.bin, track_16.bin, track_18.bin, track_20.bin, track_22.bin, track_24.bin, track_26.bin, track_28.bin, track_30.bin, track_32.bin, track_34.bin, track_36.bin, track_38.bin, track_40.bin, track_42.bin, track_44.bin, track_46.bin, track_48.bin, track_50.bin, track_52.bin, track_54.bin, track_56.bin, track_58.bin, track_60.bin, track_62.bin, track_64.bin, track_66.bin, track_68.bin
 Nilfs1	ok	flat
 Nilfs2	ok	extra
 Npy	fail list: Exception: listed: metadata.ini, header.bin, array.bin
 Npz	fail list: Exception: listed: metadata.ini, a.txt.npy, d/b.bin.npy
-Nrg	ok	case
+Nrbf	ok
+Nrg	ok
 Nsa	ok
 Nss	ok
 Ntfs	ok
@@ -214,21 +262,31 @@ PackDisk	fail list: Exception: listed: track_000.raw, track_001.raw
 PackIt	ok
 Pak	ok
 Paq8	ok
+Par2	fail list: Exception: listed: FULL.par2, metadata.ini, files.ini, packets/0000_Main.bin, packets/0001_FileDesc.bin, packets/0002_IFSC.bin, packets/0003_FileDesc.bin, packets/0004_IFSC.bin, packets/0005_RecvSlic.bin, packets/0006_RecvSlic.bin, packets/0007_RecvSlic.bin, packets/0008_RecvSlic.bin, packets/0009_RecvSlic.bin, packets/0010_RecvSlic.bin, packets/0011_RecvSlic.bin, packets/0012_RecvSlic.bin, packets/0013_RecvSlic.bin, packets/0014_RecvSlic.bin, packets/0015_RecvSlic.bin, packets/0016_RecvSlic.bin, packets/0017_RecvSlic.bin, packets/0018_RecvSlic.bin, packets/0019_RecvSlic.bin, packets/0020_RecvSlic.bin, packets/0021_RecvSlic.bin, packets/0022_RecvSlic.bin, packets/0023_RecvSlic.bin, packets/0024_RecvSlic.bin, packets/0025_RecvSlic.bin, packets/0026_RecvSlic.bin, packets/0027_RecvSlic.bin, packets/0028_RecvSlic.bin, packets/0029_RecvSlic.bin, packets/0030_RecvSlic.bin, packets/0031_RecvSlic.bin, packets/0032_RecvSlic.bin, packets/0033_RecvSlic.bin, packets/0034_RecvSlic.bin, packets/0035_RecvSlic.bin, packets/0036_RecvSlic.bin, packets/0037_RecvSlic.bin, packets/0038_RecvSlic.bin, packets/0039_RecvSlic.bin, packets/0040_RecvSlic.bin, packets/0041_RecvSlic.bin, packets/0042_RecvSlic.bin, packets/0043_Creator.bin
 Paragon	fail list: Exception: listed: metadata.ini, chunk_000000.bin, chunk_000001.bin
+Partclone	fail create: ArgumentException: Partclone images hold one partition: expected image.img with optional metadata.ini and allocation.map, got 'a.txt'. (Parameter 'inputs')
+PartitionedDisk	fail create: ArgumentException: 'a.txt' is neither a filesystem image nor a raw partition image (*.raw/*.img); a disk holds partitions, not loose files. (Parameter 'inputs')
 Pbp	fail create: ArgumentException: Unknown PBP section name 'a.txt'. Must be one of: PARAM.SFO, ICON0.PNG, ICON1.PMF, PIC0.PNG, PIC1.PNG, SND0.AT3, DATA.PSP, DATA.PSAR. (Parameter 'name')
 Pc98	ok	case,flat
+Pcap	fail list: Exception: listed: metadata.ini, packet_0000.bin, packet_0001.bin
+Pcapng	fail list: Exception: listed: metadata.ini, packet_0000.bin, packet_0001.bin
 Pdf	ok	extra
+Pea	ok
 Pfs0	ok
+Phar	ok
 Pickle	ok
 PowerPacker	ok
 Ppmd	ok
 Ppt	ok
 Pptx	ok
-ProDos	ok	case,flat
+ProDos	ok	case
 Ps1MemoryCard	fail extract: Exception: a.txt differs
 Psarc	ok
 Psf	fail list: Exception: listed: header.bin, program.bin
+PyInstaller	ok	extra
+Pzx	fail list: Exception: listed: metadata.ini, tape.tap, data/000.bin, data/001.bin, blocks/000_PZXT.bin, blocks/001_PULS.bin, blocks/002_DATA.bin, blocks/003_PULS.bin, blocks/004_DATA.bin
 Qcow2	ok
+Qm	fail create: InvalidDataException: Malformed TS XML: Data at the root level is invalid. Line 1, position 1.
 Qnx4	ok	flat
 Qnx6	ok	flat
 Qoi	fail create: InvalidOperationException: QOI Create requires a pixels.bin input.
@@ -244,12 +302,17 @@ Rgss	ok	extra
 Rnc	ok
 RomFs	ok
 Rpa	ok	extra
+RpgMakerMvAsset	fail create: ArgumentException: RPG Maker MV asset: give the game's key (32 hex digits) as password. (Parameter 'options')
 Rpm	ok
 Rt11	fail extract: Exception: a.txt differs	case
 Rzip	ok
 Sar	ok
 Sarc	ok
+Scp	fail create: ArgumentException: 'a.txt' is not an SCP member; accepts: tracks/track_NNN.bin (TRK flux blocks), metadata.ini, extension.bin
+Seama	fail create: ArgumentException: SEAMA: 'a.txt' is not a SEAMA member (image.bin, entity_NN.bin, trailer.bin, metadata.ini).
+SeqBox	ok
 SevenZip	ok
+SfArk	ok
 Sfar	ok	extra
 Sfs	ok
 Shar	ok
@@ -257,18 +320,25 @@ Slf	ok
 SmartFs	ok	extra
 Snap	fail detect: Exception: recognised as SquashFs
 Snappy	ok
+SoftdiskCtx	ok
 Spark	ok	flat
 Sparseimage	fail list: Exception: listed: disk.img
+Spiffs	ok
 SplitFile	ok
+Sqlar	ok
 SquashFs	ok
 Squeeze	ok
 Sqx	ok
 Srec	fail list: Exception: listed: metadata.ini, firmware.bin
 Stacker	ok	case
 Storable	ok
+StreamHfe	fail create: ArgumentException: 'a.txt' is not a Stream HFE member; accepts: tracks/track_CCC_S.bin (pulse stream), metadata.ini (sides, interface_mode, track_CCC_S_length, ...)
 StuffIt	ok
 Sup	fail create: InvalidOperationException: SUP creation needs complete Blu-ray PGS display-set streams (PCS through END), such as the subtitle_NNN.bin entries a SUP demux produces; a .sup file is a single subtitle stream and cannot represent an arbitrary file tree. Input 'a.txt' is not a complete SUP segment stream: PGS: file shorter than minimum 13-byte header.
+Svr4Bfs	ok
 Swf	fail create: InvalidDataException: Unrecognised SWF signature "hel". Expected "FWS", "CWS", or "ZWS".
+Swm	fail detect: Exception: recognised as Wim
+SymbianSis	ok
 SysV	ok
 SzCompress	fail detect: Exception: recognised as Snappy
 Szdd	ok
@@ -281,8 +351,12 @@ TarBz2	ok
 TarGz	ok
 TarLz4	ok
 TarLzip	ok
+TarLzma	ok
+TarLzo	ok
 TarXz	ok
+TarZ	ok
 TarZst	ok
+Terse	ok
 TfRecord	fail list: Exception: listed: record_00000.bin, record_00001.bin
 Tfc	fail list: Exception: listed: bundle_00000.bin, bundle_00001.bin
 ThumbsDb	ok
@@ -291,19 +365,26 @@ TiTxt	fail create: InvalidDataException: TI-TXT represents one logical firmware 
 Tnef	ok
 TrDos	fail list: Exception: listed: a.txt.cod, b.bin.cod
 Trsdos	ok	case
+Trx	fail create: ArgumentException: TRX: 'a.txt' is not a TRX member (partition_N.bin, trailer.bin, metadata.ini).
 Ttc	fail create: ArgumentException: TTC: at least one .ttf or .otf input is required. (Parameter 'inputs')
 Tux2	ok
 U8	ok
 UImage	fail list: Exception: listed: metadata.ini, header.bin, payload.bin, payload_decompressed.bin
 Ubifs	ok
+Uc2	ok
 Udf	ok
 UefiFv	fail list: Exception: listed: metadata.ini, 09cbb718-9e9a-f5a3-0ba8-99b5ba81e0d3_RAW.bin, fec6b687-fcb9-a994-9980-18df8566c728_RAW.bin
 Ufs	ok
-Uharc	ok	flat
+Uharc	ok
+Um3	fail create: InvalidDataException: UM3 holds an Ogg stream; the input is not one.
 UnityBundle	ok
+UnityPackage	fail list: Exception: listed: Assets/a.txt, Assets/a.txt.meta, Assets/d.meta, Assets/d/b.bin, Assets/d/b.bin.meta
+UnixPack	fail detect: Exception: recognised as Compress
+UnixV7	ok
 UnrealPak	ok
+Utage	ok
 UuEncoding	ok
-Vdfs	ok
+Vdfs	ok	case
 Vdi	ok
 Vhd	ok
 Vhdx	ok
@@ -321,8 +402,11 @@ Wad2	ok
 War	ok
 Warc	fail list: Exception: listed: resource: a.txt, resource: b.bin
 Wbn	fail list: Exception: listed: FULL.wbn, metadata.ini
+WebArchive	fail remove: NotSupportedException: Web archive: 'a.txt' is a frame's main resource; a web archive cannot exist without it.
 Wheel	ok	extra
 Wim	ok
+WinterMuteDcp	ok
+Woz	fail create: ArgumentException: 'a.txt' is not a WOZ member; accepts: tracks/trackNNN.bin (bitstreams), info.bin, tmap.bin, meta.ini, metadata.ini (track_NNN_bits), or one whole FULL.woz
 Wrapster	fail detect: Exception: recognised as Mp3
 Xar	ok
 Xenix	ok
@@ -330,15 +414,17 @@ Xfs	ok
 Xls	ok
 Xlsx	ok
 Xml	ok
+Xp3	ok
 Xpi	ok
+Xpk	ok
 Xps	ok
+XxEncoding	ok
 Xz	ok
 YEnc	ok
 Yaffs2	fail list: Exception: listed: FULL.yaffs2, metadata.ini, directory_tree.txt, files/a.txt, files/b.bin
 Yaz0	ok
 Ypf	ok
 Zap	fail list: Exception: listed: track_000.raw, track_001.raw
-Zfs	ok
 Zip	ok
 Zlib	ok
 Zling	ok

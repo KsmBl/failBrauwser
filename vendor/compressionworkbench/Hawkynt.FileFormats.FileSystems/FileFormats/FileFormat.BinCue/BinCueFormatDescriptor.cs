@@ -101,7 +101,7 @@ public sealed class BinCueFormatDescriptor : IFormatDescriptor, IArchiveFormatOp
     // auto-detects this geometry. CUE sheet generation is not produced here -- the
     // Create API only gives us a single output stream; users wanting a CUE can
     // generate one trivially since a single Mode 1 data track is the default.
-    // Folders and long names are kept (Rock Ridge and Joliet), as in a plain ISO.
+    // Folders, long names, modes and times are kept (Rock Ridge and Joliet), as in a plain ISO.
     var iso = FileSystem.Iso.IsoFormatDescriptor.BufferedWriterFor(inputs, options);
     output.Write(iso.Build());
   }

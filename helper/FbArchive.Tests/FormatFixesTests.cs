@@ -106,7 +106,7 @@ public class FormatFixesTests {
     System.IO.File.Delete(whole);
     Assert.That(SplitSet.Parts(parts[0]), Is.EqualTo(parts));
     Assert.That(SplitSet.Parts(parts[1]), Is.Null);
-    Assert.That(Names(parts[0]).Count, Is.EqualTo(1), "the library alone sees one joined file");
+    Assert.That(Names(parts[0]).Count, Is.EqualTo(2), "the library now joins the set itself and lists the inner archive's files");
     Assert.That(SplitSet.List(parts.ToArray(), null, out var format).Select(e => e.Name).Order(), Is.EqualTo(new[] { "a.txt", "b.txt" }));
     Assert.That(format, Is.EqualTo(FormatDetector.Format.SevenZip));
     var dest = Path.Combine(_root, "out");

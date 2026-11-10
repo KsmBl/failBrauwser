@@ -1,7 +1,7 @@
 #pragma warning disable CS1591
 using System.Buffers.Binary;
 using System.Text;
-using Compression.Registry.Cvf;
+using Compression.Core.FileSystems.Cvf;
 
 namespace FileSystem.DriveSpace3;
 
@@ -53,10 +53,10 @@ public sealed class GenuineDvr3Writer {
   /// Default (before 1980) leaves the FAT date/time fields zero.</summary>
   public DateTime Timestamp { get; init; }
 
-  /// <summary>Per-cluster compression codec. <see cref="Compression.Registry.Cvf.CvfLzMethod.Stored"/>
+  /// <summary>Per-cluster compression codec. <see cref="Compression.Core.FileSystems.Cvf.CvfLzMethod.Stored"/>
   /// (default) emits uncompressed clusters; DS/JM emit genuine DriveSpace 3 compressed clusters.</summary>
-  public Compression.Registry.Cvf.CvfLzMethod CompressionMethod { get; init; }
-    = Compression.Registry.Cvf.CvfLzMethod.Stored;
+  public Compression.Core.FileSystems.Cvf.CvfLzMethod CompressionMethod { get; init; }
+    = Compression.Core.FileSystems.Cvf.CvfLzMethod.Stored;
 
   /// <summary>Codec effort (search depth). Higher = better ratio, slower.</summary>
   public int CompressionLevel { get; init; } = 1;
@@ -65,6 +65,8 @@ public sealed class GenuineDvr3Writer {
   /// (as long as it still fits the cluster's sector budget); otherwise the
   /// smaller of compressed/stored is chosen per cluster (auto-best).</summary>
   public bool ForceCompress { get; init; }
+
+  private static byte[] Smaller(byte[] a, byte[] b) => b.Length < a.Length ? b : a;
 
   /// <summary>Adds a file to the root directory of the compressed volume.</summary>
   public void AddFile(string name, byte[] data) {
@@ -120,7 +122,10 @@ public sealed class GenuineDvr3Writer {
     var physCursor = physDataStart;
     var layout = new List<ClusterPlan>();
     foreach (var (cl, full) in clusterFull) {
-      var comp = CvfLzCodec.Encode(full, this.CompressionMethod, this.CompressionLevel);
+      // Auto covers every codec a DriveSpace 3 volume reads: DS/JM (the codec's Auto) and SQ.
+      var comp = this.CompressionMethod == CvfLzMethod.Auto
+        ? Smaller(CvfLzCodec.Encode(full, CvfLzMethod.Auto, this.CompressionLevel)!, CvfLzCodec.Encode(full, CvfLzMethod.Sq, this.CompressionLevel)!)
+        : CvfLzCodec.Encode(full, this.CompressionMethod, this.CompressionLevel);
       var ksize = comp is null ? Spc : (comp.Length + Ss - 1) / Ss;
       if (comp is not null && ksize <= Spc && (ksize < Spc || this.ForceCompress)) {
         layout.Add(new ClusterPlan(cl, comp, ksize, true, physCursor));

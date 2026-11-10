@@ -13,6 +13,7 @@ internal sealed class Bzip2Decompressor {
   private int _currentBlockPos;
   private bool _finished;
   private uint _combinedCrc;
+  private readonly bool _nsisVariant;
 
   /// <summary>
   /// Gets whether all blocks have been read.
@@ -28,8 +29,13 @@ internal sealed class Bzip2Decompressor {
   /// Initializes a new bzip2 decompressor.
   /// </summary>
   /// <param name="bits">The bit buffer for input (MSB-first).</param>
-  public Bzip2Decompressor(BitBuffer<MsbBitOrder> bits) {
+  /// <param name="nsisVariant">
+  /// Decode the header-less dialect NSIS installers carry: a block starts with the single byte
+  /// 0x31 and the stream ends with 0x17, with no CRCs and no randomisation bit.
+  /// </param>
+  public Bzip2Decompressor(BitBuffer<MsbBitOrder> bits, bool nsisVariant = false) {
     this._bits = bits;
+    this._nsisVariant = nsisVariant;
   }
 
   /// <summary>
@@ -61,6 +67,9 @@ internal sealed class Bzip2Decompressor {
   }
 
   private bool ReadNextBlock() {
+    if (this._nsisVariant)
+      return this.ReadNextNsisBlock();
+
     // Read 48-bit magic
     var high = this._bits.ReadBits(24);
     var low = this._bits.ReadBits(24);
@@ -87,11 +96,50 @@ internal sealed class Bzip2Decompressor {
     if (randomized != 0)
       throw new InvalidDataException("Randomized bzip2 blocks are not supported.");
 
+    var blockData = DecodeBlockBody(this._bits);
+
+    // Verify block CRC
+    var computedCrc = Crc32Bzip2(blockData);
+    if (computedCrc != blockCrc)
+      throw new InvalidDataException(
+        $"Bzip2 block CRC mismatch: expected 0x{blockCrc:X8}, computed 0x{computedCrc:X8}.");
+
+    this._combinedCrc = ((this._combinedCrc << 1) | (this._combinedCrc >> 31)) ^ blockCrc;
+
+    this._currentBlock = blockData;
+    this._currentBlockPos = 0;
+    return true;
+  }
+
+  private const uint NsisBlockMarker = 0x31;
+  private const uint NsisEndMarker = 0x17;
+
+  // NSIS keeps bzip2's entropy coding but trims the framing: one marker byte per block, no
+  // checksums and no randomised blocks (Source/bzip2/decompress.c in the NSIS tree).
+  private bool ReadNextNsisBlock() {
+    switch (this._bits.ReadBits(8)) {
+      case NsisEndMarker:
+        this._finished = true;
+        return false;
+      case NsisBlockMarker:
+        this._currentBlock = DecodeBlockBody(this._bits);
+        this._currentBlockPos = 0;
+        return true;
+      case var other:
+        throw new InvalidDataException($"Invalid NSIS bzip2 block marker: 0x{other:X2}");
+    }
+  }
+
+  /// <summary>
+  /// Decodes one block from its BWT origin pointer onward (what follows the block magic, CRC and
+  /// randomised bit in a standard stream; ALZip's variant omits those three).
+  /// </summary>
+  internal static byte[] DecodeBlockBody(BitBuffer<MsbBitOrder> bits) {
     // BWT original pointer (24 bits)
-    var bwtIndex = (int)this._bits.ReadBits(24);
+    var bwtIndex = (int)bits.ReadBits(24);
 
     // Read symbol bitmap
-    var symbolUsed = ReadSymbolBitmap();
+    var symbolUsed = ReadSymbolBitmap(bits);
 
     // Count symbols in use
     var numSymbolsInUse = 0;
@@ -102,16 +150,16 @@ internal sealed class Bzip2Decompressor {
     var alphaSize = eobSymbol + 1;
 
     // Number of trees (3 bits)
-    var numTrees = (int)this._bits.ReadBits(3);
+    var numTrees = (int)bits.ReadBits(3);
 
     // Number of selectors (15 bits)
-    var numSelectors = (int)this._bits.ReadBits(15);
+    var numSelectors = (int)bits.ReadBits(15);
 
     // Read selectors (unary coded, MTF encoded)
     var selectorsMtf = new int[numSelectors];
     for (var i = 0; i < numSelectors; ++i) {
       var v = 0;
-      while (this._bits.ReadBits(1) == 1)
+      while (bits.ReadBits(1) == 1)
         ++v;
       selectorsMtf[i] = v;
     }
@@ -136,10 +184,10 @@ internal sealed class Bzip2Decompressor {
     var huffTables = new CanonicalHuffman[numTrees];
     for (var t = 0; t < numTrees; ++t) {
       var codeLens = new int[alphaSize];
-      var currentLen = (int)this._bits.ReadBits(5);
+      var currentLen = (int)bits.ReadBits(5);
       for (var s = 0; s < alphaSize; ++s) {
-        while (this._bits.ReadBits(1) == 1) {
-          if (this._bits.ReadBits(1) == 0)
+        while (bits.ReadBits(1) == 1) {
+          if (bits.ReadBits(1) == 0)
             ++currentLen;
           else
             --currentLen;
@@ -161,7 +209,7 @@ internal sealed class Bzip2Decompressor {
       }
 
       var tableIdx = selectors[Math.Min(groupIndex, numSelectors - 1)];
-      var sym = huffTables[tableIdx].DecodeSymbol(this._bits);
+      var sym = huffTables[tableIdx].DecodeSymbol(bits);
       ++symbolInGroup;
 
       if (sym == eobSymbol)
@@ -189,30 +237,18 @@ internal sealed class Bzip2Decompressor {
     var rle1Data = BurrowsWheelerTransform.Inverse(bwtData, bwtIndex);
 
     // RLE1 decode
-    var blockData = Bzip2Compressor.Rle1Decode(rle1Data);
-
-    // Verify block CRC
-    var computedCrc = Crc32Bzip2(blockData);
-    if (computedCrc != blockCrc)
-      throw new InvalidDataException(
-        $"Bzip2 block CRC mismatch: expected 0x{blockCrc:X8}, computed 0x{computedCrc:X8}.");
-
-    this._combinedCrc = ((this._combinedCrc << 1) | (this._combinedCrc >> 31)) ^ blockCrc;
-
-    this._currentBlock = blockData;
-    this._currentBlockPos = 0;
-    return true;
+    return Bzip2Compressor.Rle1Decode(rle1Data);
   }
 
-  private bool[] ReadSymbolBitmap() {
+  private static bool[] ReadSymbolBitmap(BitBuffer<MsbBitOrder> bits) {
     var used = new bool[256];
-    var inUse16 = this._bits.ReadBits(16);
+    var inUse16 = bits.ReadBits(16);
 
     for (var i = 0; i < 16; ++i) {
       if ((inUse16 & (1u << (15 - i))) != 0) {
-        var bits = this._bits.ReadBits(16);
+        var word = bits.ReadBits(16);
         for (var j = 0; j < 16; ++j) {
-          if ((bits & (1u << (15 - j))) != 0)
+          if ((word & (1u << (15 - j))) != 0)
             used[i * 16 + j] = true;
         }
       }

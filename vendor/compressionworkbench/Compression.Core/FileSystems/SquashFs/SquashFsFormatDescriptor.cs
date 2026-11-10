@@ -19,7 +19,11 @@ namespace FileSystem.SquashFs;
 ///   <item><description><c>https://en.wikipedia.org/wiki/SquashFS</c> — Wikipedia article</description></item>
 /// </list>
 /// </summary>
-public sealed class SquashFsFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveShrinkable, IArchiveModifiable, IArchiveDefragmentable, IFilesystemExtentMap, IWipeEmpty, IFormatOptionsSchema, ILayoutOptimizable {
+[FilesystemBlockMover(typeof(SquashFsBlockMover))]
+public sealed class SquashFsFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveDefragmentable, IFilesystemExtentMap, IWipeEmpty, IFormatOptionsSchema, ILayoutOptimizable {
+
+  /// <inheritdoc />
+  public DefragFeature SupportedDefragFeatures => DefragFeature.Packing | DefragFeature.CarveHole | DefragFeature.AscendingOrder;
 
   // The optimization adapters are keyed on this descriptor's runtime type, so the
   // registration has to have run before any instance can be looked up. Doing it from
@@ -39,7 +43,8 @@ public sealed class SquashFsFormatDescriptor : IFormatDescriptor, IArchiveFormat
     FilesystemSchemaPresets.PowerOfTwoSize(
       key: "BlockSize", displayName: "Data block size",
       min: 4096, max: 1048576, defaultLabel: "128 KB",
-      description: "Compressed data block size. SquashFS allows powers of two from 4 KB to 1 MB; larger blocks compress better but waste more on small files."),
+      description: "Compressed data block size. SquashFS allows powers of two from 4 KB to 1 MB; larger blocks compress better but waste more on small files.",
+      isAllocationGeometry: false),
   ];
 
   /// <summary>
@@ -54,15 +59,15 @@ public sealed class SquashFsFormatDescriptor : IFormatDescriptor, IArchiveFormat
   /// Gets the category.
   /// </summary>
   public FormatCategory Category => FormatCategory.Archive;
-  // R/W describes the supported existing-image edit API. It does not imply that
-  // the Linux kernel can mount this filesystem writable or that every edit is
-  // byte-local: Add/Remove may perform a complete verified re-layout.
+  // Not R/W: SquashFS is read-only by design, and the only edit path was a rebuild
+  // that converted the compression to gzip, reset owners, modes and times, and
+  // dropped symlinks, xattrs and empty folders. See FormatCapabilities.cs.
   /// <summary>
   /// Gets the capabilities.
   /// </summary>
   public FormatCapabilities Capabilities =>
     FormatCapabilities.CanList | FormatCapabilities.CanExtract | FormatCapabilities.CanCreate |
-    FormatCapabilities.CanModify | FormatCapabilities.CanTest |
+    FormatCapabilities.CanTest |
     FormatCapabilities.SupportsMultipleEntries | FormatCapabilities.SupportsDirectories |
     FormatCapabilities.SupportsOptimize;
   /// <summary>
@@ -183,71 +188,49 @@ public sealed class SquashFsFormatDescriptor : IFormatDescriptor, IArchiveFormat
   }
 
   /// <summary>
-  /// Adds the supplied entry to the target container.
-  /// </summary>
-  public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs)
-    => ModifyRebuilder.Add(archive, inputs,
-      readEntries: stream => {
-        var r = new SquashFsReader(stream, leaveOpen: true);
-        return r.Entries.Where(e => !e.IsDirectory && !e.IsSymlink).Select(e => (e.FullPath, r.Extract(e)));
-      },
-      buildImage: files => {
-        using var ms = new MemoryStream();
-        using (var w = new SquashFsWriter(ms, leaveOpen: true))
-          foreach (var (n, d) in files) w.AddFile(n, d);
-        return ms.ToArray();
-      });
-
-  /// <summary>
-  /// Removes the specified entry from the target container.
-  /// </summary>
-  public void Remove(Stream archive, string[] entryNames)
-    => ModifyRebuilder.Remove(archive, entryNames,
-      readEntries: stream => {
-        var r = new SquashFsReader(stream, leaveOpen: true);
-        return r.Entries.Where(e => !e.IsDirectory && !e.IsSymlink).Select(e => (e.FullPath, r.Extract(e)));
-      },
-      buildImage: files => {
-        using var ms = new MemoryStream();
-        using (var w = new SquashFsWriter(ms, leaveOpen: true))
-          foreach (var (n, d) in files) w.AddFile(n, d);
-        return ms.ToArray();
-      });
-
-  /// <summary>
   /// Performs the defragment operation.
   /// </summary>
   public void Defragment(Stream archive)
     => this.Defragment(archive, new DefragOptions { Mode = DefragMode.ConsolidateAtStart });
 
   /// <summary>
-  /// Lays the image out again by writing it anew.
+  /// Defragments in place: data blocks are moved and the inode table rewritten
+  /// (<see cref="SquashFsBlockMover"/>); the pass is kept only if every file reads
+  /// back unchanged. Anything else is refused and the image left as it was.
   /// </summary>
   /// <remarks>
-  /// A file's data blocks could be moved — the inode records where they start —
-  /// but that field lives inside a metadata block the writer compresses.
-  /// Patching it means compressing the block again, which changes its length,
-  /// which shifts every metadata block after it and invalidates every offset
-  /// stored into them: the inode references in the directory table, the
-  /// directory references in the inodes, and the table pointers in the
-  /// superblock. So this is a rebuild, and the extent map above is what tells
-  /// the truth about where the bytes are.
+  /// The rebuild that used to stand behind every refusal wrote a gzip image with
+  /// uid 0, fixed modes and fresh times, and silently dropped symlinks, xattrs and
+  /// empty folders.
   /// </remarks>
   public void Defragment(Stream archive, DefragOptions options) {
     ArgumentNullException.ThrowIfNull(archive);
     ArgumentNullException.ThrowIfNull(options);
+    DefragSupport.Require(options, this.SupportedDefragFeatures, "SquashFS");
+    RefuseLegacy(archive);
+    if (!archive.CanSeek || archive.Length > PlannerImageCap)
+      throw new NotSupportedException(
+        $"SquashFS: in-place defragmentation checks the result against a snapshot held in memory; images over {PlannerImageCap:N0} bytes are refused.");
+    DefragContentGuard.RunOrRebuild(archive,
+      readContents: ReadPayloadsForGuard,
+      inPlace: () => DefragmentWithPlanner(archive, options),
+      rebuild: () => throw new NotSupportedException("SquashFS: the image cannot be laid out in place; it was left unchanged."));
+  }
 
-    if (archive.CanSeek && archive.Length <= PlannerImageCap) {
-      var planned = false;
-      DefragContentGuard.RunOrRebuild(archive,
-        readContents: ReadPayloadsForGuard,
-        inPlace: () => { DefragmentWithPlanner(archive, options); planned = true; },
-        rebuild: () => planned = false);
-      if (planned) return;
-      archive.Position = 0;
-    }
 
-    this.DefragmentWithRebuild(archive, options);
+  /// <summary>
+  /// SquashFS 1.x-3.x images are read, never re-laid out: the block mover and the inode-table
+  /// rewrite know only the version 4 layout. Refused with the image untouched.
+  /// </summary>
+  private static void RefuseLegacy(Stream archive) {
+    if (!archive.CanSeek)
+      return;
+    var start = archive.Position;
+    Span<byte> head = stackalloc byte[0x20];
+    var got = archive.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
+    archive.Position = start;
+    if (got == head.Length && SquashFsLegacyReader.Handles(head))
+      throw new NotSupportedException("SquashFS 1.x-3.x images are read-only here; only version 4 can be defragmented.");
   }
 
   /// <summary>
@@ -298,19 +281,6 @@ public sealed class SquashFsFormatDescriptor : IFormatDescriptor, IArchiveFormat
     options.OnProgress?.Invoke(new DefragProgressEvent(
       "complete", 1, -1, -1, archive.Length, postExtents, "Defragmentation complete"));
   }
-
-  private void DefragmentWithRebuild(Stream archive, DefragOptions options)
-    => DefragRebuilder.Rebuild(archive, options,
-      readEntries: stream => {
-        var r = new SquashFsReader(stream, leaveOpen: true);
-        return r.Entries.Where(e => !e.IsDirectory && !e.IsSymlink).Select(e => (e.FullPath, r.Extract(e)));
-      },
-      buildImage: files => {
-        using var ms = new MemoryStream();
-        using (var w = new SquashFsWriter(ms, leaveOpen: true))
-          foreach (var (n, d) in files) w.AddFile(n, d);
-        return ms.ToArray();
-      });
 
   /// <summary>
   /// A canonical SquashFS image is fully packed. The real extent map marks all

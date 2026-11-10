@@ -30,7 +30,11 @@ namespace Compression.Registry;
 /// This distinction is especially important for read-only-on-mount filesystem formats such as
 /// SquashFS, CramFS and EROFS: the native filesystem driver may intentionally forbid mounted
 /// writes while an offline image editor can still support complete, deterministic mutation by
-/// relayout/rebuild. <see cref="CanModify"/> reports the latter capability.
+/// relayout/rebuild. <see cref="CanModify"/> reports the latter capability — but only when the
+/// relayout keeps everything the format carries (names, contents, owners, modes, times, links,
+/// extended attributes, compression, volume identity). A rebuild that quietly drops any of it
+/// is WORM pretending to be R/W, and the format must not set <see cref="CanModify"/>; SquashFS
+/// was demoted for exactly that reason.
 /// </para>
 /// </summary>
 [Flags]
@@ -49,6 +53,12 @@ public enum FormatCapabilities {
   /// of <see cref="CanCreate"/> and <see cref="CanModify"/> and is backed by <see cref="IContainerRemuxable"/>.
   /// </summary>
   CanRemux = 1 << 7,
+  /// <summary>
+  /// The creation-time <c>method+</c> hint: the writer can search its parameters for the
+  /// smallest output when a container is created. It is not a maintenance capability —
+  /// re-encoding an existing file is <see cref="ICompressionOptimizable"/>, discovered through
+  /// <see cref="MaintenanceCapabilities"/>.
+  /// </summary>
   SupportsOptimize = 1 << 8,
   CanCompoundWithTar = 1 << 9,
   /// <summary>R/W: can add/replace/remove entries in an existing archive/image. The implementation may edit in place or relayout/rebuild. Implies <see cref="CanCreate"/> for normal writable formats.</summary>

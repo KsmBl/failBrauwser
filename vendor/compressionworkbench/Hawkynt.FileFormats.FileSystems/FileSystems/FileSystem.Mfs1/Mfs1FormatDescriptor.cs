@@ -266,7 +266,7 @@ public sealed class Mfs1FormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     ArgumentNullException.ThrowIfNull(inputs);
     // Rewritten through the writer: the in-place catalogue update cut the names of the
     // files already there down to their extension.
-    ModifyRebuilder.AddViaCreate(archive, inputs, this, this);
+    ModifyRebuilder.AddLargeVolume(archive, inputs, this, this);
   }
 
   /// <summary>
@@ -277,7 +277,7 @@ public sealed class Mfs1FormatDescriptor : IFormatDescriptor, IArchiveFormatOper
   public void Remove(Stream archive, string[] entryNames) {
     ArgumentNullException.ThrowIfNull(archive);
     ArgumentNullException.ThrowIfNull(entryNames);
-    ModifyRebuilder.RemoveViaCreate(archive, entryNames, this, this);
+    ModifyRebuilder.RemoveLargeVolume(archive, entryNames, this, this);
   }
 
   private const int HeaderReadCap = 1 << 20; // 1 MiB cap — a 40-track SSD is 100k, 80-track is 200k.

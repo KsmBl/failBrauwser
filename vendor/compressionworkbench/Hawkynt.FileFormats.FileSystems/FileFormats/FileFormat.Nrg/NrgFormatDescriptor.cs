@@ -97,7 +97,7 @@ public sealed class NrgFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     ArgumentNullException.ThrowIfNull(output);
     ArgumentNullException.ThrowIfNull(inputs);
 
-    // Folders and long names are kept (Rock Ridge and Joliet), as in a plain ISO.
+    // Folders, long names, modes and times are kept (Rock Ridge and Joliet), as in a plain ISO.
     var iso = FileSystem.Iso.IsoFormatDescriptor.BufferedWriterFor(inputs, options);
 
     NrgWriter.Write(output, new NrgDiscDefinition([
@@ -134,11 +134,7 @@ public sealed class NrgFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     EnsureNamedFileMutationProfile(archive);
     var skip = new HashSet<string>(entryNames, StringComparer.OrdinalIgnoreCase);
     RebuildVerb.EditViaRebuild(archive, this, this, tmpDir => {
-      foreach (var file in Directory.GetFiles(tmpDir, "*", SearchOption.AllDirectories)) {
-        var relative = Path.GetRelativePath(tmpDir, file).Replace('\\', '/');
-        if (skip.Contains(relative) || skip.Contains(Path.GetFileName(relative)))
-          File.Delete(file);
-      }
+      RebuildVerb.DeleteNamedEntries(tmpDir, skip);
     });
   }
 

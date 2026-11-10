@@ -15,7 +15,10 @@ namespace FileSystem.Iso;
 ///   <item><description><c>https://en.wikipedia.org/wiki/ISO_9660</c> — Wikipedia overview (incl. Joliet / Rock Ridge extensions)</description></item>
 /// </list>
 /// </summary>
-public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveShrinkable, IArchiveModifiable, IArchiveDefragmentable, IFilesystemExtentMap, IFilesystemBlockMover, IWipeEmpty, IFormatOptionsSchema, ILayoutOptimizable {
+public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveModifiable, IArchiveDefragmentable, IFilesystemExtentMap, IFilesystemBlockMover, IWipeEmpty, IFormatOptionsSchema, ILayoutOptimizable {
+
+  /// <inheritdoc />
+  public DefragFeature SupportedDefragFeatures => DefragFeature.Packing | DefragFeature.CarveHole;
 
   // ── IFormatOptionsSchema ────────────────────────────────────────────────
 
@@ -60,6 +63,35 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
       Description: "Emit a Joliet Supplementary Volume Descriptor with a parallel " +
         "UCS-2 directory tree preserving long/mixed-case filenames. Disable for " +
         "strict ECMA-119 8.3 uppercase only."),
+    new FormatOptionDescriptor(
+      Key: "RockRidge",
+      DisplayName: "Rock Ridge (POSIX names, modes, times)",
+      Kind: FormatOptionKind.Boolean,
+      Default: "true",
+      Description: "Record Rock Ridge (RRIP 1.10) in the primary tree: full POSIX names " +
+        "of any length, permissions and modification times, as Linux and the BSDs read them."),
+    new FormatOptionDescriptor(
+      Key: "BootImage",
+      DisplayName: "El Torito BIOS boot image",
+      Kind: FormatOptionKind.String,
+      Default: "",
+      Description: "Path of a file in the image to boot from on a PC BIOS (no emulation, " +
+        "4 sectors loaded, isolinux boot info table patched in), as mkisofs -b " +
+        "-no-emul-boot -boot-load-size 4 -boot-info-table does."),
+    new FormatOptionDescriptor(
+      Key: "EfiBootImage",
+      DisplayName: "El Torito UEFI boot image",
+      Kind: FormatOptionKind.String,
+      Default: "",
+      Description: "Path of a FAT image file in the image to boot from on UEFI (platform 0xEF, " +
+        "no emulation), as mkisofs -e does."),
+    new FormatOptionDescriptor(
+      Key: "BootCatalog",
+      DisplayName: "El Torito boot catalog file",
+      Kind: FormatOptionKind.String,
+      Default: "",
+      Description: "Path the boot catalog is visible under (as mkisofs -c); empty keeps it " +
+        "in a sector of its own that no directory lists."),
   ];
 
   /// <summary>
@@ -85,6 +117,7 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// </summary>
   public long WipeUnusedSpace(Stream image, bool wipeClusterTips = true, bool wipeDeletedEntries = true) {
     ArgumentNullException.ThrowIfNull(image);
+    RefuseInterleaved(image, "wiping");
     image.Position = 0;
     var imageSize = image.Length;
 
@@ -154,20 +187,24 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   public List<ArchiveEntryInfo> List(Stream stream, string? password) {
     var r = new IsoReader(stream);
     return r.Entries.Select((e, i) => new ArchiveEntryInfo(
-      i, e.Name, e.Size, e.Size, "Stored", e.IsDirectory, false, e.LastModified
+      i, e.Name, e.Size, e.Zisofs is null ? e.Size : e.StoredSize, e.Zisofs is null ? "Stored" : "zisofs",
+      e.IsDirectory, false, e.LastModified, IsSymlink: e.IsSymlink, LinkTarget: e.LinkTarget
     )).ToList();
   }
 
   /// <inheritdoc/>
-  /// <remarks>Folders are kept, with Rock Ridge names, permissions and times.</remarks>
+  /// <remarks>
+  /// Folders are kept, empty ones included, with Rock Ridge names, permissions and times
+  /// (and Joliet names for Windows); El Torito boot entries come from the boot options.
+  /// </remarks>
   public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
     var w = NewWriter(options);
     foreach (var i in inputs) {
       var name = EntryPath(i.ArchiveName);
       if (name.Length == 0) continue;
-      var source = string.IsNullOrEmpty(i.FullPath) ? null : i.FullPath;
+      var mode = i.SourceUnixMode is { } unixMode ? (int)unixMode : (int?)null;
       if (i.IsDirectory) {
-        w.AddDirectory(name, ModeOf(source), source != null && Directory.Exists(source) ? Directory.GetLastWriteTimeUtc(source) : null);
+        w.AddDirectory(name, mode, i.SourceLastModifiedUtc);
         continue;
       }
       var info = i;
@@ -177,20 +214,67 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
         w.AddFile(name, bytes);
       else
         w.AddStreamingFile(name, new FileInfo(info.FullPath).Length, () => File.OpenRead(info.FullPath));
-      if (source != null && File.Exists(source)) w.SetMetadata(name, ModeOf(source), File.GetLastWriteTimeUtc(source));
+      w.SetMetadata(name, mode, i.SourceLastModifiedUtc);
     }
     if (output.CanSeek) w.BuildToStreaming(output);
     else output.Write(w.Build());
   }
 
   /// <summary>
+  /// An ISO writer holding <paramref name="inputs"/> in memory with folders, Rock Ridge and
+  /// Joliet names and the boot options, for the CD image formats that wrap an ISO 9660
+  /// track (CDI, MDF, NRG, BIN).
+  /// </summary>
+  public static IsoWriter BufferedWriterFor(IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions? options = null) {
+    ArgumentNullException.ThrowIfNull(inputs);
+    var w = NewWriter(options);
+    foreach (var i in inputs) {
+      var name = EntryPath(i.ArchiveName);
+      if (name.Length == 0) continue;
+      var mode = i.SourceUnixMode is { } unixMode ? (int)unixMode : (int?)null;
+      if (i.IsDirectory) {
+        w.AddDirectory(name, mode, i.SourceLastModifiedUtc);
+        continue;
+      }
+      w.AddFile(name, i.ReadContent());
+      w.SetMetadata(name, mode, i.SourceLastModifiedUtc);
+    }
+    return w;
+  }
+
+  private static IsoWriter NewWriter(FormatCreateOptions? options) {
+    var w = new IsoWriter {
+      VolumeIdentifier      = options?.GetOption("VolumeLabel", "CDROM") ?? "CDROM",
+      SystemIdentifier      = options?.GetOption("SystemId", "") ?? "",
+      PublisherIdentifier   = options?.GetOption("Publisher", "") ?? "",
+      ApplicationIdentifier = options?.GetOption("Application", "") ?? "",
+      EnableJoliet          = options?.GetOptionBool("Joliet", true) ?? true,
+      EnableRockRidge       = options?.GetOptionBool("RockRidge", true) ?? true,
+    };
+    if (EntryPath(options?.GetOption("BootImage", "") ?? "") is { Length: > 0 } bios)
+      // The isolinux / GRUB convention: no emulation, load 4 virtual sectors, boot info table.
+      w.BootEntries.Add(new IsoWriter.BootEntry { Platform = 0x00, SectorCount = 4, ImagePath = bios, PatchBootInfoTable = true });
+    if (EntryPath(options?.GetOption("EfiBootImage", "") ?? "") is { Length: > 0 } efi)
+      // SectorCount 0 lets the firmware take the whole FAT image the entry points at.
+      w.BootEntries.Add(new IsoWriter.BootEntry { Platform = 0xEF, ImagePath = efi });
+    if (EntryPath(options?.GetOption("BootCatalog", "") ?? "") is { Length: > 0 } catalog)
+      w.BootCatalogPath = catalog;
+    return w;
+  }
+
+  /// <summary>An input name as a relative path with forward slashes and no trailing slash.</summary>
+  private static string EntryPath(string name) => (name ?? "").Replace('\\', '/').Trim('/');
+
+  /// <summary>
   /// Two-pass streaming creation: the pre-known per-input sizes drive the
   /// ISO 9660 path table + directory + file-extent layout in pass 1 (identical
-  /// to <see cref="Create"/>); pass 2 streams
+  /// to <see cref="Create"/>, which flattens to leaf filenames); pass 2 streams
   /// each file's bytes from its
   /// <see cref="Compression.Registry.Streaming.StreamingArchiveInput.OpenStream"/>
   /// factory into its data extent via 64 KB chunks — no file is ever buffered
-  /// as a <c>byte[]</c>. Falls back to a buffered build when the target stream
+  /// as a <c>byte[]</c>. Output is byte-identical to <see cref="Create"/> for
+  /// the same inputs (the ECMA-119 volume/record timestamps are sampled once
+  /// per <c>Build</c>). Falls back to a buffered build when the target stream
   /// is not seekable.
   /// </summary>
   public void CreateFromStreams(Stream output, IEnumerable<StreamingArchiveInput> inputs, FormatCreateOptions options) {
@@ -200,66 +284,36 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     foreach (var input in inputs) {
       var name = EntryPath(input.Name);
       if (name.Length == 0) continue;
-      if (input.IsDirectory) { w.AddDirectory(name); continue; }
-      if (output.CanSeek) {
-        w.AddStreamingFile(name, input.Size, input.OpenStream);
+      var mode = input.Metadata?.UnixMode is { } unixMode ? unixMode & 0xFFF : (int?)null;
+      var modified = input.Metadata?.LastWriteTimeUtc?.UtcDateTime;
+      if (input.IsDirectory) {
+        w.AddDirectory(name, mode, modified);
         continue;
       }
-      using var src = input.OpenStream();
-      using var ms = new MemoryStream();
-      src.CopyTo(ms);
-      w.AddFile(name, ms.ToArray());
+      if (output.CanSeek) {
+        w.AddStreamingFile(name, input.Size, input.OpenStream);
+      } else {
+        using var src = input.OpenStream();
+        using var ms = new MemoryStream();
+        src.CopyTo(ms);
+        w.AddFile(name, ms.ToArray());
+      }
+      w.SetMetadata(name, mode, modified);
     }
     if (output.CanSeek) w.BuildToStreaming(output);
     else output.Write(w.Build());
-  }
-
-  /// <summary>
-  /// An ISO writer holding <paramref name="inputs"/> in memory, with folders, Rock Ridge and
-  /// Joliet names, for the CD image formats that wrap an ISO 9660 track (CDI, MDF, NRG, BIN).
-  /// </summary>
-  public static IsoWriter BufferedWriterFor(IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions? options = null) {
-    var w = NewWriter(options);
-    foreach (var i in inputs) {
-      var name = EntryPath(i.ArchiveName);
-      if (name.Length == 0) continue;
-      var source = string.IsNullOrEmpty(i.FullPath) ? null : i.FullPath;
-      if (i.IsDirectory) {
-        w.AddDirectory(name, ModeOf(source), source != null && Directory.Exists(source) ? Directory.GetLastWriteTimeUtc(source) : null);
-        continue;
-      }
-      w.AddFile(name, i.ReadContent());
-      if (source != null && File.Exists(source)) w.SetMetadata(name, ModeOf(source), File.GetLastWriteTimeUtc(source));
-    }
-    return w;
-  }
-
-  private static IsoWriter NewWriter(FormatCreateOptions? options) => new() {
-    VolumeIdentifier      = options?.GetOption("VolumeLabel", "CDROM") ?? "CDROM",
-    SystemIdentifier      = options?.GetOption("SystemId", "") ?? "",
-    PublisherIdentifier   = options?.GetOption("Publisher", "") ?? "",
-    ApplicationIdentifier = options?.GetOption("Application", "") ?? "",
-    EnableJoliet          = options?.GetOptionBool("Joliet", true) ?? true,
-    // Rock Ridge keeps long names, case, permissions and times, as Linux tools expect.
-    EnableRockRidge       = options?.GetOptionBool("RockRidge", true) ?? true,
-  };
-
-  /// <summary>An input name as a relative path with forward slashes and no trailing slash.</summary>
-  private static string EntryPath(string name) => name.Replace('\\', '/').Trim('/');
-
-  private static int? ModeOf(string? path) {
-    if (path == null || OperatingSystem.IsWindows()) return null;
-    try { return (int)File.GetUnixFileMode(path); }
-    catch (IOException) { return null; }
-    catch (UnauthorizedAccessException) { return null; }
   }
 
   /// <inheritdoc/>
   public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
     var r = new IsoReader(stream);
     foreach (var e in r.Entries) {
-      if (e.IsDirectory) continue;
       if (files != null && !MatchesFilter(e.Name, files)) continue;
+      // Folders are created too, so an empty one survives extraction.
+      if (e.IsDirectory) {
+        ApplyEntryTime(CreateEntryDirectory(outputDir, e.Name), e.LastModified);
+        continue;
+      }
       // Streamed, not buffered: an ISO entry may be larger than a byte[] can hold.
       using var target = CreateEntryFile(outputDir, e.Name);
       r.ExtractTo(e, target);
@@ -297,17 +351,27 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   }
 
   /// <summary>
-  /// Adds or replaces files at the root of an existing ISO 9660 image. Uses
-  /// <see cref="IsoModifier"/> for true random-access I/O — only the PVD
-  /// (sector 16), the root directory's existing extent, and the new file's
-  /// data sectors are touched. The 32 KB system area, VDST, path tables, and
-  /// existing file data sectors are left untouched. Names are sanitized to
-  /// the ISO 9660 8.3 d-characters identifier set; ';1' versions are added
-  /// automatically by the modifier.
+  /// Adds or replaces files and folders anywhere in an existing ISO 9660 image, in place:
+  /// new data goes after the volume space and existing file data never moves.
   /// </summary>
+  /// <remarks>
+  /// <see cref="IsoTreeEditor"/> keeps the primary tree (with Rock Ridge names, modes and
+  /// times when the image has Rock Ridge) and the Joliet tree describing the same files, and
+  /// rewrites the path tables. An image the editor would damage — data stored past the
+  /// volume space, Rock Ridge relocated folders, interleaved files — is refused and left as
+  /// it was.
+  /// </remarks>
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
-    foreach (var (name, data) in FilesOnly(inputs))
-      IsoModifier.AddFile(archive, name, data);
+    ArgumentNullException.ThrowIfNull(inputs);
+    RefuseInterleaved(archive, "adding files to");
+    foreach (var input in inputs.Where(i => !string.IsNullOrEmpty(i.ArchiveName))) {
+      var name = EntryPath(input.ArchiveName);
+      if (name.Length == 0) continue;
+      var mode = input.SourceUnixMode is { } unixMode ? (int)unixMode : (int?)null;
+      var modified = input.SourceLastModifiedUtc;
+      if (input.IsDirectory) IsoTreeEditor.AddDirectory(archive, name, mode, modified);
+      else IsoTreeEditor.AddFile(archive, name, input.ReadContent(), mode, modified);
+    }
   }
 
   /// <summary>
@@ -355,86 +419,79 @@ public sealed class IsoFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   }
 
   /// <summary>
-  /// Mode-aware ISO 9660 defragmentor via read-extract-rebuild dispatch through
-  /// <see cref="DefragRebuilder"/>. All four <see cref="DefragMode"/> values supported;
-  /// image is repacked with files reordered per mode.
+  /// ISO 9660 defragmentor: the planner moves each file's single extent in place
+  /// and repoints its directory record, and the pass is kept only if every file
+  /// reads back unchanged. Anything else is refused and the image left as it was.
   /// </summary>
+  /// <remarks>
+  /// The rebuild that used to stand behind every refusal wrote a new image with the
+  /// volume ID "CDROM", fresh dates, no Rock Ridge (modes, owners, symlinks), no El
+  /// Torito boot record and no empty folders, at another size.
+  /// </remarks>
   public void Defragment(Stream archive, DefragOptions options) {
     ArgumentNullException.ThrowIfNull(archive);
     ArgumentNullException.ThrowIfNull(options);
+    DefragSupport.Require(options, this.SupportedDefragFeatures, "ISO 9660");
+    RefuseInterleaved(archive, "defragmenting");
+    if (!archive.CanSeek || archive.Length > MaxBufferedImageBytes)
+      throw new NotSupportedException(
+        $"ISO 9660: in-place defragmentation checks the result against a snapshot held in memory; images over {MaxBufferedImageBytes:N0} bytes are refused.");
 
-    // Moving what is out of place beats writing the image out again: a file is
-    // one contiguous extent by the standard, and its directory record names the
-    // sector it starts at, so a move is the copy plus that field.
-    //
-    // This was tried once and pulled back out, because the mover walked the
-    // directory from the root for every move and the cost grew with the square
-    // of the move count — a half-megabyte image had not finished planning after
-    // ten minutes. The records are located once now.
-    // The guard below snapshots the image to compare payloads across the pass,
-    // so it is only offered where a snapshot fits; a volume past the cap takes
-    // the streaming path.
-    if (archive.CanSeek && archive.Length <= MaxBufferedImageBytes
-        && options.Mode is DefragMode.ConsolidateAtStart or DefragMode.ConsolidateAtEnd
-        or DefragMode.FillHolesLazy or DefragMode.CarveHole) {
-      var planned = false;
-      // The in-place pass is kept only if every payload still reads back: it
-      // can refuse partway, and a rebuild is the honest answer when it does.
-      DefragContentGuard.RunOrRebuild(archive,
-        readContents: stream => ReadEntriesForGuard(stream),
-        inPlace: () => { DefragmentWithPlanner(archive, options); planned = true; },
-        rebuild: () => planned = false);
-      if (planned) return;
-      archive.Position = 0;
-    }
-
-    // An image too large to materialise goes through the streaming rebuilder;
-    // buildImage returns a byte[] of the whole image, which Build refuses to
-    // produce once it passes the array limit.
-    // Every mode streams above the cap: end-pack and carve-hole order their
-    // entries from scratch inside the rebuilder, so none of them falls back
-    // to a buffered rebuild the volume is too large for.
-    if (archive.CanSeek && archive.Length > MaxBufferedImageBytes) {
-      IsoWriter? streamWriter = null;
-      Stream? target = null;
-      DefragRebuilder.RebuildStreaming(archive, options,
-        readEntries: stream => {
-          var r = new IsoReader(stream);
-          return r.Entries.Where(e => !e.IsDirectory).Select(e => (e.Name, r.Extract(e))).ToList();
-        },
-        beginWrite: s2 => { streamWriter = new IsoWriter(); target = s2; },
-        // As a stream factory, not inline: an inline payload is materialised
-        // inside the image buffer, which is what a large image cannot afford.
-        writeEntry: (name, data) => streamWriter!.AddStreamingFile(
-          name, data.LongLength, () => new MemoryStream(data, writable: false)),
-        finishWrite: () => streamWriter!.BuildToStreaming(target!));
-      return;
-    }
-
-    DefragRebuilder.Rebuild(archive, options,
-      readEntries: stream => {
-        var r = new IsoReader(stream);
-        return r.Entries.Where(e => !e.IsDirectory).Select(e => (e.Name, r.Extract(e)));
-      },
-      buildImage: files => {
-        var w = new IsoWriter();
-        foreach (var (n, d) in files) w.AddFile(n, d);
-        return w.Build();
-      });
+    DefragContentGuard.RunOrRebuild(archive,
+      readContents: stream => ReadEntriesForGuard(stream),
+      inPlace: () => DefragmentWithPlanner(archive, options),
+      rebuild: () => throw new NotSupportedException(
+        "ISO 9660: the image cannot be laid out in place; it was left unchanged."));
   }
 
-  /// <summary>Largest image a defrag will rebuild through a byte[].</summary>
+  /// <summary>
+  /// The in-place editors treat every file section as one contiguous run; an interleaved section
+  /// would have its gaps (other files' data) moved or wiped, so such an image is left untouched.
+  /// </summary>
+  private static void RefuseInterleaved(Stream image, string operation) {
+    var position = image.Position;
+    image.Position = 0;
+    bool interleaved;
+    try {
+      using var reader = new IsoReader(image, leaveOpen: true);
+      interleaved = reader.Entries.Any(e => e.IsInterleaved);
+    } catch (Exception e) when (e is InvalidDataException or NotSupportedException) {
+      interleaved = false; // an image the reader cannot walk is judged by the editor itself
+    }
+    image.Position = position;
+    if (interleaved)
+      throw new NotSupportedException($"ISO 9660: {operation} an image with interleaved files is not supported; it was left unchanged.");
+  }
+
+  /// <summary>Largest image the in-place defragmentation snapshots.</summary>
   private const long MaxBufferedImageBytes = 256L * 1024 * 1024;
 
   /// <summary>
-  /// Removes the named entries from an existing ISO 9660 image. Uses
-  /// <see cref="IsoModifier"/> for O(touched bytes) random-access I/O — the
-  /// directory record is shifted out of its sector and the file's data
-  /// sectors are zero-wiped. Names match case-insensitively after stripping
-  /// any ';N' version suffix (ISO 9660 stores uppercase IDs).
+  /// Removes every file and folder in place, keeping the volume descriptors, the volume ID,
+  /// the dates and the El Torito boot record.
+  /// </summary>
+  public void Purge(Stream archive) {
+    ArgumentNullException.ThrowIfNull(archive);
+    archive.Position = 0;
+    var topLevel = this.List(archive, null)
+      .Select(e => e.Name.Replace('\\', '/').Trim('/').Split('/')[0])
+      .Where(n => n.Length > 0)
+      .Distinct(StringComparer.Ordinal)
+      .ToArray();
+    this.Remove(archive, topLevel);
+  }
+
+  /// <summary>
+  /// Removes the named files and folders (a folder with everything in it) in place: their
+  /// directory records leave both the primary and the Joliet tree and their sectors are
+  /// zeroed. A name that is not there is reported rather than passed over.
   /// </summary>
   public void Remove(Stream archive, string[] entryNames) {
-    foreach (var name in entryNames)
-      IsoModifier.RemoveFile(archive, name, wipeData: true);
+    RefuseInterleaved(archive, "removing files from");
+    foreach (var raw in entryNames ?? []) {
+      var name = raw.Replace('\\', '/').Trim('/');
+      if (!IsoTreeEditor.Remove(archive, name))
+        throw new FileNotFoundException($"ISO 9660: '{raw}' is not in the image.", raw);
+    }
   }
 }

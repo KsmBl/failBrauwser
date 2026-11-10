@@ -46,7 +46,7 @@ public sealed class Cb7FormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     }
 
     RebuildVerb.EditViaRebuild(archive, this, this, tmpDir => {
-      RebuildStaging.AddEntries(tmpDir, inputs);
+      RebuildVerb.StageInputs(tmpDir, inputs);
     });
   }
 
@@ -72,7 +72,7 @@ public sealed class Cb7FormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
 
     var skip = new HashSet<string>(entryNames, StringComparer.OrdinalIgnoreCase);
     RebuildVerb.EditViaRebuild(archive, this, this, tmpDir => {
-      RebuildStaging.RemoveEntries(tmpDir, skip);
+      RebuildVerb.DeleteNamedEntries(tmpDir, skip);
     });
   }
 

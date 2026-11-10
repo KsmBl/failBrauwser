@@ -1,6 +1,7 @@
 #pragma warning disable CS1591
 using System.Buffers.Binary;
 using System.Text;
+using Compression.Core.FileSystems.Cvf;
 
 namespace FileSystem.DoubleSpace;
 
@@ -28,9 +29,9 @@ public sealed class DoubleSpaceReader : IDisposable {
   public bool IsDriveSpace => this.Signature != "MSDSP6.0";
 
   /// <summary>
-  /// True for DriveSpace 3 (Win95 Plus! Pack, 1995) images — the variant that
-  /// uses the MS LZH codec rather than DS LZ77. Detected by the 7-char
-  /// <c>MS_DSP3</c> prefix in the OEM area (the 8th byte is a NUL pad).
+  /// True for CompressionWorkbench's own extended DriveSpace 3 layout, detected by the 7-char
+  /// <c>MS_DSP3</c> prefix in the OEM area (the 8th byte is a NUL pad). Its clusters use the same
+  /// DS LZ77 runs as DriveSpace 6.22.
   /// </summary>
   public bool IsDriveSpace3 => this.Signature.StartsWith("MS_DSP3", StringComparison.Ordinal);
 
@@ -83,8 +84,7 @@ public sealed class DoubleSpaceReader : IDisposable {
     // OEM name (8 bytes at offset 3). Accept all four CVF flavours: DoubleSpace
     // 6.0 (MSDSP6.0), DriveSpace 6.22 (MSDSP6.2), DriveSpace 3 OSR2 (DRVSPACE),
     // and DriveSpace 3 Plus! Pack (MS_DSP3 — 7 chars + NUL pad, so the full
-    // 8-byte read isn't a clean OR-compare). The MS LZH dispatch happens in
-    // ReadCluster — see IsDriveSpace3.
+    // 8-byte read isn't a clean OR-compare).
     this.Signature = Encoding.ASCII.GetString(this._data, 3, 8);
     var oem7 = Encoding.ASCII.GetString(this._data, 3, 7);
     // The genuine MS-DOS 6.x DoubleSpace/DriveSpace tools stamp the MDBPB OEM as "MSDBL6.0"/"MSDBL6.2"
@@ -307,25 +307,25 @@ public sealed class DoubleSpaceReader : IDisposable {
     var clusterBytes = this._bytesPerSector * this._sectorsPerCluster;
 
     // Real MS-DOS DoubleSpace/DriveSpace CVF: resolve the cluster through the
-    // genuine MDFAT to its physical sector run. Clusters whose data the DOS
-    // driver could not compress are stored verbatim (the common case for
-    // already-compressed or high-entropy content) and read back byte-exact;
-    // compressible clusters carry an LZ run we decode via DsCompression.
+    // genuine MDFAT to its physical sector run. Entry bits: 0..20 physical
+    // sector - 1, 22..25 on-disk sectors - 1, 26..29 cluster sectors - 1, 30
+    // stored, 31 used. A stored run is read verbatim; a compressed one starts
+    // with its method header ("DS"/"JM"/"SQ") and is decoded by CvfLzCodec.
     if (this._realMdfatBaseOffset > 0 && cluster >= 0) {
       var entryOff = this._realMdfatBaseOffset + cluster * 4;
       if (entryOff + 4 <= this._data.Length) {
         var entry = BinaryPrimitives.ReadUInt32LittleEndian(this._data.AsSpan(entryOff));
-        var physSector = (int)((entry & 0x1FFFFFu) + 1);
-        var physOffset = physSector * this._bytesPerSector;
-        if (entry != 0 && physOffset + clusterBytes <= this._data.Length) {
-          var run = this._data.AsSpan(physOffset, clusterBytes).ToArray();
-          try {
-            var dec = DsCompression.Decompress(run);
-            if (dec.Length >= clusterBytes) return dec;
-          } catch (InvalidDataException) {
-            // Not a valid LZ run — the cluster is stored verbatim.
-          }
-          return run;
+        var used = (entry & 0x8000_0000u) != 0;
+        var stored = (entry & 0x4000_0000u) != 0;
+        var physOffset = (int)((entry & 0x1FFFFFu) + 1) * this._bytesPerSector;
+        var inLen = (int)(((entry >> 22) & 0xF) + 1) * this._bytesPerSector;
+        var outLen = Math.Min(clusterBytes, (int)(((entry >> 26) & 0xF) + 1) * this._bytesPerSector);
+        if (used && stored && physOffset + clusterBytes <= this._data.Length)
+          return this._data.AsSpan(physOffset, clusterBytes).ToArray();
+        if (used && !stored && physOffset + inLen <= this._data.Length) {
+          var buffer = new byte[clusterBytes];
+          CvfLzCodec.Decompress(this._data.AsSpan(physOffset, inLen).ToArray(), inLen, outLen).CopyTo(buffer, 0);
+          return buffer;
         }
       }
       return new byte[clusterBytes];
@@ -344,12 +344,7 @@ public sealed class DoubleSpaceReader : IDisposable {
         if (physOffset + blockSize <= this._data.Length) {
           var block = this._data.AsSpan(physOffset, blockSize);
           try {
-            // DriveSpace 3 (Plus! Pack) clusters use the MS LZH codec; the
-            // 2-byte CVF run header is identical, only the inner payload
-            // dictionary/coder differs.
-            return this.IsDriveSpace3
-              ? DsCompression.DecompressMsLzh(block)
-              : DsCompression.Decompress(block);
+            return DsCompression.Decompress(block);
           } catch (InvalidDataException) {
             // Fall through to inner-volume read below.
           }
