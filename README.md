@@ -392,8 +392,9 @@ LUKS carry plaintext headers, so their readers refuse foreign bytes as soon as t
 read — *Extract Here* reports it and writes nothing — a VeraCrypt choice has to search the
 file for a header that answers the passphrase before it can tell, and a headerless dm-crypt
 (plain) mapping cannot tell a wrong passphrase from a right one, exactly as `cryptsetup
---type plain` cannot. A VeraCrypt choice that has no passphrase yet asks for one first:
-searching without one spends minutes on an empty candidate for nothing.
+--type plain` cannot. A VeraCrypt choice with no passphrase yet answers with the volume as an
+unreadable shell marked *encrypted*: nothing is searched while there is no passphrase to search
+with, and the reading that needs one is what asks for it.
 
 **Compressed files** such as `notes.txt.gz` show the one file inside; open it, edit it and
 save, and the file is compressed again. *Extract Here* gives `notes.txt` itself.
