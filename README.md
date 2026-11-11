@@ -75,6 +75,7 @@ current desktop theme (here: Adwaita dark with Breeze colors and a Windows XP ic
 ./install.sh --system       # for everyone, into /usr/local (uses sudo)
 ./install.sh --default      # …and make it the default file manager
 ./install.sh --uninstall    # remove it again (same options as for installing)
+./install.sh --deps-only    # only set up what building needs
 ```
 
 The script builds everything, installs the program, the archive helper, a launcher and the icon,
@@ -96,13 +97,33 @@ makes the release package.
 
 ### Requirements
 
-- Rust 1.92 or newer, GTK 3.24 (development files), `pkg-config`
+- Rust 1.92 or newer, GTK 3.24 (development files), `pkg-config`, a C compiler. Where the
+  system's Rust is older, `install.sh` sets up a newer one with rustup in
+  `~/.local/share/failbrauwser/rust`, used only for building (the system's stays as it is).
 - For archives: the .NET 10 SDK and clang or gcc (the archive library is included in
   `vendor/`). `install.sh` downloads the SDK into `~/.local/share/failbrauwser/dotnet` when
   none is on the `PATH` (needs `curl` or `wget`); `--no-archives` skips archive support.
 - Optional at run time: UDisks2 (drives page details and mounting), GVfs (trash, places;
   with its backends such as `gvfs-smb`, network addresses like `smb://host/share`; with
   `gvfs-mtp`, `gvfs-gphoto2` or `gvfs-afc`, Android phones, cameras and iPhones).
+
+### Debian 13 and Ubuntu
+
+`./install.sh` works as it is: it installs the packages a build needs that are missing
+(`build-essential pkg-config libgtk-3-dev`, `zlib1g-dev` for the archive helper, `curl` if
+there is no downloader) with `sudo apt-get`, and because Debian 13's Rust is 1.85, it sets up a
+current one with rustup as above (a few hundred MB, downloaded once). The packages for
+everything else, all optional:
+
+```sh
+sudo apt install udisks2 gvfs-backends gvfs-fuse smbclient pkexec lvm2
+```
+
+UDisks2 mounts drives below `/media/<you>/` on Debian, and failBrauwser's LVM volumes go there
+too. `pkexec` (asked for the administrator password when opening LVM volumes) is its own
+package on Debian 13. A ready-built release package needs a C library as new as the system it
+was built on; where it does not run, *Check for Updates* says so and building from the source
+works.
 
 ## Using it
 
@@ -215,7 +236,8 @@ Unmounting or ejecting it locks it again, as other file managers do; the drives 
 installation on a USB disk) opens too, also when its volume group has the same name as this
 computer's (`ArchinstallVg` on both): after the passphrase failBrauwser asks for the
 administrator password (polkit) and maps the volumes under names of its own, reading LVM's
-data on the disk but never changing it, and mounts them below `/run/media/<you>/`. Unmounting
+data on the disk but never changing it, and mounts them below `/run/media/<you>/`
+(`/media/<you>/` on Debian and Ubuntu, where UDisks2 mounts drives). Unmounting
 one of them closes them all and locks the disk again. A drive plugged in moves the split down so the list fits; the bars
 follow as drives fill up.
 
@@ -402,8 +424,9 @@ read back to compare it with the source.
 `~/.config/Thunar/uca.xml`) appear in the right-click menu, filtered by file patterns and
 types like in Thunar. Actions only for failBrauwser go into
 `~/.config/failbrauwser/actions.xml` (same format; *Edit Custom Actions…* in the menu creates
-it with an example). *Open Terminal Here* is built in and uses `$TERMINAL` or the first
-terminal found.
+it with an example). *Open Terminal Here* is built in and uses `$TERMINAL`, the desktop's
+choice (`xdg-terminal-exec`, Xfce's, or Debian's `x-terminal-emulator`) or the first terminal
+found.
 
 **Trash:** *Move to Trash* (<kbd>Delete</kbd>) follows the freedesktop.org Trash
 specification, exactly like Thunar, Nautilus and Dolphin: the file goes to
