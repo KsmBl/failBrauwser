@@ -389,7 +389,8 @@ password prompt serves any choice, and any chosen container opens read-only.
 
 What a wrong choice answers is the kind's own doing, and saying so is its job: BitLocker and
 LUKS carry plaintext headers, so their readers refuse foreign bytes as soon as the volume is
-read — *Extract Here* reports it and writes nothing — a VeraCrypt choice has to search the
+read — opening or copying an entry of that chosen view reports it and writes nothing, while
+*Extract Here* on the file itself never sees the choice — a VeraCrypt choice has to search the
 file for a header that answers the passphrase before it can tell, and a headerless dm-crypt
 (plain) mapping cannot tell a wrong passphrase from a right one, exactly as `cryptsetup
 --type plain` cannot. A VeraCrypt choice with no passphrase yet answers with the volume as an

@@ -124,16 +124,30 @@ Scenarios that need Linux-only services skip with a printed reason:
 `desktop_links.fbt` (roaming-profile Desktop, see above), `summary.fbt` (symlink fixture),
 and the portal/default-app parts elsewhere. Timing budgets for the big-listing paints are
 widened for win32 GTK plus Defender (`big_listings.fbt`) — measured here, not guessed.
-That makes 43 scripts across 44 scenario tests; run serially (`RUST_TEST_THREADS=1
-cargo test`), 41 answer green on this host as of this writing. Three fail, and all
-three sit with where this checkout lives rather than with the archive work: the work
-folder lies under a path with a space (`A:\Working Copies`), so `update.fbt` meets
-`curl: (3)` — the updater passes its `file://` fixtures unescaped — and
-`custom_actions.fbt` loses its `%f`-expanded marker command to the same space
-(the very scenario answers green when driven through a space-free work folder;
-harness.ps1 takes one, re-checked 2026-11-10). `lvm_drive.fbt` now reaches unlock,
-listing and remount on Windows, but its side-drive row never shows the mount path
-the way the script compares it. `trash.fbt` once timed out while the key-derivation
-tests held every core; run alone it passes. These failures surfaced when the app's
-Windows build compiled again after the `--lvm` helper stopped importing Linux; no
-Windows build had run these Linux-era update and drives paths before.
+That makes 44 scripts across 45 scenario tests; run serially (`RUST_TEST_THREADS=1
+cargo test`), 36 answer green on this host as of this writing (measured 2026-11-11,
+288 s). Nine fail, in three groups. Two sit with where this checkout lives rather than
+with the archive work: the work folder lies under a path with a space
+(`A:\Working Copies`), so `update.fbt` meets `curl: (3)` — the updater passes its
+`file://` fixtures unescaped — and `custom_actions.fbt` loses its `%f`-expanded marker
+command to the same space (the very scenario answers green when driven through a
+space-free work folder; harness.ps1 takes one, re-checked 2026-11-10). One is the drives
+page: `lvm_drive.fbt` now reaches unlock, listing and remount on Windows, but its
+side-drive row never shows the mount path the way the script compares it.
+
+The remaining six — `file_ops.fbt`, `archives.fbt`, `undo.fbt`, `queue.fbt`,
+`share_refresh.fbt` and `checksums.fbt` — all wait for something through the clipboard,
+and none of them gets anything: `file_ops.fbt` fails *alone* at its first copy/paste with
+the destination folder empty, no error dialog and no job ever starting, and `queue.fbt`
+finds `jobs (running, waiting) = (0, 0)` where the script expects a running one. The
+actions that do not cross the clipboard answer green in the same run — `passwords.fbt`
+extracts, `compress_options.fbt` compresses, `archives.fbt` browses, edits and renames
+inside an archive until its first paste. Nothing on that path changed in this checkout
+between the 41-green record above and this measurement, which is what points at the
+machine's clipboard rather than at the tree; it is recorded here rather than papered over.
+`open_as.fbt` therefore pins the *Open as* menu and the views it produces, and leaves
+what each chosen kind reads out byte for byte to `archive_helper.rs` and `archive_vfs.rs`,
+where reading does not wait for a clipboard job. `trash.fbt` once timed out while the
+key-derivation tests held every core; run alone it passes. These failures surfaced when
+the app's Windows build compiled again after the `--lvm` helper stopped importing Linux;
+no Windows build had run these Linux-era update and drives paths before.
