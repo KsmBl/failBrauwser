@@ -380,13 +380,20 @@ not supported.
 
 *Open as* gathers these decisions for one selected file: *Archive* enters whatever the
 library detects without launching the program that owns the suffix, and *VeraCrypt /
-TrueCrypt*, *BitLocker*, *LUKS* and *dm-crypt (plain)* force the file open as that kind of
-container — decided by you rather than by a name. A VeraCrypt header's bytes are
+TrueCrypt*, *BitLocker*, *LUKS* and *dm-crypt (plain)* run that kind's own reader over the
+bytes — decided by you rather than by a name. A VeraCrypt header's bytes are
 indistinguishable from random noise, so a renamed container (`.bin`, `.img`, no suffix)
-cannot be recognized from the file; that is what the volume choices are for. The same
-one-ask password prompt serves any choice, and a wrong one says so and opens nothing.
-(BitLocker and LUKS carry plaintext headers, so their images are recognized by content
-even when their names say nothing.)
+cannot be recognized from the file; that is what the volume choices are for, and a
+headerless dm-crypt (plain) volume can be reached through no other door. The same one-ask
+password prompt serves any choice, and any chosen container opens read-only.
+
+What a wrong choice answers is the kind's own doing, and saying so is its job: BitLocker and
+LUKS carry plaintext headers, so their readers refuse foreign bytes as soon as the volume is
+read — *Extract Here* reports it and writes nothing — a VeraCrypt choice has to search the
+file for a header that answers the passphrase before it can tell, and a headerless dm-crypt
+(plain) mapping cannot tell a wrong passphrase from a right one, exactly as `cryptsetup
+--type plain` cannot. A VeraCrypt choice that has no passphrase yet asks for one first:
+searching without one spends minutes on an empty candidate for nothing.
 
 **Compressed files** such as `notes.txt.gz` show the one file inside; open it, edit it and
 save, and the file is compressed again. *Extract Here* gives `notes.txt` itself.
