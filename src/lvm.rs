@@ -17,6 +17,8 @@ use std::process::{Command, Stdio};
 pub const DM_UUID_PREFIX: &str = "FBLVM-";
 /// The partition type LVM puts in a physical volume's signature (as `blkid` reports it).
 pub const PV_TYPE: &str = "LVM2_member";
+/// What opening LVM volumes says without `pkexec`, which asks for the administrator password.
+pub const NO_PKEXEC: &str = "Opening LVM volumes needs pkexec, which asks for the administrator password: install the package “pkexec” (Debian, Ubuntu) or “polkit” (Arch, Fedora).";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
@@ -207,11 +209,45 @@ pub fn mount_dir(base: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> Path
     p
 }
 
+/// Where UDisks2 mounts a user's drives, for the LVM volumes to sit next to them: the
+/// folder in use already, else `/media/<user>` on Debian, Ubuntu and their kin (UDisks2 is
+/// built that way there), else `/run/media/<user>`. `os_release` is `/etc/os-release`.
+pub fn media_base(user: &str, os_release: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let run = Path::new("/run/media").join(user);
+    let fhs = Path::new("/media").join(user);
+    if exists(&run) {
+        return run;
+    }
+    if exists(&fhs) {
+        return fhs;
+    }
+    let debian_like = os_release.lines().filter_map(|l| l.strip_prefix("ID=").or_else(|| l.strip_prefix("ID_LIKE="))).any(|v| {
+        v.trim_matches(|c| c == '"' || c == '\'').split_whitespace().any(|id| matches!(id, "debian" | "ubuntu"))
+    });
+    if debian_like { fhs } else { run }
+}
+
+/// `path` with the folders that hold `lvs`, `dmsetup`, `blkid` and `mount` added where it
+/// lacks them: on Debian `/usr/sbin` and `/sbin` are not on a user's PATH.
+pub fn admin_path(path: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = path.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
+    for d in ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"] {
+        if !dirs.iter().any(|x| x == Path::new(d)) {
+            dirs.push(PathBuf::from(d));
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| "/usr/sbin:/usr/bin:/sbin:/bin".into())
+}
+
+fn user_media_base(user: &str) -> PathBuf {
+    media_base(user, &std::fs::read_to_string("/etc/os-release").unwrap_or_default(), |p| p.exists())
+}
+
 // ── The part that runs as root ───────────────────────────────────────────────────────────
 
 fn run(cmd: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
     let mut c = Command::new(cmd);
-    c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).env("LC_ALL", "C");
+    c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).env("LC_ALL", "C").env("PATH", admin_path(std::env::var_os("PATH").as_deref()));
     c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
     let mut child = c.spawn().map_err(|e| format!("cannot run {cmd}: {e}"))?;
     if let (Some(text), Some(mut i)) = (stdin, child.stdin.take()) {
@@ -287,7 +323,7 @@ fn physical_volume(partition: &str) -> Result<(String, String), String> {
 }
 
 /// Maps the drive's LVM volumes (unless they are already) and mounts each file system on
-/// them below /run/media/<user>; prints `MOUNT <folder>` for each.
+/// them below /run/media/<user> (/media/<user> on Debian); prints `MOUNT <folder>` for each.
 fn open(partition: &str) -> Result<(), String> {
     let (clear, pv) = physical_volume(partition)?;
     let sys = Path::new("/sys");
@@ -318,7 +354,7 @@ fn open(partition: &str) -> Result<(), String> {
         }
     }
     let (user, uid, gid) = asking_user()?;
-    let base = PathBuf::from("/run/media").join(&user);
+    let base = user_media_base(&user);
     if !base.exists() {
         std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
         let c = std::ffi::CString::new(base.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
@@ -365,7 +401,7 @@ fn close(partition: &str) -> Result<(), String> {
     let (clear, _) = physical_volume(partition)?;
     let sys = Path::new("/sys");
     let (user, ..) = asking_user()?;
-    let base = PathBuf::from("/run/media").join(user);
+    let base = user_media_base(&user);
     for h in holders(sys, &clear) {
         let dev = format!("/dev/{h}");
         for m in mounts_of(rdev(&dev)?) {
@@ -478,6 +514,34 @@ mod tests {
         assert_eq!(holders(sys.path(), "dm-3"), ["dm-4", "dm-5"]);
         let found = lvm_containers(sys.path(), &["/dev/dm-4".into(), "/dev/dm-1".into(), "/dev/sda1".into()], &[("/o/sda2".into(), "/dev/sda2".into())]);
         assert_eq!(found, [Some("/o/sda2".to_string()), None, None]);
+    }
+
+    #[test]
+    fn volumes_go_where_udisks_mounts() {
+        let arch = "NAME=\"Arch Linux\"\nID=arch\n";
+        let debian = "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nVERSION_ID=\"13\"\nID=debian\n";
+        let mint = "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n";
+        let none = |_: &Path| false;
+        assert_eq!(media_base("me", arch, none), Path::new("/run/media/me"));
+        assert_eq!(media_base("me", debian, none), Path::new("/media/me"));
+        assert_eq!(media_base("me", mint, none), Path::new("/media/me"));
+        assert_eq!(media_base("me", "", none), Path::new("/run/media/me"));
+        // The folder UDisks2 already uses wins over the guess.
+        assert_eq!(media_base("me", arch, |p: &Path| p == Path::new("/media/me")), Path::new("/media/me"));
+        assert_eq!(media_base("me", debian, |p: &Path| p == Path::new("/run/media/me")), Path::new("/run/media/me"));
+    }
+
+    #[test]
+    fn admin_tools_are_found_in_sbin() {
+        let debian_user = admin_path(Some("/usr/local/bin:/usr/bin:/bin:/usr/games".as_ref()));
+        let dirs: Vec<PathBuf> = std::env::split_paths(&debian_user).collect();
+        assert_eq!(dirs[..4], [PathBuf::from("/usr/local/bin"), "/usr/bin".into(), "/bin".into(), "/usr/games".into()]);
+        for d in ["/usr/sbin", "/sbin", "/usr/local/sbin"] {
+            assert_eq!(dirs.iter().filter(|x| *x == Path::new(d)).count(), 1, "{d} in {dirs:?}");
+        }
+        // pkexec's own PATH already has them: unchanged.
+        assert_eq!(admin_path(Some("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".as_ref())), "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+        assert!(std::env::split_paths(&admin_path(None)).any(|d| d == Path::new("/usr/sbin")));
     }
 
     #[test]

@@ -162,15 +162,22 @@ impl CustomAction {
 
 /// A terminal that exists on this system, for the built-in "Open Terminal Here".
 pub fn terminal_command() -> Option<String> {
-    let exists = |cmd: &str| gtk::glib::find_program_in_path(cmd).is_some();
-    if let Ok(t) = std::env::var("TERMINAL") {
-        if !t.is_empty() && exists(t.split_whitespace().next().unwrap_or(&t)) {
-            return Some(t);
+    pick_terminal(std::env::var("TERMINAL").ok().as_deref(), |cmd| gtk::glib::find_program_in_path(cmd).is_some())
+}
+
+/// The terminal to start: `$TERMINAL`, then the desktop's own choice (`xdg-terminal-exec`,
+/// Xfce's `exo-open`, Debian's and Ubuntu's `x-terminal-emulator` alternative), then the
+/// first well-known terminal that `exists`.
+pub fn pick_terminal(env: Option<&str>, exists: impl Fn(&str) -> bool) -> Option<String> {
+    if let Some(t) = env {
+        if !t.is_empty() && exists(t.split_whitespace().next().unwrap_or(t)) {
+            return Some(t.to_string());
         }
     }
     [
         ("xdg-terminal-exec", "xdg-terminal-exec"),
         ("exo-open", "exo-open --launch TerminalEmulator"),
+        ("x-terminal-emulator", "x-terminal-emulator"),
         ("kgx", "kgx"),
         ("gnome-terminal", "gnome-terminal"),
         ("konsole", "konsole"),
@@ -262,6 +269,18 @@ mod tests {
 
     fn t(p: &str, dir: bool, ct: &str) -> Target {
         Target { path: PathBuf::from(p), is_dir: dir, content_type: ct.into() }
+    }
+
+    #[test]
+    fn terminals_debian_and_others() {
+        let on = |have: &'static [&'static str]| move |c: &str| have.contains(&c);
+        // Debian and Ubuntu: the terminal chosen with update-alternatives, before any by name.
+        assert_eq!(pick_terminal(None, on(&["x-terminal-emulator", "gnome-terminal", "xterm"])).as_deref(), Some("x-terminal-emulator"));
+        assert_eq!(pick_terminal(None, on(&["xdg-terminal-exec", "x-terminal-emulator"])).as_deref(), Some("xdg-terminal-exec"));
+        assert_eq!(pick_terminal(None, on(&["konsole", "xterm"])).as_deref(), Some("konsole"));
+        assert_eq!(pick_terminal(Some("foot -e fish"), on(&["foot", "x-terminal-emulator"])).as_deref(), Some("foot -e fish"));
+        assert_eq!(pick_terminal(Some("gone"), on(&["x-terminal-emulator"])).as_deref(), Some("x-terminal-emulator"));
+        assert_eq!(pick_terminal(None, on(&[])), None);
     }
 
     #[test]

@@ -2,6 +2,8 @@
 name = "failbrauwser"
 version = "0.7.0"
 edition = "2024"
+# What the GTK bindings need; install.sh sets up a newer Rust where the system's is older.
+rust-version = "1.92"
 description = "A fast, native GTK3 file manager that can browse and edit archives"
 license = "GPL-3.0-or-later"
 

@@ -1040,6 +1040,9 @@ async fn lvm_helper(action: &str, device: &str) -> Result<Vec<PathBuf>, String> 
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe = PathBuf::from(exe.to_string_lossy().trim_end_matches(" (deleted)"));
     let argv: Vec<&std::ffi::OsStr> = vec!["pkexec".as_ref(), exe.as_os_str(), "--lvm".as_ref(), action.as_ref(), device.as_ref()];
+    if gtk::glib::find_program_in_path("pkexec").is_none() {
+        return Err(failbrauwser::lvm::NO_PKEXEC.into());
+    }
     let proc = gio::Subprocess::newv(&argv, gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE).map_err(|e| format!("cannot run pkexec: {e}"))?;
     let (out, err) = proc.communicate_utf8_future(None).await.map_err(|e| e.to_string())?;
     let out = out.map(|s| s.to_string()).unwrap_or_default();
