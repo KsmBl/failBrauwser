@@ -15,16 +15,26 @@ pub struct ArchiveLoc {
     pub nested: Vec<String>,
     /// Folder inside the innermost archive, "" for its root.
     pub inner: String,
+    /// The kind the user chose for the file on disk (M14 *Open as*): that kind's own reader runs
+    /// over the bytes whatever the name says. `None` asks the library what it detects. It shapes
+    /// only how the file on disk is read, so an archive found inside is read as itself.
+    pub force: Option<String>,
 }
 
 impl ArchiveLoc {
     pub fn root(file: PathBuf) -> Self {
-        ArchiveLoc { file, nested: Vec::new(), inner: String::new() }
+        ArchiveLoc { file, nested: Vec::new(), inner: String::new(), force: None }
+    }
+
+    /// The file on disk, opened as the kind with this id rather than as whatever its name
+    /// suggests (M14 *Open as*).
+    pub fn root_as(file: PathBuf, kind: &str) -> Self {
+        ArchiveLoc { force: Some(kind.to_string()), ..ArchiveLoc::root(file) }
     }
 
     /// The same archive, a different folder in it.
     pub fn with_inner(&self, inner: &str) -> Self {
-        ArchiveLoc { file: self.file.clone(), nested: self.nested.clone(), inner: inner.trim_matches('/').to_string() }
+        ArchiveLoc { file: self.file.clone(), nested: self.nested.clone(), inner: inner.trim_matches('/').to_string(), force: self.force.clone() }
     }
 
     /// The path of `name` inside the current folder of the innermost archive.
@@ -36,14 +46,14 @@ impl ArchiveLoc {
     pub fn container(&self) -> Option<(ArchiveLoc, String)> {
         let mut nested = self.nested.clone();
         let last = nested.pop()?;
-        Some((ArchiveLoc { file: self.file.clone(), nested, inner: String::new() }, last))
+        Some((ArchiveLoc { file: self.file.clone(), nested, inner: String::new(), force: self.force.clone() }, last))
     }
 
     /// Enters an archive stored at `entry` inside this one.
     pub fn enter_nested(&self, entry: &str) -> Self {
         let mut nested = self.nested.clone();
         nested.push(entry.trim_matches('/').to_string());
-        ArchiveLoc { file: self.file.clone(), nested, inner: String::new() }
+        ArchiveLoc { file: self.file.clone(), nested, inner: String::new(), force: self.force.clone() }
     }
 
     /// Identifies the innermost archive regardless of the folder shown in it.
