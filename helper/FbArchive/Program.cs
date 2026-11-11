@@ -54,9 +54,9 @@ public static class Program {
           case "quit": quit = true; break;
           case "formats": Commands.Formats(w); break;
           case "probe": Commands.Probe(w, Str(req, "path")); break;
-          case "list": Commands.List(w, Str(req, "archive"), OptStr(req, "password")); break;
+          case "list": Commands.List(w, Str(req, "archive"), OptStr(req, "password"), OptStr(req, "format")); break;
           case "extract":
-            Commands.Extract(Str(req, "archive"), Str(req, "dest"), OptStrArray(req, "entries"), OptStr(req, "password"));
+            Commands.Extract(Str(req, "archive"), Str(req, "dest"), OptStrArray(req, "entries"), OptStr(req, "password"), OptStr(req, "format"));
             break;
           case "options": Commands.Options(w, Str(req, "format")); break;
           case "add": Commands.Add(Str(req, "archive"), Items(req), OptStr(req, "password"), OptStr(req, "format"), Settings(req)); break;
