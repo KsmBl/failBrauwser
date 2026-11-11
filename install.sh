@@ -13,6 +13,12 @@
 #   ./install.sh --uninstall     remove what an install with the same options put in place
 #   ./install.sh --prebuilt      install the program from a release package (bin/, lib/) as is
 #   ./install.sh --reopen        open a window when done (Help > Check for Updates uses it)
+#   ./install.sh --deps-only     only set up what building needs (packages, Rust, .NET SDK)
+#
+# Building needs Rust (as new as rust-version in Cargo.toml), GTK 3's development files and a
+# C compiler. On Debian, Ubuntu and their kin the missing packages are installed with apt-get
+# (asks for sudo). Where the system's Rust is older (Debian 13 has 1.85), a newer one is set up
+# with rustup in ~/.local/share/failbrauwser/rust (no root needed, only used for building).
 #
 # Archive support (opening, extracting, creating archives) is a helper built with the
 # .NET 10 SDK from CompressionWorkbench (by Hawkynt, vendored in vendor/compressionworkbench).
@@ -35,6 +41,7 @@ FILE_CHOOSER=1
 UNINSTALL=0
 PREBUILT=0
 REOPEN=0
+DEPS_ONLY=0
 # The options to remember for updates (Help > Check for Updates installs the same way).
 KEPT=()
 CWB_ROOT=${CWB_ROOT:-"$HERE/vendor/compressionworkbench"}
@@ -54,7 +61,8 @@ while [ $# -gt 0 ]; do
         --no-file-chooser) FILE_CHOOSER=0 ;;
         --prebuilt) PREBUILT=1 ;;
         --reopen) REOPEN=1 ;;
-        -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --deps-only) DEPS_ONLY=1 ;;
+        -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -103,6 +111,73 @@ restart_portal() {
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 
+# Downloads $1 into the file $2 (curl, else wget).
+download() {
+    if command -v curl >/dev/null; then curl -fsSL "$1" -o "$2"
+    elif command -v wget >/dev/null; then wget -qO "$2" "$1"
+    else echo "curl or wget is needed to download $1" >&2; return 1
+    fi
+}
+
+# The packages building needs that are missing, on systems with apt (Debian, Ubuntu, …):
+# a C compiler and linker, pkg-config, GTK 3's development files, a downloader, and for the
+# archive helper zlib's development files (its native code links them).
+missing_apt_packages() {
+    local want=(build-essential pkg-config libgtk-3-dev)
+    command -v curl >/dev/null || command -v wget >/dev/null || want+=(curl)
+    [ "$ARCHIVES" = 1 ] && want+=(zlib1g-dev)
+    local p
+    for p in "${want[@]}"; do
+        dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || echo "$p"
+    done
+}
+
+install_build_packages() {
+    command -v apt-get >/dev/null && command -v dpkg-query >/dev/null || return 0
+    local missing
+    mapfile -t missing < <(missing_apt_packages)
+    [ ${#missing[@]} -gt 0 ] || return 0
+    say "Installing what building needs: sudo apt-get install -y ${missing[*]}"
+    sudo apt-get install -y "${missing[@]}" ||
+        echo "warning: the packages were not installed — install them with: sudo apt-get install ${missing[*]}" >&2
+}
+
+# The Rust the build needs (rust-version in Cargo.toml).
+RUST_NEEDED=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' "$HERE/Cargo.toml" 2>/dev/null | head -1)
+RUST_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/failbrauwser/rust"
+
+# Whether the rustc $1 is at least $RUST_NEEDED.
+rust_new_enough() {
+    local v
+    v=$("$1" --version 2>/dev/null | awk '{print $2}' | cut -d- -f1)
+    [ -n "$v" ] || return 1
+    [ -z "$RUST_NEEDED" ] && return 0
+    [ "$(printf '%s\n%s\n' "$RUST_NEEDED" "$v" | sort -V | head -1)" = "$RUST_NEEDED" ]
+}
+
+# cargo and rustc on the PATH, new enough: the system's, one set up earlier, or a new one
+# from rustup in $RUST_HOME (the system's packages are left alone).
+setup_rust() {
+    if command -v cargo >/dev/null && command -v rustc >/dev/null && rust_new_enough rustc; then return 0; fi
+    export CARGO_HOME="$RUST_HOME/cargo" RUSTUP_HOME="$RUST_HOME/rustup"
+    export PATH="$CARGO_HOME/bin:$PATH"
+    if [ -x "$CARGO_HOME/bin/rustc" ] && rust_new_enough "$CARGO_HOME/bin/rustc"; then return 0; fi
+    if [ -x "$CARGO_HOME/bin/rustup" ]; then
+        say "Updating the Rust in $RUST_HOME to the newest stable (Rust $RUST_NEEDED is needed)"
+        "$CARGO_HOME/bin/rustup" update stable --no-self-update
+    else
+        local old
+        old=$(command -v rustc >/dev/null && rustc --version 2>/dev/null | awk '{print $2}' || true)
+        say "Setting up Rust in $RUST_HOME with rustup (Rust $RUST_NEEDED is needed${old:+, the system has $old})"
+        local script
+        script=$(mktemp)
+        download https://sh.rustup.rs "$script" || { rm -f "$script"; echo "Rust could not be downloaded: see https://rustup.rs" >&2; exit 1; }
+        sh "$script" -y --no-modify-path --profile minimal --default-toolchain stable || { rm -f "$script"; echo "Rust could not be set up: see https://rustup.rs" >&2; exit 1; }
+        rm -f "$script"
+    fi
+    rust_new_enough "$CARGO_HOME/bin/rustc" || { echo "Rust $RUST_NEEDED or newer is required: https://rustup.rs" >&2; exit 1; }
+}
+
 refresh_caches() {
     command -v update-desktop-database >/dev/null && $SUDO update-desktop-database -q "$SHARE/applications" 2>/dev/null || true
     command -v gtk-update-icon-cache >/dev/null && $SUDO gtk-update-icon-cache -q -t -f "$SHARE/icons/hicolor" 2>/dev/null || true
@@ -133,14 +208,28 @@ if [ "$PREBUILT" = 1 ]; then
     [ -x "$APP_BIN" ] || { echo "$APP_BIN is missing: not a release package" >&2; exit 1; }
     HELPER=""
     [ "$ARCHIVES" = 1 ] && [ -x "$HERE/lib/fb-archive" ] && HELPER="$HERE/lib/fb-archive"
+    # A package built on a newer system needs a newer C library than this one may have.
+    if ! why=$("$APP_BIN" --version 2>&1); then
+        echo "the ready-built program does not run on this system: $(echo "$why" | head -1)" >&2
+        echo "build it from the source instead (./install.sh in the source folder)" >&2
+        exit 1
+    fi
 else
-    command -v cargo >/dev/null || { echo "cargo (Rust) is required: https://rustup.rs" >&2; exit 1; }
-    pkg-config --exists gtk+-3.0 || { echo "GTK 3 development files are required (gtk3)" >&2; exit 1; }
+    install_build_packages
+    setup_rust
+    pkg-config --exists gtk+-3.0 || { echo "GTK 3 development files are required (gtk3; libgtk-3-dev on Debian and Ubuntu)" >&2; exit 1; }
 
     HELPER=""
     HELPER_PID=""
     HELPER_LOG="$HERE/target/helper-build.log"
     DOTNET_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/failbrauwser/dotnet"
+    # The .NET SDK does not start without ICU, which a small installation may lack; building
+    # the helper needs none of what ICU does.
+    has_icu=0
+    for f in /usr/lib/libicuuc.so.* /usr/lib/*/libicuuc.so.* /usr/lib64/libicuuc.so.*; do
+        [ -e "$f" ] && has_icu=1 && break
+    done
+    [ "$has_icu" = 1 ] || export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 
     # A .NET SDK that can build net10.0: on the PATH, from an earlier run, or downloaded now.
     has_sdk10() { "$1" --list-sdks 2>/dev/null | grep -Eq '^(1[0-9]|[2-9][0-9])\.'; }
@@ -150,14 +239,20 @@ else
         say "Downloading the .NET 10 SDK into $DOTNET_HOME (for building the archive helper)" >&2
         local script
         script=$(mktemp)
-        if command -v curl >/dev/null; then curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$script"
-        elif command -v wget >/dev/null; then wget -qO "$script" https://dot.net/v1/dotnet-install.sh
-        else echo "curl or wget is needed to download the .NET SDK" >&2; rm -f "$script"; return 1
-        fi || { rm -f "$script"; return 1; }
+        download https://dot.net/v1/dotnet-install.sh "$script" || { rm -f "$script"; return 1; }
         bash "$script" --channel 10.0 --install-dir "$DOTNET_HOME" --no-path >&2 || { rm -f "$script"; return 1; }
         rm -f "$script"
         has_sdk10 "$DOTNET_HOME/dotnet" && echo "$DOTNET_HOME/dotnet"
     }
+
+    if [ "$DEPS_ONLY" = 1 ]; then
+        if [ "$ARCHIVES" = 1 ] && [ -f "$CWB_ROOT/Compression.Lib/Compression.Lib.csproj" ]; then
+            DOTNET=$(find_dotnet) || { echo "warning: no .NET 10 SDK could be set up — archive support will not build" >&2; DOTNET=""; }
+            [ -n "$DOTNET" ] && say ".NET SDK: $DOTNET"
+        fi
+        say "Ready to build: $(cargo --version)"
+        exit 0
+    fi
 
     if [ "$ARCHIVES" = 1 ] && [ -f "$CWB_ROOT/Compression.Lib/Compression.Lib.csproj" ]; then
         if DOTNET=$(find_dotnet); then

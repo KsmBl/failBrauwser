@@ -162,15 +162,22 @@ impl CustomAction {
 
 /// A terminal that exists on this system, for the built-in "Open Terminal Here".
 pub fn terminal_command() -> Option<String> {
-    let exists = |cmd: &str| gtk::glib::find_program_in_path(cmd).is_some();
-    if let Ok(t) = std::env::var("TERMINAL") {
-        if !t.is_empty() && exists(t.split_whitespace().next().unwrap_or(&t)) {
-            return Some(t);
+    pick_terminal(std::env::var("TERMINAL").ok().as_deref(), |cmd| gtk::glib::find_program_in_path(cmd).is_some())
+}
+
+/// The terminal to start: `$TERMINAL`, then the desktop's own choice (`xdg-terminal-exec`,
+/// Xfce's `exo-open`, Debian's and Ubuntu's `x-terminal-emulator` alternative), then the
+/// first well-known terminal that `exists`.
+pub fn pick_terminal(env: Option<&str>, exists: impl Fn(&str) -> bool) -> Option<String> {
+    if let Some(t) = env {
+        if !t.is_empty() && exists(t.split_whitespace().next().unwrap_or(t)) {
+            return Some(t.to_string());
         }
     }
     [
         ("xdg-terminal-exec", "xdg-terminal-exec"),
         ("exo-open", "exo-open --launch TerminalEmulator"),
+        ("x-terminal-emulator", "x-terminal-emulator"),
         ("kgx", "kgx"),
         ("gnome-terminal", "gnome-terminal"),
         ("konsole", "konsole"),
