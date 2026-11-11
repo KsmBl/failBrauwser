@@ -1,0 +1,189 @@
+//! install.sh on a Debian 13 system, played by stand-ins: `apt-get` and `dpkg-query` that
+//! record what is installed, the system's Rust 1.85 (older than the bindings need), and
+//! `curl` handing out a stand-in for rustup's installer. Nothing is downloaded or installed
+//! for real.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+struct Debian {
+    dir: tempfile::TempDir,
+}
+
+fn write_exe(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+impl Debian {
+    /// A source folder (install.sh and Cargo.toml), a home and the stand-ins, with the system's
+    /// Rust at `rust` and the packages `installed`.
+    fn new(rust: &str, installed: &[&str]) -> Debian {
+        let dir = tempfile::tempdir().unwrap();
+        let d = Debian { dir };
+        let src = d.path("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        std::fs::copy(root.join("install.sh"), src.join("install.sh")).unwrap();
+        std::fs::copy(root.join("Cargo.toml"), src.join("Cargo.toml")).unwrap();
+        std::fs::create_dir_all(d.path("home")).unwrap();
+        std::fs::write(d.path("installed"), installed.iter().map(|p| format!("{p}\n")).collect::<String>()).unwrap();
+        let t = d.dir.path().display().to_string();
+        let bin = d.path("bin");
+        write_exe(&bin.join("sudo"), &format!("#!/bin/sh\necho \"$*\" >> {t}/sudo.log\nexec \"$@\"\n"));
+        write_exe(&bin.join("apt-get"), &format!("#!/bin/sh\necho \"$*\" >> {t}/apt.log\nshift 2\nfor p; do echo \"$p\" >> {t}/installed; done\n"));
+        write_exe(
+            &bin.join("dpkg-query"),
+            &format!("#!/bin/sh\nfor p; do :; done\ngrep -qx \"$p\" {t}/installed && printf 'install ok installed' && exit 0\nexit 1\n"),
+        );
+        write_exe(&bin.join("pkg-config"), "#!/bin/sh\nexit 0\n");
+        // curl -fsSL <url> -o <file>: rustup's installer, which puts Rust 1.92 into $CARGO_HOME.
+        let rustup = format!(
+            "#!/bin/sh\necho \"$*\" > {t}/rustup.args\necho \"$CARGO_HOME $RUSTUP_HOME\" > {t}/rustup.homes\nmkdir -p \"$CARGO_HOME/bin\"\n\
+             printf '#!/bin/sh\\necho \"rustc 1.92.0 (ded5c06cf 2025-12-08)\"\\n' > \"$CARGO_HOME/bin/rustc\"\n\
+             printf '#!/bin/sh\\necho \"cargo 1.92.0 (344c4567c 2025-10-21)\"\\n' > \"$CARGO_HOME/bin/cargo\"\n\
+             printf '#!/bin/sh\\necho \"$*\" >> {t}/rustup-update.log\\n' > \"$CARGO_HOME/bin/rustup\"\n\
+             chmod +x \"$CARGO_HOME/bin/\"*\n"
+        );
+        std::fs::write(d.path("rustup-init.sh"), rustup).unwrap();
+        write_exe(
+            &bin.join("curl"),
+            &format!("#!/bin/sh\nfor a; do case \"$prev\" in -o) out=$a;; esac; prev=$a; done\nfor u; do case \"$u\" in https://*) echo \"$u\" >> {t}/downloads;; esac; done\ncp {t}/rustup-init.sh \"$out\"\n"),
+        );
+        d.system_rust(rust);
+        d
+    }
+
+    fn system_rust(&self, version: &str) {
+        let bin = self.path("bin");
+        write_exe(&bin.join("rustc"), &format!("#!/bin/sh\necho \"rustc {version} (4d91de4e4 2025-02-17) (built from a source tarball)\"\n"));
+        write_exe(&bin.join("cargo"), &format!("#!/bin/sh\necho \"cargo {version} (65f24aea6 2025-02-17)\"\n"));
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.path().join(name)
+    }
+
+    fn read(&self, name: &str) -> String {
+        std::fs::read_to_string(self.path(name)).unwrap_or_default()
+    }
+
+    fn install(&self, args: &[&str]) -> Output {
+        Command::new("bash")
+            .arg(self.path("src/install.sh"))
+            .args(args)
+            .env_clear()
+            .env("HOME", self.path("home"))
+            .env("PATH", format!("{}:/usr/bin:/bin", self.path("bin").display()))
+            .output()
+            .unwrap()
+    }
+}
+
+fn text(o: &Output) -> String {
+    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+}
+
+#[test]
+fn debian_13_gets_build_packages_and_a_newer_rust() {
+    let deb = Debian::new("1.85.0", &["pkg-config"]);
+    let o = deb.install(&["--deps-only", "--no-archives"]);
+    let out = text(&o);
+    assert!(o.status.success(), "{out}");
+    // Only the missing packages, through sudo.
+    assert_eq!(deb.read("apt.log").trim(), "install -y build-essential libgtk-3-dev");
+    assert!(deb.read("sudo.log").starts_with("apt-get install -y build-essential libgtk-3-dev"));
+    // The system's Rust stays; a newer one is set up beside it for building.
+    let rust_home = deb.path("home/.local/share/failbrauwser/rust");
+    assert_eq!(deb.read("downloads").trim(), "https://sh.rustup.rs");
+    assert_eq!(deb.read("rustup.args").trim(), "-y --no-modify-path --profile minimal --default-toolchain stable");
+    assert_eq!(deb.read("rustup.homes").trim(), format!("{} {}", rust_home.join("cargo").display(), rust_home.join("rustup").display()));
+    assert!(out.contains("the system has 1.85.0"), "{out}");
+    assert!(out.contains("Ready to build: cargo 1.92.0"), "{out}");
+
+    // Again: everything is there, nothing is installed or downloaded.
+    std::fs::remove_file(deb.path("apt.log")).unwrap();
+    std::fs::remove_file(deb.path("downloads")).unwrap();
+    let o = deb.install(&["--deps-only", "--no-archives"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(deb.read("apt.log").is_empty() && deb.read("downloads").is_empty() && deb.read("rustup-update.log").is_empty());
+    assert!(text(&o).contains("Ready to build: cargo 1.92.0"));
+}
+
+#[test]
+fn a_new_enough_rust_and_the_archive_packages() {
+    let deb = Debian::new("1.92.0", &["build-essential", "pkg-config", "libgtk-3-dev"]);
+    // Without --no-archives the helper's zlib is wanted too (its source is not here, so no .NET).
+    let o = deb.install(&["--deps-only"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(deb.read("apt.log").trim(), "install -y zlib1g-dev");
+    assert!(deb.read("downloads").is_empty(), "the system's Rust is new enough");
+    assert!(text(&o).contains("Ready to build: cargo 1.92.0"));
+    assert!(!deb.path("home/.local/share/failbrauwser/rust").exists());
+}
+
+#[test]
+fn an_outdated_private_rust_is_updated() {
+    let deb = Debian::new("1.85.0", &["build-essential", "pkg-config", "libgtk-3-dev"]);
+    let cargo_bin = deb.path("home/.local/share/failbrauwser/rust/cargo/bin");
+    write_exe(&cargo_bin.join("rustc"), "#!/bin/sh\necho 'rustc 1.90.0 (1159e78c4 2025-09-14)'\n");
+    write_exe(&cargo_bin.join("cargo"), "#!/bin/sh\necho cargo 1.90.0\n");
+    let t = deb.dir.path().display().to_string();
+    write_exe(
+        &cargo_bin.join("rustup"),
+        &format!("#!/bin/sh\necho \"$*\" >> {t}/rustup-update.log\nprintf '#!/bin/sh\\necho rustc 1.93.1\\n' > \"$CARGO_HOME/bin/rustc\"\nprintf '#!/bin/sh\\necho cargo 1.93.1\\n' > \"$CARGO_HOME/bin/cargo\"\n"),
+    );
+    let o = deb.install(&["--deps-only", "--no-archives"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(deb.read("rustup-update.log").trim(), "update stable --no-self-update");
+    assert!(deb.read("downloads").is_empty());
+    assert!(text(&o).contains("Ready to build: cargo 1.93.1"));
+}
+
+#[test]
+fn without_any_rust_one_is_set_up() {
+    let deb = Debian::new("1.85.0", &["build-essential", "pkg-config", "libgtk-3-dev"]);
+    std::fs::remove_file(deb.path("bin/rustc")).unwrap();
+    std::fs::remove_file(deb.path("bin/cargo")).unwrap();
+    // Arch and others have their Rust in /usr/bin; this Debian has none at all.
+    let o = Command::new("bash")
+        .arg(deb.path("src/install.sh"))
+        .args(["--deps-only", "--no-archives"])
+        .env_clear()
+        .env("HOME", deb.path("home"))
+        .env("PATH", format!("{}:{}", deb.path("bin").display(), tool_dir(&deb).display()))
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(deb.read("downloads").trim(), "https://sh.rustup.rs");
+    assert!(text(&o).contains("Ready to build: cargo 1.92.0"));
+}
+
+/// The few programs install.sh runs besides the stand-ins, without the real Rust next to them.
+fn tool_dir(deb: &Debian) -> PathBuf {
+    let dir = deb.path("tools");
+    std::fs::create_dir_all(&dir).unwrap();
+    for t in ["sh", "bash", "sed", "grep", "awk", "cut", "sort", "head", "mktemp", "rm", "cp", "mkdir", "chmod", "printf", "cat", "dirname", "ls"] {
+        let found = ["/usr/bin", "/bin"].iter().map(|d| Path::new(d).join(t)).find(|p| p.exists());
+        if let Some(p) = found {
+            let _ = std::os::unix::fs::symlink(p, dir.join(t));
+        }
+    }
+    dir
+}
+
+#[test]
+fn a_package_built_for_a_newer_system_is_refused() {
+    let deb = Debian::new("1.85.0", &[]);
+    let pkg = deb.path("src");
+    write_exe(&pkg.join("bin/failbrauwser"), "#!/bin/sh\necho \"failbrauwser: /lib/x86_64-linux-gnu/libc.so.6: version \\`GLIBC_2.42' not found\" >&2\nexit 1\n");
+    let prefix = deb.path("prefix");
+    let o = deb.install(&["--prebuilt", "--prefix", &prefix.to_string_lossy(), "--no-autostart", "--no-file-chooser", "--no-network"]);
+    let out = text(&o);
+    assert!(!o.status.success(), "{out}");
+    assert!(out.contains("does not run on this system") && out.contains("GLIBC_2.42"), "{out}");
+    assert!(out.contains("build it from the source"), "{out}");
+    assert!(!prefix.exists(), "nothing was installed");
+    assert!(deb.read("apt.log").is_empty() && deb.read("downloads").is_empty(), "a release package builds nothing");
+}

@@ -272,6 +272,18 @@ mod tests {
     }
 
     #[test]
+    fn terminals_debian_and_others() {
+        let on = |have: &'static [&'static str]| move |c: &str| have.contains(&c);
+        // Debian and Ubuntu: the terminal chosen with update-alternatives, before any by name.
+        assert_eq!(pick_terminal(None, on(&["x-terminal-emulator", "gnome-terminal", "xterm"])).as_deref(), Some("x-terminal-emulator"));
+        assert_eq!(pick_terminal(None, on(&["xdg-terminal-exec", "x-terminal-emulator"])).as_deref(), Some("xdg-terminal-exec"));
+        assert_eq!(pick_terminal(None, on(&["konsole", "xterm"])).as_deref(), Some("konsole"));
+        assert_eq!(pick_terminal(Some("foot -e fish"), on(&["foot", "x-terminal-emulator"])).as_deref(), Some("foot -e fish"));
+        assert_eq!(pick_terminal(Some("gone"), on(&["x-terminal-emulator"])).as_deref(), Some("x-terminal-emulator"));
+        assert_eq!(pick_terminal(None, on(&[])), None);
+    }
+
+    #[test]
     fn parses_thunar_actions() {
         let a = parse(UCA);
         assert_eq!(a.len(), 2);

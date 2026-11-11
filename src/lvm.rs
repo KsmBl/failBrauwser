@@ -517,6 +517,34 @@ mod tests {
     }
 
     #[test]
+    fn volumes_go_where_udisks_mounts() {
+        let arch = "NAME=\"Arch Linux\"\nID=arch\n";
+        let debian = "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nVERSION_ID=\"13\"\nID=debian\n";
+        let mint = "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n";
+        let none = |_: &Path| false;
+        assert_eq!(media_base("me", arch, none), Path::new("/run/media/me"));
+        assert_eq!(media_base("me", debian, none), Path::new("/media/me"));
+        assert_eq!(media_base("me", mint, none), Path::new("/media/me"));
+        assert_eq!(media_base("me", "", none), Path::new("/run/media/me"));
+        // The folder UDisks2 already uses wins over the guess.
+        assert_eq!(media_base("me", arch, |p: &Path| p == Path::new("/media/me")), Path::new("/media/me"));
+        assert_eq!(media_base("me", debian, |p: &Path| p == Path::new("/run/media/me")), Path::new("/run/media/me"));
+    }
+
+    #[test]
+    fn admin_tools_are_found_in_sbin() {
+        let debian_user = admin_path(Some("/usr/local/bin:/usr/bin:/bin:/usr/games".as_ref()));
+        let dirs: Vec<PathBuf> = std::env::split_paths(&debian_user).collect();
+        assert_eq!(dirs[..4], [PathBuf::from("/usr/local/bin"), "/usr/bin".into(), "/bin".into(), "/usr/games".into()]);
+        for d in ["/usr/sbin", "/sbin", "/usr/local/sbin"] {
+            assert_eq!(dirs.iter().filter(|x| *x == Path::new(d)).count(), 1, "{d} in {dirs:?}");
+        }
+        // pkexec's own PATH already has them: unchanged.
+        assert_eq!(admin_path(Some("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".as_ref())), "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+        assert!(std::env::split_paths(&admin_path(None)).any(|d| d == Path::new("/usr/sbin")));
+    }
+
+    #[test]
     fn mount_folders_are_free_ones() {
         let base = Path::new("/run/media/me");
         assert_eq!(mount_dir(base, "root", |_| false), base.join("root"));
