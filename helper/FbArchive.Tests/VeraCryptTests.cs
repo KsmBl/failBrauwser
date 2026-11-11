@@ -11,9 +11,11 @@ namespace FbArchive.Tests;
 /// containers were created, and every wrong-password answer is the same password failure — a
 /// VeraCrypt header holds no plaintext marker, so "wrong password" and "not a volume" cannot be
 /// told apart and the honest answer is the one the password dialog re-asks on.
-/// These tests decrypt for real: each open tries VeraCrypt's key derivations cheapest-first,
-/// which costs seconds (the sha512 fixture) up to minutes (streebog); wrong-password and noise
-/// cases pay the whole trial. That wall time is the price of the contract, not overhead.
+/// These tests decrypt for real: an open tries the header's derivations side by side and stops the
+/// ones still hashing as soon as one of them opens, so a right password costs about its own
+/// derivation — seconds for the SHA fixtures, tens of seconds for whirlpool, blake2s or streebog,
+/// whose hashes run as managed code here — while a wrong password or noise pays the whole trial,
+/// which no search can shorten. That remaining time is the volume's arithmetic, not overhead.
 /// </summary>
 [TestFixture]
 public class VeraCryptTests {

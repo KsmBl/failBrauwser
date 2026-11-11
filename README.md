@@ -622,6 +622,11 @@ such a script (see `src/ui/selftest.rs` for the commands).
   entries of their own. `helper/FbArchive.Tests/format-baseline.tsv` lists each one.
 - CD images (CDI, MDF, NRG, BIN) show plain ISO 9660 names (upper case); BIN/CUE and ODS-1
   are read-only.
+- Opening an encrypted volume costs that volume's own key derivation, whatever the container's size:
+  measured on a 512 KiB test container in the release build, three to six seconds for a SHA-256 or
+  SHA-512 volume, five to thirteen for one written with Whirlpool, BLAKE2s or Streebog, and about
+  half a minute to refuse a wrong passphrase, which has to try every candidate first. The candidates
+  run side by side and stop at the one that opens, but the arithmetic belongs to the volume.
 - Edits to formats without in-place modification rebuild the archive.
 - Hybrid ISO images are read-only; Rock Ridge names longer than about 170 bytes are
   shortened when an ISO is rebuilt.
