@@ -734,6 +734,16 @@ pub fn open_as_archive(w: &Window) {
     });
 }
 
+/// Opens the selected file as the container kind with this id (M14 *Open as*), whatever its name
+/// says. No probe first: detection is exactly what the user overruled, and a chosen reader answers
+/// a file it cannot open with its own refusal, which the pane shows. The listing of a locked volume
+/// is the encrypted shell, and that is what asks for the passphrase.
+pub fn open_as_volume(w: &Window, kind: &str) {
+    let pane = w.current_pane();
+    let Some(path) = pane.selected_items().into_iter().find_map(|i| if i.is_dir_like() { None } else { i.path().map(PathBuf::from) }) else { return };
+    w.navigate(Location::Archive(ArchiveLoc::root_as(path, kind)));
+}
+
 thread_local! {
     static ASKED: std::cell::RefCell<std::collections::HashSet<(PathBuf, Vec<String>)>> = std::cell::RefCell::new(std::collections::HashSet::new());
 }

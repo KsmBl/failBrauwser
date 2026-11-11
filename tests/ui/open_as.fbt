@@ -1,0 +1,36 @@
+# M14 "Open as": the kind the user names, not the one a name suggests.
+# What each choice reads out, byte for byte, is pinned in tests/archive_helper.rs and
+# tests/archive_vfs.rs: a clipboard transfer on this host answers later than one 20 s step of
+# this script can span (measured 2026-11-11, docs/WINDOWS.md), so the reading stays there.
+
+# The menu offers the container kinds that no name can tell apart.
+open $T/w
+select plain.img
+expect-menu-item VeraCrypt / TrueCrypt
+expect-menu-item dm-crypt (plain)
+
+# A dm-crypt (plain) volume carries no header at all: nothing in the bytes says what it is,
+# so the choice is the only door. The passphrase it asks for is the one that reads the entry.
+open $T/w
+select plain.img
+text s3cret
+action win.open-as-volume DmCryptPlain
+wait-row volume.img
+
+# A VeraCrypt container under a name that says nothing: detection cannot reach it, the choice can,
+# and the shell of a locked volume is what asks. Answered, the volume inside is listed.
+open $T/w
+select disk.bin
+text test
+action win.open-as-volume VeraCrypt
+wait-row metadata.ini
+wait-row volume.img
+
+# A program answers the Archive entry with the resources inside it instead of being run,
+# which is what its name alone would do.
+open $T/w
+select setup.exe
+expect-menu-item Archive
+action win.open-as-archive
+wait-row MANIFEST
+wait-row VERSION

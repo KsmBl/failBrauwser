@@ -475,6 +475,15 @@ impl Window {
         });
         self.win.add_action(&a);
 
+        // *Open as ▸ a chosen container*: the one-argument shape of "open-with", carrying the kind's id.
+        let a = gio::SimpleAction::new("open-as-volume", Some(glib::VariantTy::STRING));
+        let weak = self.weak.borrow().clone();
+        a.connect_activate(move |_, v| {
+            let (Some(w), Some(kind)) = (weak.upgrade(), v.and_then(|v| v.get::<String>())) else { return };
+            super::archive::open_as_volume(&w, &kind);
+        });
+        self.win.add_action(&a);
+
         let s = self.app.settings.clone();
         let app = Rc::downgrade(&self.app);
         self.win.add_action(&toggle_action("show-hidden", s.borrow().show_hidden, move |on| {

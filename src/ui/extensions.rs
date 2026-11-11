@@ -236,9 +236,6 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
         arch.push(("E_xtract Here", "win.extract-here"));
         arch.push(("Extract _To…", "win.extract-to"));
     }
-    if items.len() == 1 && !items[0].is_dir_like() && !failbrauwser::archive::is_browsable_name(&items[0].display_name()) {
-        arch.push(("Open as _Archive", "win.open-as-archive"));
-    }
     if let [a, b] = items {
         if a.is_dir_like() && b.is_dir_like() && a.path().is_some() && b.path().is_some() {
             arch.push(("Co_mpare", "win.compare-folders"));
@@ -253,6 +250,11 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
         arch.push(("C_ompress…", "win.compress"));
     }
     section(&menu, &arch);
+    if let Some(sub) = open_as_menu(items) {
+        let s = gio::Menu::new();
+        s.append_submenu(Some("Open _as"), &sub);
+        menu.append_section(None, &s);
+    }
     if items.iter().all(|i| i.path().is_some()) {
         section(&menu, &[("Create _Link on Desktop", "win.link-on-desktop")]);
     }
@@ -263,6 +265,56 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
     }
     section(&menu, &[("_Properties…", "win.properties")]);
     menu
+}
+
+/// A container kind a file can be opened as whatever its name says (M14 *Open as*): the helper's
+/// format id, and the menu label with its mnemonic. The choices are the user's because a VeraCrypt
+/// header is random-looking bytes, a dm-crypt volume has no header at all, and a renamed container
+/// says nothing about what is inside it.
+pub const VOLUME_KINDS: [(&str, &str); 4] = [("VeraCrypt", "_VeraCrypt / TrueCrypt"), ("BitLocker", "_BitLocker"), ("Luks", "_LUKS"), ("DmCryptPlain", "dm-crypt (_plain)")];
+
+/// One *Open as* entry.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OpenAs {
+    /// Enter whatever the library detects, instead of launching the program that owns the suffix.
+    Archive,
+    /// Run this kind's own reader over the bytes: (format id, menu label).
+    Volume(&'static str, &'static str),
+}
+
+/// Which *Open as* entries one selected file gets (M14). Decided apart from the menu so it can be
+/// tested without a pane: a folder gets none, and a file the archive viewer already opens by name
+/// needs no *Archive* entry, because that entry is for what the name sends somewhere else.
+pub fn open_as_choices(display_name: &str, dir_like: bool) -> Vec<OpenAs> {
+    if dir_like {
+        return Vec::new();
+    }
+    let mut choices = Vec::new();
+    if !failbrauwser::archive::is_browsable_name(display_name) {
+        choices.push(OpenAs::Archive);
+    }
+    choices.extend(VOLUME_KINDS.iter().map(|(id, label)| OpenAs::Volume(id, label)));
+    choices
+}
+
+fn open_as_menu(items: &[Item]) -> Option<gio::Menu> {
+    let [item] = items else { return None };
+    let choices = open_as_choices(&item.display_name(), item.is_dir_like());
+    if choices.is_empty() {
+        return None;
+    }
+    let sub = gio::Menu::new();
+    for choice in choices {
+        match choice {
+            OpenAs::Archive => sub.append(Some("_Archive"), Some("win.open-as-archive")),
+            OpenAs::Volume(id, label) => {
+                let entry = gio::MenuItem::new(Some(label), None);
+                entry.set_action_and_target_value(Some("win.open-as-volume"), Some(&id.to_variant()));
+                sub.append_item(&entry);
+            }
+        }
+    }
+    Some(sub)
 }
 
 /// Applications registered for the selection's type, plus "Other Application…".
@@ -284,4 +336,31 @@ pub fn open_with_menu(items: &[Item]) -> Option<gio::Menu> {
     other.append(Some("Other _Application…"), Some("win.open-with-other"));
     sub.append_section(None, &other);
     Some(sub)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OpenAs, open_as_choices};
+
+    #[test]
+    fn a_folder_gets_no_open_as_choices() {
+        assert!(open_as_choices("photos", true).is_empty());
+    }
+
+    /// The kinds that a name cannot tell apart stay offered for every single file (M14).
+    #[test]
+    fn one_file_of_any_name_gets_the_four_volume_kinds() {
+        for name in ["disk.bin", "notes.txt", "movie.mkv", "setup.exe", "photo.iso", "photos.zip"] {
+            let kinds = open_as_choices(name, false).into_iter().filter(|c| matches!(c, OpenAs::Volume(_, _))).count();
+            assert_eq!(kinds, 4, "{name}");
+        }
+    }
+
+    #[test]
+    fn what_the_archive_viewer_already_reaches_by_name_gets_no_archive_entry() {
+        assert!(!open_as_choices("photos.zip", false).contains(&OpenAs::Archive), "the entry would repeat what the name does already");
+        for name in ["movie.mkv", "setup.exe", "photo.jpg", "disk.bin"] {
+            assert!(open_as_choices(name, false).contains(&OpenAs::Archive), "{name} should answer with its contents instead of its program");
+        }
+    }
 }

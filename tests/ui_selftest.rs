@@ -840,6 +840,34 @@ fn encrypted_archives() {
     });
 }
 
+/// M14 *Open as* in the menu and the view it produces: the four container kinds are offered for a
+/// file whose name cannot say what it is, a chosen kind lists what its own reader found, and the
+/// *Archive* entry reaches a program's resources instead of running it. What each choice reads out
+/// byte for byte is pinned in `archive_helper.rs` and `archive_vfs.rs`, where reading does not
+/// depend on a clipboard job this host answers late.
+#[test]
+fn open_as_chosen_kind() {
+    let helper = failbrauwser::archive::client::locate_helper();
+    if !helper.is_file() {
+        eprintln!("fb-archive helper not built, skipping");
+        return;
+    }
+    let volume = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/veracrypt/test.sha256.hc");
+    run("open_as.fbt", |t| {
+        let w = t.join("w");
+        std::fs::create_dir_all(&w).unwrap();
+        let h = failbrauwser::archive::Helper::new(helper.clone());
+        // A dm-crypt (plain) container: written by the chosen kind, carrying no marker to detect.
+        let payload = w.join("payload");
+        std::fs::write(&payload, vec![0x5Au8; 4096]).unwrap();
+        h.create(&w.join("plain.img"), "DmCryptPlain", &[(payload, "volume.img".into())], Some("s3cret")).unwrap();
+        // A real VeraCrypt container under a name that says nothing about it.
+        std::fs::copy(&volume, w.join("disk.bin")).unwrap();
+        // A program: a name whose default action runs it, whose resources the Archive entry shows.
+        std::fs::copy(&helper, w.join("setup.exe")).unwrap();
+    });
+}
+
 #[test]
 fn compress_settings() {
     let helper = failbrauwser::archive::client::locate_helper();
