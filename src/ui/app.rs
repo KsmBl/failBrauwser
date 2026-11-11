@@ -280,6 +280,7 @@ pub fn run() -> glib::ExitCode {
         failbrauwser::archive::Helper::global().shutdown();
     });
 
+    super::portal::start();
     app.run()
 }
 
