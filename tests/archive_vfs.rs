@@ -222,6 +222,26 @@ fn a_chosen_kind_extracts_the_volume_and_refuses_edits() {
     assert_eq!(sha256_of(&got[0]), "2b15dbe4544a853ca15311dd1dc83162c6cc06c6c470d98ca427b26093a9fb41");
 }
 
+/// A locked volume answers the shell of itself, and that shell is what asks for the passphrase.
+/// Keeping that answer after the passphrase arrived would throw the ask away.
+#[test]
+fn a_passphrase_set_after_a_locked_listing_reopens_the_volume() {
+    let d = tempfile::tempdir().unwrap();
+    let Some(v) = vfs(&d.path().join("cache")) else { return };
+    let lying = d.path().join("disk.bin");
+    fs::copy(volume_fixture("test.sha256.hc"), &lying).unwrap();
+    let chosen = ArchiveLoc::root_as(lying, "VeraCrypt");
+
+    let locked = v.archive(&chosen).unwrap();
+    assert!(locked.tree.get("volume.img").is_some());
+    assert!(locked.tree.get("metadata.ini").is_none(), "with no passphrase yet: the shell alone");
+
+    v.set_password(&chosen, "test");
+    let opened = v.archive(&chosen).unwrap();
+    assert!(opened.tree.get("metadata.ini").is_some(), "the passphrase that was asked is used");
+    assert!(!std::sync::Arc::ptr_eq(&locked, &opened), "the shell answer was replaced, not kept");
+}
+
 #[test]
 fn a_chosen_kind_that_is_not_a_format_is_refused_by_name() {
     let d = tempfile::tempdir().unwrap();

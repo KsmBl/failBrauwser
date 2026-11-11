@@ -84,9 +84,13 @@ impl Vfs {
         Ok(dir.keep())
     }
 
-    /// Remembers the password of the innermost archive of `loc` (until the program ends).
+    /// Remembers the password of the innermost archive of `loc` (until the program ends), and
+    /// drops the listings that were made without it: a locked volume answers the shell of itself,
+    /// and the passphrase asked for that shell is only worth having if the file is opened again.
     pub fn set_password(&self, loc: &ArchiveLoc, password: &str) {
-        self.state.lock().unwrap().passwords.insert(loc.archive_key(), password.to_string());
+        let mut st = self.state.lock().unwrap();
+        st.passwords.insert(loc.archive_key(), password.to_string());
+        st.listings.retain(|k, _| k.0 != loc.file);
     }
 
     pub fn has_password(&self, loc: &ArchiveLoc) -> bool {
