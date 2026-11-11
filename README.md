@@ -364,8 +364,9 @@ NTFS, HFS+, SquashFS, VHD/VHDX, VMDK, QCOW2, VDI, UDF, …) and packages (`.deb`
 `.whl`, …). A file without a suffix, or with one that says nothing (`.bin`, `.img`, `.dat`),
 opens as a folder too when the library recognises its contents and no application is set up
 for it. Files that belong to another program — office documents, e-books, pictures, fonts,
-programs and installers, databases — still open with that program; *Open as Archive* shows
-what is inside them, and inside audio and video files too. *Extract Here*, *Extract To…* and
+programs and installers, databases — still open with that program; the *Open as* submenu's
+*Archive* entry shows what is inside them instead, and inside audio and video files too.
+*Extract Here*, *Extract To…* and
 *Compress…* are in the context menu. Long archive operations show a progress bar with the
 bytes done. Formats the library can only read are shown read-only, and the status bar says
 why.
@@ -377,12 +378,15 @@ extracted like anywhere else. The whole volume shows as read-only — creating, 
 re-keying a volume stays with the VeraCrypt program — and keyfiles and hidden volumes are
 not supported.
 
-A VeraCrypt header's bytes are indistinguishable from random noise, so a container renamed
-to `.bin`, `.img` or no suffix at all cannot be recognized from the file: right-click such
-a file and choose *Open as Volume* → *VeraCrypt / TrueCrypt*, *BitLocker*, *LUKS* or
-*dm-crypt (plain)* to open it as that kind of container. The same password prompt asks
-once, and a wrong choice says so and opens nothing. (BitLocker and LUKS carry plaintext
-headers, so their images are also recognized by content when their names say nothing.)
+*Open as* gathers these decisions for one selected file: *Archive* enters whatever the
+library detects without launching the program that owns the suffix, and *VeraCrypt /
+TrueCrypt*, *BitLocker*, *LUKS* and *dm-crypt (plain)* force the file open as that kind of
+container — decided by you rather than by a name. A VeraCrypt header's bytes are
+indistinguishable from random noise, so a renamed container (`.bin`, `.img`, no suffix)
+cannot be recognized from the file; that is what the volume choices are for. The same
+one-ask password prompt serves any choice, and a wrong one says so and opens nothing.
+(BitLocker and LUKS carry plaintext headers, so their images are recognized by content
+even when their names say nothing.)
 
 **Compressed files** such as `notes.txt.gz` show the one file inside; open it, edit it and
 save, and the file is compressed again. *Extract Here* gives `notes.txt` itself.
