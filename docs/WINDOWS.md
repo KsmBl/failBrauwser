@@ -64,9 +64,14 @@ Neither program file opens a console window. `bin\failbrauwser.exe` is linked as
 program (`#![cfg_attr(windows, windows_subsystem = "windows")]` in `src\main.rs`), so Explorer,
 the Start Menu entry and the launcher show only failBrauwser's own window — the black console
 that the CUI subsystem used to allocate for it is gone. Started from a terminal it still
-answers there: at startup it attaches to the parent console when one exists, and where none
-does its standard handles are pointed at `NUL`, so a setting that could not be written or a
-path that could not be opened cannot end the program by failing a write. `fb-archive.exe` is
+answers there, because the terminal's console and its three standard handles are inherited —
+one nuance of a windowed file: `cmd` and PowerShell do not wait for it, so the prompt returns
+while the window is still open. Started with no console at all, it needs no handle fix: the C
+runtime already backs those three descriptors for a console-less process, so a message the
+program writes is dropped rather than failing the write. Measured here on 2026-11-12: a
+windowed program started with nothing attached printed on both streams and stayed alive; the
+same program built without any handle guard also survived a start through the shell. No
+`NUL`-redirecting startup code is therefore part of the release. `fb-archive.exe` is
 started with `CREATE_NO_WINDOW` and watches the process id the program hands it as `--parent`:
 it quits within a second once that instance is gone, request running or not, and while the
 instance lives it stops 45 s after its last request.
