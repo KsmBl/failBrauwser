@@ -26,6 +26,53 @@ thread_local! {
     static DRAGGING: RefCell<Vec<ClipSource>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The size of each item's image in the drag image of several items.
+const DRAG_ICON_PX: i32 = 48;
+/// How far each image behind lies from the one in front.
+const STACK_STEP: i32 = 8;
+
+/// The drag image of `count` items: `images` (at most four shown) stacked, the first in
+/// front, with a badge showing `count` in the selection colors `bg` and `fg`. The pointer
+/// holds it at the middle of the front image.
+pub fn stacked_icon(images: &[gtk::gdk_pixbuf::Pixbuf], count: usize, bg: (f64, f64, f64), fg: (f64, f64, f64)) -> Option<gtk::cairo::ImageSurface> {
+    use gtk::cairo;
+    let shown = &images[..images.len().min(4)];
+    let behind = shown.len() as i32 - 1;
+    let badge = 22;
+    let width = DRAG_ICON_PX + behind * STACK_STEP + badge / 2;
+    let height = DRAG_ICON_PX + behind * STACK_STEP + badge / 2;
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height).ok()?;
+    let cr = cairo::Context::new(&surface).ok()?;
+    // The ones behind first, up and to the right; the first one in front, bottom left.
+    for (i, img) in shown.iter().enumerate().rev() {
+        let x = i as i32 * STACK_STEP + (DRAG_ICON_PX - img.width()) / 2;
+        let y = badge / 2 + (behind - i as i32) * STACK_STEP + (DRAG_ICON_PX - img.height()) / 2;
+        cr.set_source_pixbuf(img, x as f64, y as f64);
+        cr.paint_with_alpha(if i == 0 { 1.0 } else { 0.85 }).ok()?;
+    }
+    // The count, in a round badge at the top right.
+    let text = if count > 999 { "999+".to_string() } else { count.to_string() };
+    cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
+    cr.set_font_size(12.0);
+    let ext = cr.text_extents(&text).ok()?;
+    let r = badge as f64 / 2.0;
+    let w = (ext.width() + 10.0).max(badge as f64);
+    let (bx, by) = (width as f64 - w, 0.0);
+    cr.new_sub_path();
+    cr.arc(bx + w - r, by + r, r, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+    cr.arc(bx + r, by + r, r, std::f64::consts::FRAC_PI_2, 3.0 * std::f64::consts::FRAC_PI_2);
+    cr.close_path();
+    cr.set_source_rgb(bg.0, bg.1, bg.2);
+    cr.fill().ok()?;
+    cr.set_source_rgb(fg.0, fg.1, fg.2);
+    cr.move_to(bx + (w - ext.width()) / 2.0 - ext.x_bearing(), by + r - ext.height() / 2.0 - ext.y_bearing());
+    cr.show_text(&text).ok()?;
+    drop(cr);
+    let front_y = badge / 2 + behind * STACK_STEP;
+    surface.set_device_offset(-(DRAG_ICON_PX as f64 / 2.0), -((front_y + DRAG_ICON_PX / 2) as f64));
+    Some(surface)
+}
+
 fn targets() -> Vec<gtk::TargetEntry> {
     vec![
         gtk::TargetEntry::new(INTERNAL, gtk::TargetFlags::SAME_APP, 1),
@@ -74,6 +121,26 @@ fn connect_source(view: &gtk::Widget, pane: &Rc<Pane>) {
             DRAGGING.with(|d| *d.borrow_mut() = sources);
         }
     });
+    // Several items: their icons stacked with how many there are, instead of GTK's image of
+    // the one row pressed (set by the view's own handler, so this one runs after it).
+    let p = Rc::downgrade(pane);
+    view.connect_closure(
+        "drag-begin",
+        true,
+        glib::closure_local!(move |view: gtk::Widget, ctx: gdk::DragContext| {
+            let Some(p) = p.upgrade() else { return };
+            let (images, count) = p.selected_images(DRAG_ICON_PX, 4);
+            if count < 2 || images.is_empty() {
+                return;
+            }
+            let style = view.style_context();
+            let bg = style.lookup_color("theme_selected_bg_color").unwrap_or_else(|| gdk::RGBA::new(0.21, 0.52, 0.89, 1.0));
+            let fg = style.lookup_color("theme_selected_fg_color").unwrap_or_else(|| gdk::RGBA::new(1.0, 1.0, 1.0, 1.0));
+            if let Some(icon) = stacked_icon(&images, count, (bg.red(), bg.green(), bg.blue()), (fg.red(), fg.green(), fg.blue())) {
+                ctx.drag_set_icon_surface(&icon);
+            }
+        }),
+    );
     view.connect_drag_end(|_, _| DRAGGING.with(|d| d.borrow_mut().clear()));
     view.connect_drag_data_get(|_, _, sel, info, _| {
         let sources = DRAGGING.with(|d| d.borrow().clone());
@@ -233,3 +300,5 @@ fn make_links(w: &Window, sources: &[ClipSource], dest: &Location) {
     }
     fileops::select_created(w, dest, &made);
 }
+
+
