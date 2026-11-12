@@ -76,7 +76,12 @@ fn run(w: &Window, name: &str) {
     let (shell, flag) = ("cmd", "/C");
     #[cfg(not(windows))]
     let (shell, flag) = ("sh", "-c");
-    let spawned = std::process::Command::new(shell)
+    let mut command = std::process::Command::new(shell);
+    // The action's command line runs without a window of its own: this program has no console
+    // to hand it, so Windows would otherwise allocate a black one for the duration.
+    #[cfg(windows)]
+    failbrauwser::win::console::no_window(&mut command);
+    let spawned = command
         .arg(flag)
         .arg(&cmd)
         .current_dir(&cwd)

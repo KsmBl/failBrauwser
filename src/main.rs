@@ -1,3 +1,9 @@
+// Linked as a windowed program: starting this file — double-click, Start Menu entry, or the
+// single-file launcher — opens failBrauwser's window and nothing else, no console. Started from
+// a terminal it still answers there. Everything console-shaped it starts goes through
+// `win::console::no_window`, which has no console of its own to share with them.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod ui;
 
 const HELP: &str = "\

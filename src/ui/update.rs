@@ -165,7 +165,14 @@ pub fn show(w: &Window) {
 
 /// `text` as given by `url` (curl, else wget).
 fn fetch(url: &str) -> Result<String, String> {
-    let run = |cmd: &str, args: &[&str]| std::process::Command::new(cmd).args(args).output();
+    let run = |cmd: &str, args: &[&str]| {
+        let mut command = std::process::Command::new(cmd);
+        // curl and wget are console programs: without this each check for an update would
+        // bring up a black window, since this program has no console for them to share.
+        #[cfg(windows)]
+        failbrauwser::win::console::no_window(&mut command);
+        command.args(args).output()
+    };
     let out = run("curl", &["-fsSL", "--max-time", "20", "-H", "Accept: application/vnd.github+json", url]).or_else(|_| run("wget", &["-qO-", "--timeout=20", url])).map_err(|_| "Neither curl nor wget is installed.".to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
@@ -242,7 +249,9 @@ impl Updater {
             #[cfg(windows)]
             {
                 let log = std::fs::File::create(dir.join("update.log"))?;
-                std::process::Command::new("powershell").args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", &script]).stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log).spawn()
+                let mut swap = std::process::Command::new("powershell");
+                failbrauwser::win::console::no_window(&mut swap);
+                swap.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", &script]).stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log).spawn()
             }
         })();
         let child = match res {

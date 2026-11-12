@@ -2,6 +2,9 @@
 //! carry, and what the shell can actually find. The window itself is checked by eye against a
 //! captured titlebar; these scenarios pin the assets the window and the shell read.
 
+#[path = "support/pe.rs"]
+mod pe;
+
 use std::path::{Path, PathBuf};
 
 const SIZES: [u16; 7] = [16, 24, 32, 48, 64, 128, 256];
@@ -104,45 +107,7 @@ fn dib_pixels(dib: &[u8]) -> Option<Vec<(u8, u8, u8, u8)>> {
 fn the_built_program_offers_its_icon_to_the_shell() {
     let exe = env!("CARGO_BIN_EXE_failbrauwser");
     let bytes = std::fs::read(exe).expect("the program this build linked");
-    let kinds = resource_kinds(&bytes).unwrap_or_else(|why| panic!("{exe} is not a readable image: {why}"));
+    let kinds = pe::resource_kinds(&bytes).unwrap_or_else(|why| panic!("{exe} is not a readable image: {why}"));
     assert!(kinds.contains(&14), "{exe} carries no icon group the shell can read: the build linked no icon resource");
     assert!(kinds.contains(&3), "{exe} carries no icon images behind that group");
-}
-
-#[cfg(windows)]
-fn resource_kinds(pe: &[u8]) -> Result<Vec<u16>, String> {
-    let at = |o: usize, n: usize| -> Result<&[u8], String> { pe.get(o..o + n).ok_or_else(|| format!("the file ends at byte {o}")) };
-    let u16 = |o: usize| -> u16 { u16::from_le_bytes(at(o, 2).unwrap().try_into().unwrap()) };
-    let u32 = |o: usize| -> u32 { u32::from_le_bytes(at(o, 4).unwrap().try_into().unwrap()) };
-    let lfanew = u32(0x3c) as usize;
-    if at(lfanew, 4)? != b"PE\0\0" {
-        return Err("no PE header".into());
-    }
-    let (sections, opt_len) = (u16(lfanew + 6) as usize, u16(lfanew + 20) as usize);
-    let opt = lfanew + 24;
-    let dirs = match u16(opt) {
-        0x10b => opt + 96,
-        0x20b => opt + 112,
-        m => return Err(format!("unexpected optional header magic {m:#x}")),
-    };
-    let (rsrc_rva, _) = (u32(dirs + 2 * 8) as usize, u32(dirs + 2 * 8 + 4) as usize);
-    let secs = opt + opt_len;
-    let file_off = |rva: usize| -> Result<usize, String> {
-        for i in 0..sections {
-            let s = secs + i * 40;
-            let (va, raw, len) = (u32(s + 12) as usize, u32(s + 20) as usize, u32(s + 16) as usize);
-            if rva >= va && rva < va + len {
-                return Ok(raw + (rva - va));
-            }
-        }
-        Err(format!("no section covers rva {rva:x}"))
-    };
-    let root = file_off(rsrc_rva)?;
-    let (named, ids) = (u16(root + 12) as usize, u16(root + 14) as usize);
-    let mut kinds = Vec::with_capacity(ids);
-    for i in named..named + ids {
-        let e = root + 16 + i * 8;
-        kinds.push(u16(e) & 0x7fff);
-    }
-    Ok(kinds)
 }
