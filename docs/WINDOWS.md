@@ -66,8 +66,12 @@ A launcher that cannot install says so where the person who started it will see 
 box naming the install folder and the reason when it was started with no console, and that same
 text in the terminal when a terminal started it; either way it exits 1 rather than pretending to
 have started. One boundary stays: a refresh needs every instance running from that folder closed
-first, because Windows will not replace a running program file. *Help → Check for Updates* inside
-the app performs that swap (it renames the running file aside); the launcher does not. An in-app update (*Help → Check for Updates*) replaces the
+first. Renaming a running program file aside is possible — that is how *Help → Check for Updates*
+swaps one from inside the app — and a launcher build that did it was measured here replacing all
+2,882 files of a folder under a running instance, starting a second instance and leaving its staging
+folder behind. The launcher therefore refuses instead: every file the payload would replace is tried
+for writability before a byte is staged, so a folder something is using is answered with nothing
+written to it. An in-app update (*Help → Check for Updates*) replaces the
 tree's contents and leaves that stamp text as the launcher wrote it, so the launcher keeps
 comparing against the payload it carried — for that launcher, an updated tree is not newer
 than its own payload, so it stays untouched.
@@ -217,6 +221,17 @@ stops at the first failing target, and `tests\ui_selftest.rs` sorts before
 suite (`dotnet test helper/FbArchive.Tests`) answers 517 passed, 0 failed, 1 skipped
 (`Remove_IsCaseSensitive`) on this host, measured 2026-11-12 in 13 m 31 s — it is slow, and it
 builds the same vendor trees cargo does, so it gets a run of its own rather than a concurrent one.
+The launcher's own crate answers a further seven scenarios (`cargo test --release` in
+`winpack\onefile`, which needs `FB_PAYLOAD` naming a staging zip because its `build.rs` insists on
+one) — 7 passed, 0 failed measured 2026-11-12; it is a separate crate, so they are not part of the
+238. What they cannot reach was measured on the desktop instead: that packaged launcher unpacked a
+fresh folder in 6 s and refreshed a folder stamped with an older id in 10 s, in both cases with no
+staging folder left and the unpacked program reading subsystem 2, and against a folder an instance
+was running from it answered a window naming the folder and the system's reason within 3 s, the
+folder's 2,882 files reading identical afterwards. Run against a build with the writability check
+left out, the same start replaced every one of those files under the running instance, started a
+second instance and left `.payload-staging` in the folder — the control that shows what the check
+prevents.
 These failures surfaced when the app's Windows build compiled again
 after the `--lvm` helper stopped importing Linux; no Windows build had run these Linux-era
 update and drives paths before.

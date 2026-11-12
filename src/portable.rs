@@ -8,9 +8,9 @@
 //! program from there; later runs only check the stamp and start it. Nothing is
 //! registered in the system, and nothing lands next to the file itself.
 //!
-//! Built as its own crate (winpack\onefile) on purpose: the launcher must carry no DLL
-//! imports of its own, so the version comparison mirrors (and is tested like)
-//! `update::is_newer` instead of linking the GTK stack.
+//! Built as its own crate (winpack\onefile) on purpose: the launcher links nothing beyond the OS
+//! loader itself — no GTK, no C runtime DLL — so the version comparison mirrors (and is tested
+//! like) `update::is_newer` instead of linking the GTK stack.
 
 #![windows_subsystem = "windows"]
 
@@ -38,7 +38,7 @@ fn main() {
     if !exe.is_file() || needs_unpack((version, build), &installed) {
         let stamp_text = if build.is_empty() { version.to_string() } else { format!("{version} {build}") };
         if let Err(e) = install(PAYLOAD, &prefix).and_then(|()| std::fs::write(&stamp, stamp_text)) {
-            let _ = writeln!(std::io::stderr(), "failBrauwser {version}: could not install into {}: {e}", prefix.display());
+            report(&install_failure(version, &prefix, &e));
             exit(1);
         }
         refresh_loader_cache(&prefix.join("bin"));
@@ -46,7 +46,7 @@ fn main() {
     let status = match Command::new(&exe).args(std::env::args_os().skip(1)).status() {
         Ok(s) => s,
         Err(e) => {
-            let _ = writeln!(std::io::stderr(), "{} could not start: {e}", exe.display());
+            report(&format!("{} could not start: {e}", exe.display()));
             exit(1);
         }
     };
@@ -88,6 +88,78 @@ fn is_newer(a: &str, b: &str) -> bool {
     x > y
 }
 
+/// Where a failure sentence goes. Started from a terminal, the launcher answers there as it always
+/// did; started with no console at all — a double-click, a browser download, a link — its standard
+/// handles reach nobody, so the same text goes into a window. That is the case where an install
+/// that failed read as nothing happening at all.
+fn report(text: &str) {
+    #[cfg(windows)]
+    if !visible::console_attached() {
+        visible::window(text);
+        return;
+    }
+    let _ = writeln!(std::io::stderr(), "{text}");
+}
+
+/// The launcher's two Windows calls, declared here rather than pulled in as a dependency: the file
+/// keeps importing nothing beyond the OS loader, and `kernel32` and `user32` are part of it.
+#[cfg(windows)]
+mod visible {
+    use std::ffi::c_void;
+
+    unsafe extern "system" {
+        fn GetConsoleWindow() -> *mut c_void;
+    }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(hwnd: *mut c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    }
+
+    /// Whether a terminal started this process — which is also whether it has a place to print.
+    pub fn console_attached() -> bool {
+        !unsafe { GetConsoleWindow() }.is_null()
+    }
+
+    /// The one window the launcher ever opens: a failure the person who started it has to read.
+    pub fn window(text: &str) {
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+        let (body, caption) = (wide(text), wide("failBrauwser"));
+        const MB_OK: u32 = 0x0;
+        const MB_ICONWARNING: u32 = 0x30;
+        unsafe { MessageBoxW(std::ptr::null_mut(), body.as_ptr(), caption.as_ptr(), MB_OK | MB_ICONWARNING) };
+    }
+}
+
+/// The sentence a launcher that could not install answers with: the release it carried, the
+/// folder it tried to write, and what the system said. The system's half arrives in the language
+/// of the machine, so the two sentences this one adds are what a person can always read: nothing
+/// was touched, and — for a folder that is in use — what to close.
+fn install_failure(version: &str, prefix: &std::path::Path, e: &std::io::Error) -> String {
+    let mut text = format!("failBrauwser {version}: could not install into {}: {e}\n\nNothing was changed in that folder.", prefix.display());
+    if in_use(e) {
+        text.push_str(" Close a failBrauwser that is running from it, then start this file again.");
+    }
+    text
+}
+
+/// Whether the failure is one of a file that will not be written to — a running program file or one
+/// another process holds, which for an install folder means an instance running out of it. The
+/// system's own codes answer a move that went wrong, and `refused_in_use` marks the one the
+/// pre-flight caught before staging anything. The in-app update can swap around a running program
+/// file, which is why it is not this launcher's job.
+fn in_use(e: &std::io::Error) -> bool {
+    e.to_string().contains(IN_USE) || matches!(e.raw_os_error(), Some(32) | Some(5) | Some(1224))
+}
+
+/// The marker `refused_in_use` puts in its message, read back by `in_use` because a wrapped error
+/// no longer carries the system code that produced it.
+const IN_USE: &str = "in use";
+
+fn refused_in_use(rel: &str, e: std::io::Error) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{rel} {IN_USE}: {e}"))
+}
+
 /// The folder a payload is staged in before a single byte of it reaches the installed tree.
 /// Inside the install folder on purpose: moving a file from there into place is a same-volume
 /// rename, which is where the all-or-nothing of `install` comes from. It costs room for a second
@@ -99,19 +171,21 @@ const STAGING: &str = ".payload-staging";
 /// folder) into `prefix`, replacing every file it carries; extra files a newer install
 /// left behind stay.
 ///
-/// Two phases inside one staging tree, so that a payload which cannot be applied leaves the
-/// installed tree exactly as it was rather than half of it: the whole payload is read, inflated,
-/// CRC-checked and written under `STAGING/new` first, and only a complete one moves into place —
-/// and a move that fails partway is undone from the copies of what it replaced under
-/// `STAGING/previous`. Moving a replaced file aside is a rename, which Windows even allows for a
-/// running program file (the in-app update uses that same fact); a payload whose file cannot be
-/// moved at all leaves the tree as it found it and takes its staging away with it.
+/// Three steps, so that a payload which cannot be applied leaves the installed tree exactly as it
+/// was rather than half of it: the entries are read and their names checked, every file they would
+/// replace is tried for writability, and only then is the whole payload staged under `STAGING/new`
+/// and moved into place — a move that fails partway being undone from the copies of what it replaced
+/// under `STAGING/previous`. The writability step is where a running program file is refused: Windows
+/// lets a running image be renamed aside, which is how the in-app update swaps one, and this launcher
+/// deliberately does not touch one — a folder something is using is refused before it is written to.
 fn install(payload: &[u8], prefix: &std::path::Path) -> std::io::Result<()> {
+    let planned = planned_files(payload)?; // a payload that lies is refused before anything is written
+    check_replaceable(&planned, prefix)?; // and a folder something is using is refused before staging it
     let stage = prefix.join(STAGING);
     let _ = std::fs::remove_dir_all(&stage); // an earlier attempt that died mid-way
     let (fresh, previous) = (stage.join("new"), stage.join("previous"));
     let mut applied = Vec::new();
-    let outcome = apply_payload(payload, prefix, &fresh, &previous, &mut applied);
+    let outcome = apply_payload(payload, prefix, &planned, &fresh, &previous, &mut applied);
     if outcome.is_err() {
         rollback(&previous, prefix, &applied); // back to what the tree held before the first move
     }
@@ -133,44 +207,75 @@ fn rollback(previous: &std::path::Path, prefix: &std::path::Path, applied: &[(St
     }
 }
 
-fn apply_payload(payload: &[u8], prefix: &std::path::Path, fresh: &std::path::Path, previous: &std::path::Path, applied: &mut Vec<(String, bool)>) -> std::io::Result<()> {
+/// The payload's file entries paired with the path each one names inside the install folder: the
+/// single root folder merged away, folder entries dropped, and an entry refused for climbing out of
+/// the folder or for naming the staging folder. Their bytes are read and checked later.
+fn planned_files(payload: &[u8]) -> std::io::Result<Vec<(Entry, String)>> {
     let root = common_root(payload);
-    let entries = central_directory(payload);
-    let mut placed = Vec::with_capacity(entries.len());
-    for entry in &entries {
+    let mut out = Vec::new();
+    for entry in central_directory(payload) {
         let full = entry.name.replace('\\', "/");
         let Some(rel) = full.strip_prefix(&root) else {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("payload entry {} is not under the expected root {root}", entry.name)));
+            return Err(invalid(format!("payload entry {} is not under the expected root {root}", entry.name)));
         };
         if rel.is_empty() || rel.ends_with('/') {
             continue; // folder entries carry no data
         }
         if rel.starts_with('/') || rel.as_bytes().get(1) == Some(&b':') || rel.split('/').any(|c| c == "..") {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("payload entry {} escapes the install folder", entry.name)));
+            return Err(invalid(format!("payload entry {} escapes the install folder", entry.name)));
         }
         if rel.split('/').next() == Some(STAGING) {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("payload entry {} sits where the payload stages itself", entry.name)));
+            return Err(invalid(format!("payload entry {} sits where the payload stages itself", entry.name)));
         }
-        let compressed = payload.get(entry.data..entry.data + entry.csize).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "payload is truncated"))?;
+        out.push((entry, rel.to_string()));
+    }
+    Ok(out)
+}
+
+/// Every file the payload would replace, opened for writing and closed again — nothing else. Windows
+/// answers that with a refusal for a running program file and for one another process holds, so the
+/// launcher finds out here: before staging tens of megabytes it has nowhere to put, before any file
+/// of a running install is renamed, and with the answer still saying which file.
+fn check_replaceable(planned: &[(Entry, String)], prefix: &std::path::Path) -> std::io::Result<()> {
+    for (_, rel) in planned {
+        let target = prefix.join(rel.replace('/', "\\"));
+        if !target.is_file() {
+            continue; // nothing to replace, so nothing that can refuse
+        }
+        if let Err(e) = std::fs::OpenOptions::new().write(true).open(&target) {
+            return Err(refused_in_use(rel, e));
+        }
+    }
+    Ok(())
+}
+
+fn invalid(text: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, text)
+}
+
+fn apply_payload(payload: &[u8], prefix: &std::path::Path, planned: &[(Entry, String)], fresh: &std::path::Path, previous: &std::path::Path, applied: &mut Vec<(String, bool)>) -> std::io::Result<()> {
+    let mut placed = Vec::with_capacity(planned.len());
+    for (entry, rel) in planned {
+        let compressed = payload.get(entry.data..entry.data + entry.csize).ok_or_else(|| invalid("payload is truncated".to_string()))?;
         let mut bytes = Vec::with_capacity(entry.size);
         match entry.method {
             0 => bytes.extend_from_slice(compressed),
             8 => {
                 flate2::read::DeflateDecoder::new(compressed).read_to_end(&mut bytes)?;
             }
-            m => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("payload entry {} uses unsupported zip method {m}", entry.name))),
+            m => return Err(invalid(format!("payload entry {} uses unsupported zip method {m}", entry.name))),
         }
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&bytes);
         if bytes.len() != entry.size || hasher.finalize() != entry.crc {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("payload entry {} is corrupt", entry.name)));
+            return Err(invalid(format!("payload entry {} is corrupt", entry.name)));
         }
         let staged = fresh.join(rel.replace('/', "\\"));
         if let Some(parent) = staged.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&staged, &bytes)?;
-        placed.push((staged, prefix.join(rel.replace('/', "\\")), rel.to_string()));
+        placed.push((staged, prefix.join(rel.replace('/', "\\")), rel.clone()));
     }
     for (staged, target, rel) in placed {
         if let Some(parent) = target.parent() {
@@ -179,7 +284,7 @@ fn apply_payload(payload: &[u8], prefix: &std::path::Path, fresh: &std::path::Pa
         let replaced = target.is_file();
         if replaced {
             // what this entry replaces goes aside rather than being overwritten, so a later entry
-            // that cannot be put in place gives it back — the same rename the in-app update uses
+            // that cannot be put in place gives it back
             let aside = previous.join(rel.replace('/', "\\"));
             if let Some(parent) = aside.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -426,6 +531,43 @@ mod tests {
         assert_eq!(std::fs::read(d.path().join("README.md")).unwrap(), b"NEW");
         assert_eq!(std::fs::read(d.path().join("bin/blocked.exe")).unwrap(), b"NEW");
         assert!(tree_of(d.path()).iter().all(|p| !p.contains("staging")), "no staging folder is left behind: {:?}", tree_of(d.path()));
+    }
+
+    /// A file the installed tree holds and another process will not let go stops the install before
+    /// a byte of the payload is staged: the answer names a file in use, so the message can say what
+    /// to close, and the folder reads exactly as it did.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_in_use_stops_the_install_before_it_touches_the_folder() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("bin")).unwrap();
+        std::fs::write(d.path().join("bin/keep.exe"), b"OLD").unwrap();
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(d.path().join("bin/keep.exe")).unwrap();
+        let (payload, _) = zip_of(&[("r/README.md", b"NEW".as_slice(), 0), ("r\\bin\\keep.exe", b"NEW".as_slice(), 0)]);
+        let before = tree_of(d.path());
+
+        let e = install(&payload, d.path()).expect_err("a file another process holds cannot be replaced");
+        assert!(in_use(&e), "the answer says a file is in use, so the message can say what to close: {e}");
+        drop(held);
+
+        assert_eq!(tree_of(d.path()), before, "nothing was written on the way to that answer");
+        assert_eq!(std::fs::read(d.path().join("bin/keep.exe")).unwrap(), b"OLD");
+        assert!(!d.path().join("README.md").exists(), "the entry that came before it was never put in place");
+    }
+
+    /// The sentence a launcher that could not install answers with names the release, the folder
+    /// and the reason, and says plainly that the folder was left alone. A folder in use is told
+    /// what to close; a failure with another cause is not blamed on one.
+    #[test]
+    fn an_install_failure_names_the_folder_and_what_to_do_about_it() {
+        let in_use = install_failure("0.7.0", std::path::Path::new("P:\\Programs\\failbrauwser"), &std::io::Error::from_raw_os_error(32));
+        assert!(in_use.contains("0.7.0") && in_use.contains("P:\\Programs\\failbrauwser"), "names the release and the folder: {in_use}");
+        assert!(in_use.contains("Nothing was changed"), "says the installed tree is untouched: {in_use}");
+        assert!(in_use.contains("running from it"), "a folder in use is told what to close: {in_use}");
+        let corrupt = install_failure("0.7.0", std::path::Path::new("P:\\Programs\\failbrauwser"), &std::io::Error::new(std::io::ErrorKind::InvalidData, "payload entry bin/x.exe is corrupt"));
+        assert!(corrupt.contains("payload entry bin/x.exe is corrupt"), "names the reason it got: {corrupt}");
+        assert!(!corrupt.contains("running from it"), "a corrupt payload is not blamed on a running instance: {corrupt}");
     }
 
     /// Every path under `root`, as root-relative strings, sorted — so two states of the same
