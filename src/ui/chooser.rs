@@ -290,6 +290,11 @@ impl Chooser {
         self.request.title.clone()
     }
 
+    /// What the application asked for (tests).
+    pub fn request(&self) -> failbrauwser::chooser::Request {
+        self.request.clone()
+    }
+
     /// The name field (tests).
     pub fn set_name(&self, text: &str) {
         if let Some(e) = &self.name {

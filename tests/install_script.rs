@@ -187,3 +187,95 @@ fn a_package_built_for_a_newer_system_is_refused() {
     assert!(!prefix.exists(), "nothing was installed");
     assert!(deb.read("apt.log").is_empty() && deb.read("downloads").is_empty(), "a release package builds nothing");
 }
+
+/// A release package beside install.sh (bin/, lib/ with the GTK 3 module, data/), and a
+/// session whose GTK3_MODULES the stand-in `systemctl` keeps in `session-env`.
+fn release_package(deb: &Debian) {
+    let src = deb.path("src");
+    write_exe(&src.join("bin/failbrauwser"), "#!/bin/sh\n[ \"$1\" = --version ] && echo failbrauwser 0.7.0\nexit 0\n");
+    std::fs::create_dir_all(src.join("lib")).unwrap();
+    std::fs::write(src.join("lib/libfailbrauwser-chooser.so"), "module").unwrap();
+    let copy = Command::new("cp").arg("-r").arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("data")).arg(&src).status().unwrap();
+    assert!(copy.success());
+    let t = deb.dir.path().display().to_string();
+    std::fs::write(deb.path("session-env"), "GTK3_MODULES=/usr/lib/gtk-3.0/modules/libcanberra-gtk-module.so\n").unwrap();
+    write_exe(
+        &deb.path("bin/systemctl"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> {t}/systemctl.log\ncase \"$2\" in\n  show-environment) cat {t}/session-env ;;\n  set-environment) echo \"$3\" > {t}/session-env ;;\n  unset-environment) : > {t}/session-env ;;\nesac\nexit 0\n"
+        ),
+    );
+    write_exe(&deb.path("bin/dbus-update-activation-environment"), &format!("#!/bin/sh\necho \"$*\" >> {t}/dbus-env.log\n"));
+}
+
+const QUIET: [&str; 3] = ["--no-autostart", "--no-network", "--no-archives"];
+
+#[test]
+fn gtk3_applications_get_the_module_through_the_session_environment() {
+    let deb = Debian::new("1.92.0", &[]);
+    release_package(&deb);
+    let prefix = deb.path("prefix");
+    let prefix_arg = prefix.to_string_lossy().to_string();
+    let o = deb.install(&[&["--prebuilt", "--prefix", &prefix_arg][..], &QUIET].concat());
+    assert!(o.status.success(), "{}", text(&o));
+    let module = prefix.join("lib/failbrauwser/libfailbrauwser-chooser.so");
+    assert!(module.exists());
+    // For every session that reads environment.d, before the modules the user has.
+    let env = std::fs::read_to_string(deb.path("home/.config/environment.d/60-failbrauwser.conf")).unwrap();
+    assert!(env.contains(&format!("\nGTK3_MODULES={}${{GTK3_MODULES:+:$GTK3_MODULES}}\n", module.display())), "{env}");
+    // The running session too, keeping its own modules.
+    let both = format!("GTK3_MODULES={}:/usr/lib/gtk-3.0/modules/libcanberra-gtk-module.so", module.display());
+    assert_eq!(deb.read("session-env").trim(), both);
+    assert_eq!(deb.read("dbus-env.log").trim(), both);
+
+    // Installing again changes nothing in the session.
+    std::fs::remove_file(deb.path("dbus-env.log")).unwrap();
+    let o = deb.install(&[&["--prebuilt", "--prefix", &prefix_arg][..], &QUIET].concat());
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(deb.read("dbus-env.log").is_empty());
+    assert_eq!(deb.read("session-env").trim(), both);
+
+    // Uninstalled: the module, the file and the session's entry go; the user's module stays.
+    let o = deb.install(&[&["--uninstall", "--prefix", &prefix_arg][..], &QUIET].concat());
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!module.exists() && !deb.path("home/.config/environment.d/60-failbrauwser.conf").exists());
+    assert_eq!(deb.read("session-env").trim(), "GTK3_MODULES=/usr/lib/gtk-3.0/modules/libcanberra-gtk-module.so");
+}
+
+#[test]
+fn without_the_file_chooser_gtk3_applications_keep_their_dialogs() {
+    let deb = Debian::new("1.92.0", &[]);
+    release_package(&deb);
+    let prefix = deb.path("prefix");
+    let o = deb.install(&[&["--prebuilt", "--prefix", &prefix.to_string_lossy(), "--no-file-chooser"][..], &QUIET].concat());
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!prefix.join("lib/failbrauwser/libfailbrauwser-chooser.so").exists());
+    assert!(!deb.path("home/.config/environment.d/60-failbrauwser.conf").exists());
+    assert_eq!(deb.read("session-env").trim(), "GTK3_MODULES=/usr/lib/gtk-3.0/modules/libcanberra-gtk-module.so");
+}
+
+#[test]
+fn systemd_reads_the_environment_file_as_meant() {
+    let generator = Path::new("/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator");
+    if !generator.exists() {
+        eprintln!("no systemd environment generator, skipping");
+        return;
+    }
+    let deb = Debian::new("1.92.0", &[]);
+    release_package(&deb);
+    let prefix = deb.path("prefix");
+    let o = deb.install(&[&["--prebuilt", "--prefix", &prefix.to_string_lossy()][..], &QUIET].concat());
+    assert!(o.status.success(), "{}", text(&o));
+    let module = prefix.join("lib/failbrauwser/libfailbrauwser-chooser.so");
+    let read = |modules: Option<&str>| {
+        let mut c = Command::new(generator);
+        c.env_clear().env("HOME", deb.path("home")).env("XDG_CONFIG_HOME", deb.path("home/.config"));
+        if let Some(m) = modules {
+            c.env("GTK3_MODULES", m);
+        }
+        let out = String::from_utf8_lossy(&c.output().unwrap().stdout).into_owned();
+        out.lines().find_map(|l| l.strip_prefix("GTK3_MODULES=").map(str::to_string)).unwrap_or_default()
+    };
+    assert_eq!(read(None), module.display().to_string());
+    assert_eq!(read(Some("/x/other.so")), format!("{}:/x/other.so", module.display()));
+}

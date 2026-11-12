@@ -1,0 +1,30 @@
+# GTK 3 applications that make GTK's own file dialog (xfce4-terminal's "Save Contents…")
+# get failBrauwser's instead, through the desktop portal: with their title, button, file
+# name, folder and file types; the answer goes back to them as if picked in GTK's dialog.
+open $T/home
+run GTK3_MODULES=$T/module.so python3 $UI/gtk3_dialog.py save $T/saved $T/home notes.txt
+wait-chooser
+expect-chooser-request Save contents... | _Save | save notes.txt | $T/home | Text files,Logs | 0
+chooser-name output.txt
+chooser-filter 1
+chooser-accept
+wait-file-text $T/saved = -3 $T/home/output.txt | Logs
+# Cancelled.
+run GTK3_MODULES=$T/module.so python3 $UI/gtk3_dialog.py save $T/cancelled $T/home notes.txt
+wait-chooser
+chooser-cancel
+wait-file-text $T/cancelled = -6 | Text files
+# Several files, answered with the application's own OK button.
+run GTK3_MODULES=$T/module.so python3 $UI/gtk3_dialog.py several $T/opened $T/home
+wait-chooser
+expect-chooser-request Pick something | _Pick | open several | $T/home | Text files,Logs | 0
+chooser-select a.txt | b.txt
+chooser-accept
+wait-file-text $T/opened = -5 $T/home/a.txt $T/home/b.txt | Text files
+# A folder.
+run GTK3_MODULES=$T/module.so python3 $UI/gtk3_dialog.py folder $T/folder $T/home
+wait-chooser
+expect-chooser-request Pick something | _Pick | open folder | $T/home | Text files,Logs | 0
+chooser-open $T/home/sub
+chooser-accept
+wait-file-text $T/folder = -5 $T/home/sub | Text files

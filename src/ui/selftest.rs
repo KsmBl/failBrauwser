@@ -572,6 +572,28 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let keys = p.keys_for_names(&names);
             p.select_names(&keys);
         }
+        "expect-chooser-request" => {
+            // expect-chooser-request <title> | <button> | <what> | <folder> | <filters> | <filter>:
+            // what the open chooser was asked for.
+            let r = super::chooser::current().ok_or("no chooser")?.0.request();
+            let what = match &r.mode {
+                failbrauwser::chooser::Mode::Open { multiple, directory } => format!("open{}{}", if *multiple { " several" } else { "" }, if *directory { " folder" } else { "" }),
+                failbrauwser::chooser::Mode::Save { name } => format!("save {name}"),
+                failbrauwser::chooser::Mode::SaveFiles { names } => format!("save files {}", names.join(",")),
+            };
+            let filters: Vec<String> = r.filters.iter().map(|f| f.name.clone()).collect();
+            let got = format!(
+                "{} | {} | {what} | {} | {} | {}",
+                r.title,
+                r.accept_label.unwrap_or_default(),
+                r.folder.map(|f| f.display().to_string()).unwrap_or_default(),
+                filters.join(","),
+                r.current_filter.map(|i| i.to_string()).unwrap_or_default()
+            );
+            if got != arg {
+                return Err(format!("asked for {got:?}"));
+            }
+        }
         "expect-chooser-rows" => {
             let (_, cw) = super::chooser::current().ok_or("no chooser")?;
             let got = cw.current_pane().shown_names().join(" | ");
