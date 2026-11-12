@@ -216,7 +216,15 @@ impl Helper {
     }
 
     fn spawn(&self) -> Result<Proc> {
-        let mut child = Command::new(&self.exe)
+        // The helper is told this process id: it ends together with the instance that started
+        // it, however that instance ends — exit, kill, or a request still running when its
+        // pipe is left behind. CREATE_NO_WINDOW keeps the helper's own console window from
+        // flashing, as this program has no console of its own to share with it.
+        let mut command = Command::new(&self.exe);
+        command.arg("--parent").arg(std::process::id().to_string());
+        #[cfg(windows)]
+        crate::win::console::no_window(&mut command);
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

@@ -7,6 +7,8 @@ namespace FbArchive;
 /// <summary>
 /// Line based JSON protocol. Every request is one JSON object on one line of stdin and gets
 /// exactly one JSON object on one line of stdout. Requests are handled strictly in order.
+/// <c>--version</c> answers the protocol version and leaves; <c>--parent &lt;pid&gt;</c> names the
+/// instance this helper ends with (see <see cref="ParentWatch"/>).
 /// </summary>
 public static class Program {
   public const int ProtocolVersion = 1;
@@ -17,6 +19,7 @@ public static class Program {
       return 0;
     }
 
+    ParentWatch.StartIfAsked(args);
     var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
     var stdout = Console.OpenStandardOutput();
     Progress.Stdout = stdout;
