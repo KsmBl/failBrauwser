@@ -560,7 +560,7 @@ impl Sidebar {
     /// The right-click menu of a folder in the tree.
     fn tree_menu(self: &Rc<Self>, dir: &Path) -> gtk::Menu {
         let menu = gtk::Menu::new();
-        let open = gtk::MenuItem::with_mnemonic("Open in New _Tab");
+        let open = super::menuicons::item("Open in New _Tab");
         let me = Rc::downgrade(self);
         let d = dir.to_path_buf();
         open.connect_activate(move |_| {
@@ -569,7 +569,7 @@ impl Sidebar {
             }
         });
         menu.append(&open);
-        let link = gtk::MenuItem::with_mnemonic("Create _Link on Desktop");
+        let link = super::menuicons::item("Create _Link on Desktop");
         let me = Rc::downgrade(self);
         let l = desktoplink::for_dir(dir, None);
         link.set_sensitive(l.is_some());
@@ -587,7 +587,7 @@ impl Sidebar {
     fn drive_menu(self: &Rc<Self>, v: &Volume, usage: Option<Usage>) -> gtk::Menu {
         let menu = gtk::Menu::new();
         let add = |label: &str, f: Box<dyn Fn(&Sidebar, &Rc<Window>)>| {
-            let item = gtk::MenuItem::with_mnemonic(label);
+            let item = super::menuicons::item(label);
             let me = Rc::downgrade(self);
             item.connect_activate(move |_| {
                 if let Some(sb) = me.upgrade() {
@@ -667,7 +667,7 @@ impl Sidebar {
     fn menu_for(self: &Rc<Self>, row: Option<&gtk::ListBoxRow>) -> gtk::Menu {
         let menu = gtk::Menu::new();
         let add = |menu: &gtk::Menu, label: &str, enabled: bool, f: Box<dyn Fn()>| {
-            let item = gtk::MenuItem::with_mnemonic(label);
+            let item = super::menuicons::item(label);
             item.set_sensitive(enabled);
             item.connect_activate(move |_| f());
             menu.append(&item);
@@ -756,7 +756,7 @@ impl Sidebar {
             }
         }));
         let hidden: Vec<(usize, String)> = sc.0.iter().enumerate().filter(|(_, s)| s.hidden).map(|(i, s)| (i, s.label())).collect();
-        let show = gtk::MenuItem::with_mnemonic("_Show Hidden Entry");
+        let show = super::menuicons::item("_Show Hidden Entry");
         if hidden.is_empty() {
             show.set_sensitive(false);
         } else {
@@ -902,7 +902,7 @@ impl Sidebar {
         let menu = self.menu_for(row.as_ref());
         let (first, rest) = item.split_once('/').map_or((item, None), |(a, b)| (a, Some(b)));
         let find = |menu: &gtk::Menu, text: &str| -> Option<gtk::MenuItem> {
-            menu.children().into_iter().filter_map(|c| c.downcast::<gtk::MenuItem>().ok()).find(|m| m.label().is_some_and(|l| l.replace('_', "") == text))
+            menu.children().into_iter().filter_map(|c| c.downcast::<gtk::MenuItem>().ok()).find(|m| super::menuicons::item_text(&m).is_some_and(|l| l.replace('_', "") == text))
         };
         let mut found = find(&menu, first).ok_or_else(|| format!("no menu item {first:?}"))?;
         if let Some(rest) = rest {
@@ -992,7 +992,7 @@ impl Sidebar {
             .children()
             .into_iter()
             .filter_map(|c| c.downcast::<gtk::MenuItem>().ok())
-            .find(|m| m.label().is_some_and(|l| l.replace('_', "") == item))
+            .find(|m| super::menuicons::item_text(&m).is_some_and(|l| l.replace('_', "") == item))
             .ok_or_else(|| format!("no menu item {item:?}"))?;
         found.activate();
         Ok(())
@@ -1006,7 +1006,7 @@ impl Sidebar {
             .children()
             .into_iter()
             .filter_map(|c| c.downcast::<gtk::MenuItem>().ok())
-            .find(|m| m.label().is_some_and(|l| l.replace('_', "") == item))
+            .find(|m| super::menuicons::item_text(&m).is_some_and(|l| l.replace('_', "") == item))
             .ok_or_else(|| format!("no menu item {item:?}"))?;
         found.activate();
         Ok(())

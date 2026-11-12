@@ -151,7 +151,7 @@ pub fn create_non_local(w: &Window, loc: &Location, name: &str, folder: bool) {
 fn section(menu: &gio::Menu, items: &[(&str, &str)]) {
     let s = gio::Menu::new();
     for (label, action) in items {
-        s.append(Some(label), Some(action));
+        s.append_item(&super::menuicons::model_item(label, action));
     }
     menu.append_section(None, &s);
 }
@@ -185,12 +185,12 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
         return menu;
     }
     let open = gio::Menu::new();
-    open.append(Some("_Open"), Some("win.open"));
+    open.append_item(&super::menuicons::model_item("_Open", "win.open"));
     if items.iter().all(Item::is_dir_like) {
-        open.append(Some("Open in New _Tab"), Some("win.open-in-tab"));
+        open.append_item(&super::menuicons::model_item("Open in New _Tab", "win.open-in-tab"));
     }
     if let Some(sub) = open_with_menu(items) {
-        open.append_submenu(Some("Open _With"), &sub);
+        open.append_item(&super::menuicons::model_submenu("Open _With", &sub));
     }
     menu.append_section(None, &open);
     let mut edit = vec![("Cu_t", "win.cut"), ("_Copy", "win.copy")];
@@ -249,13 +249,13 @@ pub fn open_with_menu(items: &[Item]) -> Option<gio::Menu> {
         let Some(id) = app.id() else { continue };
         let item = gio::MenuItem::new(Some(&app.display_name()), None);
         item.set_action_and_target_value(Some("win.open-with"), Some(&id.to_variant()));
-        if let Some(icon) = app.icon() {
+        if let Some(icon) = app.icon().or_else(|| super::menuicons::themed(&["application-x-executable"]).map(|n| gio::ThemedIcon::new(&n).upcast())) {
             item.set_icon(&icon);
         }
         sub.append_item(&item);
     }
     let other = gio::Menu::new();
-    other.append(Some("Other _Application…"), Some("win.open-with-other"));
+    other.append_item(&super::menuicons::model_item("Other _Application…", "win.open-with-other"));
     sub.append_section(None, &other);
     Some(sub)
 }

@@ -46,12 +46,14 @@ pub fn menu_section(w: &Window) -> Option<gio::Menu> {
     for a in &list {
         let item = gio::MenuItem::new(Some(&a.name), None);
         item.set_action_and_target_value(Some("win.custom-action"), Some(&a.name.to_variant()));
-        if !a.icon.is_empty() {
-            item.set_icon(&gio::ThemedIcon::new(&a.icon));
+        // An action without an icon of its own gets a general one, so the texts line up.
+        let icon = Some(a.icon.clone()).filter(|i| !i.is_empty()).or_else(|| super::menuicons::themed(&["system-run", "application-x-executable"]));
+        if let Some(icon) = icon {
+            item.set_icon(&gio::ThemedIcon::new(&icon));
         }
         s.append_item(&item);
     }
-    s.append(Some("Edit Custom _Actions…"), Some("win.edit-custom-actions"));
+    s.append_item(&super::menuicons::model_item("Edit Custom _Actions…", "win.edit-custom-actions"));
     Some(s)
 }
 

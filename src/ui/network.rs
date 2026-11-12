@@ -401,7 +401,7 @@ impl NetworkPage {
     fn menu(self: &Rc<Self>, e: &Entry) -> gtk::Menu {
         let menu = gtk::Menu::new();
         let add = |label: &str, f: Box<dyn Fn(&Rc<NetworkPage>)>| {
-            let item = gtk::MenuItem::with_mnemonic(label);
+            let item = super::menuicons::item(label);
             let weak = Rc::downgrade(self);
             item.connect_activate(move |_| {
                 if let Some(p) = weak.upgrade() {
@@ -801,7 +801,7 @@ pub fn menu_item(pane: &Rc<Pane>, title: &str, item: &str) -> Result<(), String>
         .children()
         .into_iter()
         .filter_map(|c| c.downcast::<gtk::MenuItem>().ok())
-        .find(|m| m.label().is_some_and(|l| l.replace('_', "") == item))
+        .find(|m| super::menuicons::item_text(&m).is_some_and(|l| l.replace('_', "") == item))
         .ok_or_else(|| format!("no menu item {item:?}"))?;
     found.activate();
     Ok(())
