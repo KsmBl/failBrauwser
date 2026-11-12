@@ -734,14 +734,40 @@ pub fn open_as_archive(w: &Window) {
     });
 }
 
+fn open_loc(w: &Window, loc: ArchiveLoc) {
+    w.navigate(Location::Archive(loc));
+}
+
 /// Opens the selected file as the container kind with this id (M14 *Open as*), whatever its name
 /// says. No probe first: detection is exactly what the user overruled, and a chosen reader answers
-/// a file it cannot open with its own refusal, which the pane shows. The listing of a locked volume
-/// is the encrypted shell, and that is what asks for the passphrase.
+/// a file it cannot open with its own refusal, which the pane shows.
+///
+/// An encrypted kind is asked for its passphrase before the file is opened, so that answer is what
+/// its reader runs with — a search started without one can only end at the shell of a locked volume.
+/// A refused prompt opens the file without a passphrase, which leaves that shell in view and keeps
+/// the later ask of a reading in place. A file this session already has a passphrase for is not
+/// asked for again.
 pub fn open_as_volume(w: &Window, kind: &str) {
     let pane = w.current_pane();
     let Some(path) = pane.selected_items().into_iter().find_map(|i| if i.is_dir_like() { None } else { i.path().map(PathBuf::from) }) else { return };
-    w.navigate(Location::Archive(ArchiveLoc::root_as(path, kind)));
+    let loc = ArchiveLoc::root_as(path.clone(), kind);
+    if !super::extensions::kind_needs_passphrase(kind) || Vfs::global().has_password(&loc) {
+        open_loc(w, loc);
+        return;
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+    let (weak_yes, weak_no) = (Rc::downgrade(&w.me()), Rc::downgrade(&w.me()));
+    let (asked, refused) = (loc.clone(), loc);
+    util::ask_secret_answered(&w.win, "Encrypted Volume", &format!("Passphrase for “{name}”:"), move |pw| {
+        Vfs::global().set_password(&asked, &pw);
+        if let Some(w) = weak_yes.upgrade() {
+            open_loc(&w, asked.clone());
+        }
+    }, move || {
+        if let Some(w) = weak_no.upgrade() {
+            open_loc(&w, refused.clone());
+        }
+    });
 }
 
 thread_local! {

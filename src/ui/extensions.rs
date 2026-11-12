@@ -282,6 +282,22 @@ pub enum OpenAs {
     Volume(&'static str, &'static str),
 }
 
+/// Is this helper format id one of the encrypted container kinds the menu offers? Its ids are the
+/// single source, so an entry and the ask that belongs to it cannot drift apart.
+pub fn kind_needs_passphrase(id: &str) -> bool {
+    VOLUME_KINDS.iter().any(|(kind, _)| *kind == id)
+}
+
+impl OpenAs {
+    /// Must the passphrase arrive before the file is opened (M14)? Every volume kind the menu
+    /// offers is an encrypted one, and its reader is worth running only with the answer in hand:
+    /// a search started without it can only answer with the shell of a locked volume. *Archive*
+    /// keeps the ask where the library puts it — on the reader that needs one.
+    pub fn needs_passphrase(&self) -> bool {
+        match self { OpenAs::Volume(id, _) => kind_needs_passphrase(id), OpenAs::Archive => false }
+    }
+}
+
 /// Which *Open as* entries one selected file gets (M14). Decided apart from the menu so it can be
 /// tested without a pane: a folder gets none, and a file the archive viewer already opens by name
 /// needs no *Archive* entry, because that entry is for what the name sends somewhere else.
@@ -340,7 +356,7 @@ pub fn open_with_menu(items: &[Item]) -> Option<gio::Menu> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OpenAs, open_as_choices};
+    use super::{OpenAs, VOLUME_KINDS, kind_needs_passphrase, open_as_choices};
 
     #[test]
     fn a_folder_gets_no_open_as_choices() {
@@ -354,6 +370,17 @@ mod tests {
             let kinds = open_as_choices(name, false).into_iter().filter(|c| matches!(c, OpenAs::Volume(_, _))).count();
             assert_eq!(kinds, 4, "{name}");
         }
+    }
+
+    /// A chosen encrypted kind reads its volume with the passphrase, so the ask comes first:
+    /// a search that runs before the answer can only end in the shell of a locked volume (M14).
+    #[test]
+    fn a_chosen_volume_asks_its_passphrase_before_opening() {
+        for (id, label) in VOLUME_KINDS {
+            assert!(OpenAs::Volume(id, label).needs_passphrase(), "{id} is encrypted: it asks before anything is read");
+        }
+        assert!(!OpenAs::Archive.needs_passphrase(), "Archive asks only when a reader of its own asks");
+        assert!(!kind_needs_passphrase("Zip"), "a forced ordinary archive keeps the reader's own ask");
     }
 
     #[test]

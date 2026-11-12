@@ -360,41 +360,57 @@ pub fn ask_text(
     });
 }
 
-/// Asks for a password (hidden input).
-pub fn ask_secret(parent: &impl IsA<gtk::Window>, title: &str, label: &str, on_ok: impl Fn(String) + 'static) {
+/// Asks for a password (hidden input). `on_ok` gets the non-empty answer, `on_cancel` answers a
+/// prompt the user refused (cancelled, closed, or unlocked with an empty field). A message dialog,
+/// so a UI script can see the ask and drive it: its primary text is the label.
+pub fn ask_secret_answered(parent: &impl IsA<gtk::Window>, title: &str, label: &str, on_ok: impl Fn(String) + 'static, on_cancel: impl Fn() + 'static) {
     if super::selftest::active() {
         if let Some(t) = super::selftest::scripted_text() {
             glib::idle_add_local_once(move || on_ok(t));
             return;
         }
     }
-    let d = gtk::Dialog::with_buttons(
-        Some(title),
+    let d = gtk::MessageDialog::new(
         Some(parent),
         gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
-        &[("_Cancel", gtk::ResponseType::Cancel), ("_Unlock", gtk::ResponseType::Ok)],
+        gtk::MessageType::Question,
+        gtk::ButtonsType::None,
+        title,
     );
+    d.set_secondary_text(Some(label));
+    d.add_button("_Cancel", gtk::ResponseType::Cancel);
+    d.add_button("_Unlock", gtk::ResponseType::Ok);
     d.set_default_response(gtk::ResponseType::Ok);
-    d.set_resizable(false);
-    let area = d.content_area();
-    area.set_spacing(6);
-    area.set_border_width(12);
-    let l = gtk::Label::new(Some(label));
-    l.set_xalign(0.0);
     let entry = gtk::Entry::new();
     entry.set_visibility(false);
     entry.set_input_purpose(gtk::InputPurpose::Password);
     entry.set_activates_default(true);
     entry.set_width_chars(32);
-    area.add(&l);
-    area.add(&entry);
+    if let Ok(area) = d.message_area().downcast::<gtk::Box>() {
+        area.pack_start(&entry, false, false, 0);
+    }
     d.show_all();
+    entry.grab_focus();
+    let answered = std::cell::Cell::new(false);
     d.connect_response(move |d, resp| {
-        if resp == gtk::ResponseType::Ok {
-            on_ok(entry.text().to_string());
+        if answered.replace(true) {
+            return;
         }
-        d.close();
+        // Gone before what comes next shows: close() only queues a delete event, which GTK
+        // drops while another dialog holds the grab.
+        let text = entry.text().to_string();
+        unsafe { d.destroy() };
+        if resp == gtk::ResponseType::Ok && !text.trim().is_empty() {
+            on_ok(text);
+        } else {
+            on_cancel();
+        }
     });
+}
+
+/// Asks for a password (hidden input); a prompt left unanswered is left at that.
+pub fn ask_secret(parent: &impl IsA<gtk::Window>, title: &str, label: &str, on_ok: impl Fn(String) + 'static) {
+    ask_secret_answered(parent, title, label, on_ok, || {});
 }
 
 /// Valid single file name: not empty, no slash, not "." or "..".
