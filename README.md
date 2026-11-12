@@ -12,8 +12,8 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
   rename, delete or create files in it like anywhere else. Open a file from inside an archive,
   edit it, save — the archive is updated. *Compress…* writes about 350 of these formats.
 - **Looks like your desktop.** Native GTK widgets and your GTK theme, icon theme and fonts;
-  nothing is custom-drawn. Switching the desktop between light and dark mode restyles every
-  window at once.
+  nothing is custom-drawn; the right-click menus show your icon theme's icons. Switching the
+  desktop between light and dark mode restyles every window at once.
 - **Opens instantly.** After the first start a background instance keeps running; a new
   window appears ~40 ms after you click the launcher, using no CPU while idle.
 - **Drives in the side panel** with a fill bar under each mount point; the system's own
