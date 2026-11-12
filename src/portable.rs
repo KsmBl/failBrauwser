@@ -88,12 +88,56 @@ fn is_newer(a: &str, b: &str) -> bool {
     x > y
 }
 
+/// The folder a payload is staged in before a single byte of it reaches the installed tree.
+/// Inside the install folder on purpose: moving a file from there into place is a same-volume
+/// rename, which is where the all-or-nothing of `install` comes from. It costs room for a second
+/// copy of the tree for the moment the unpack runs, and it is a dot-name so the tree's own layout
+/// (`bin`, `lib`, `share`) never reads it as part of an install.
+const STAGING: &str = ".payload-staging";
+
 /// Unpacks the payload zip (the staging tree under its single `failbrauwser-*` root
 /// folder) into `prefix`, replacing every file it carries; extra files a newer install
 /// left behind stay.
+///
+/// Two phases inside one staging tree, so that a payload which cannot be applied leaves the
+/// installed tree exactly as it was rather than half of it: the whole payload is read, inflated,
+/// CRC-checked and written under `STAGING/new` first, and only a complete one moves into place —
+/// and a move that fails partway is undone from the copies of what it replaced under
+/// `STAGING/previous`. Moving a replaced file aside is a rename, which Windows even allows for a
+/// running program file (the in-app update uses that same fact); a payload whose file cannot be
+/// moved at all leaves the tree as it found it and takes its staging away with it.
 fn install(payload: &[u8], prefix: &std::path::Path) -> std::io::Result<()> {
+    let stage = prefix.join(STAGING);
+    let _ = std::fs::remove_dir_all(&stage); // an earlier attempt that died mid-way
+    let (fresh, previous) = (stage.join("new"), stage.join("previous"));
+    let mut applied = Vec::new();
+    let outcome = apply_payload(payload, prefix, &fresh, &previous, &mut applied);
+    if outcome.is_err() {
+        rollback(&previous, prefix, &applied); // back to what the tree held before the first move
+    }
+    let _ = std::fs::remove_dir_all(&stage); // the copies it staged, fresh and previous alike
+    outcome
+}
+
+/// Undoes the move phase back to front. An entry that replaced a file gives that file back from
+/// its copy under `previous`; an entry the tree had never held is simply taken away again. Each
+/// step is best-effort on purpose: the reason the install is being undone is the one worth
+/// reporting, and a file the tree itself cannot give back is rarer than that failure.
+fn rollback(previous: &std::path::Path, prefix: &std::path::Path, applied: &[(String, bool)]) {
+    for (rel, replaced) in applied.iter().rev() {
+        let target = prefix.join(rel.replace('/', "\\"));
+        let _ = std::fs::remove_file(&target); // the file this attempt put there, if it is still there
+        if *replaced {
+            let _ = std::fs::rename(previous.join(rel.replace('/', "\\")), &target);
+        }
+    }
+}
+
+fn apply_payload(payload: &[u8], prefix: &std::path::Path, fresh: &std::path::Path, previous: &std::path::Path, applied: &mut Vec<(String, bool)>) -> std::io::Result<()> {
     let root = common_root(payload);
-    for entry in central_directory(payload) {
+    let entries = central_directory(payload);
+    let mut placed = Vec::with_capacity(entries.len());
+    for entry in &entries {
         let full = entry.name.replace('\\', "/");
         let Some(rel) = full.strip_prefix(&root) else {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("payload entry {} is not under the expected root {root}", entry.name)));
@@ -103,6 +147,9 @@ fn install(payload: &[u8], prefix: &std::path::Path) -> std::io::Result<()> {
         }
         if rel.starts_with('/') || rel.as_bytes().get(1) == Some(&b':') || rel.split('/').any(|c| c == "..") {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("payload entry {} escapes the install folder", entry.name)));
+        }
+        if rel.split('/').next() == Some(STAGING) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("payload entry {} sits where the payload stages itself", entry.name)));
         }
         let compressed = payload.get(entry.data..entry.data + entry.csize).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "payload is truncated"))?;
         let mut bytes = Vec::with_capacity(entry.size);
@@ -118,11 +165,32 @@ fn install(payload: &[u8], prefix: &std::path::Path) -> std::io::Result<()> {
         if bytes.len() != entry.size || hasher.finalize() != entry.crc {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("payload entry {} is corrupt", entry.name)));
         }
-        let target = prefix.join(rel.replace('/', "\\"));
+        let staged = fresh.join(rel.replace('/', "\\"));
+        if let Some(parent) = staged.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&staged, &bytes)?;
+        placed.push((staged, prefix.join(rel.replace('/', "\\")), rel.to_string()));
+    }
+    for (staged, target, rel) in placed {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&target, &bytes)?;
+        let replaced = target.is_file();
+        if replaced {
+            // what this entry replaces goes aside rather than being overwritten, so a later entry
+            // that cannot be put in place gives it back — the same rename the in-app update uses
+            let aside = previous.join(rel.replace('/', "\\"));
+            if let Some(parent) = aside.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(&target, &aside)?; // a refusal here changed nothing in the tree
+            applied.push((rel.clone(), true));
+        }
+        std::fs::rename(&staged, &target)?;
+        if !replaced {
+            applied.push((rel, false)); // only a file this attempt actually brought in is its own to take away
+        }
     }
     Ok(())
 }
@@ -321,6 +389,60 @@ mod tests {
         let mut corrupt = payload.clone();
         corrupt[names[2] - 30] ^= 1; // the directory's CRC for the stored entry
         assert!(install(&corrupt, d.path()).is_err(), "a file failing its CRC is refused");
+    }
+
+    /// The contract of a refused unpack: nothing of it reaches the installed tree. An entry that
+    /// cannot be written — a folder standing where the payload names a file — fails the whole
+    /// install, and the folder is left holding exactly what it held: not one entry written ahead
+    /// of it, no half-staged copy of the payload behind.
+    #[test]
+    fn a_payload_that_cannot_be_applied_leaves_the_installed_tree_as_it_was() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("bin")).unwrap();
+        std::fs::write(d.path().join("bin/keep.exe"), b"OLD").unwrap();
+        std::fs::write(d.path().join("plain.txt"), b"OLD").unwrap();
+        std::fs::create_dir_all(d.path().join("bin/blocked.exe")).unwrap(); // where a file belongs
+        let (payload, names) = zip_of(&[("r/README.md", b"NEW".as_slice(), 0), ("r\\bin\\keep.exe", b"NEW".as_slice(), 0), ("r\\bin\\blocked.exe", b"NEW".as_slice(), 0)]);
+        let before = tree_of(d.path());
+
+        assert!(install(&payload, d.path()).is_err(), "an entry that cannot be written fails the install");
+        assert_eq!(tree_of(d.path()), before, "the install folder holds exactly the files it held before");
+        assert_eq!(std::fs::read(d.path().join("bin/keep.exe")).unwrap(), b"OLD", "the file the payload would have replaced keeps its content");
+        assert_eq!(std::fs::read(d.path().join("plain.txt")).unwrap(), b"OLD");
+
+        // A corrupt entry is refused the same way, and for the same reason: reading and verifying
+        // the payload is finished before the installed tree is touched at all.
+        let mut corrupt = payload.clone();
+        corrupt[names[2] - 30] ^= 1; // the directory's CRC for the last entry
+        std::fs::remove_dir_all(d.path().join("bin/blocked.exe")).unwrap();
+        let intact = tree_of(d.path());
+        assert!(install(&corrupt, d.path()).is_err(), "an entry failing its CRC fails the install");
+        assert_eq!(tree_of(d.path()), intact, "and no file of the payload was written on the way to it");
+
+        // With the blocker gone the same payload applies completely — including over a file that
+        // is already there.
+        assert!(install(&payload, d.path()).is_ok(), "the same payload applies once the folder is out of the way");
+        assert_eq!(std::fs::read(d.path().join("bin/keep.exe")).unwrap(), b"NEW", "an installed file is replaced");
+        assert_eq!(std::fs::read(d.path().join("README.md")).unwrap(), b"NEW");
+        assert_eq!(std::fs::read(d.path().join("bin/blocked.exe")).unwrap(), b"NEW");
+        assert!(tree_of(d.path()).iter().all(|p| !p.contains("staging")), "no staging folder is left behind: {:?}", tree_of(d.path()));
+    }
+
+    /// Every path under `root`, as root-relative strings, sorted — so two states of the same
+    /// folder compare as equal or not, without naming how the install stages its payload.
+    fn tree_of(root: &std::path::Path) -> Vec<String> {
+        let (mut out, mut dirs) = (Vec::new(), vec![root.to_path_buf()]);
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path.clone());
+                }
+                out.push(path.strip_prefix(root).unwrap().display().to_string().replace('\\', "/"));
+            }
+        }
+        out.sort();
+        out
     }
 
     /// A zip without one shared root folder installs flat, exactly as packed.
