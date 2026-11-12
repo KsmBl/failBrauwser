@@ -147,9 +147,11 @@ Scenarios that need Linux-only services skip with a printed reason:
 and the portal/default-app parts elsewhere. Timing budgets for the big-listing paints are
 widened for win32 GTK plus Defender (`big_listings.fbt`) — measured here, not guessed.
 That makes 44 scripts across 45 scenario tests; run serially (`RUST_TEST_THREADS=1
-cargo test --test ui_selftest`), 42 answer green on this host as of this writing
-(measured 2026-11-12, 217 s). Three fail. Two sit with where this checkout lives rather
-than with the archive work: the work folder lies under a path with a space
+cargo test --test ui_selftest`), 42 answered green on this host on 2026-11-12 morning
+(measured 217 s), and 41 in each of two re-runs later that day (252 s and 288 s) — the
+extra one being `big_listings.fbt`, whose win paint budgets sit close to what this machine
+measures; see below. Three fail in every run: two sit with where this checkout lives rather
+than with the archive work — the work folder lies under a path with a space
 (`A:\Working Copies`), so `update.fbt` meets `curl: (3)` — the updater passes its
 `file://` fixtures unescaped, and the fixture URL carries that same space — and
 `custom_actions.fbt` loses its `%f`-expanded marker command to the same space (that very
@@ -167,8 +169,16 @@ stay here because the difference belongs to this machine's clipboard, not to the
 volume is read, and the views the chosen kinds produce; what each kind reads out byte for
 byte belongs to `archive_helper.rs` and `archive_vfs.rs`, where reading does not wait for a
 clipboard job. `trash.fbt` once timed out while the key-derivation tests held every core;
-run alone it passes. `big_listings.fbt` once exceeded its widened paint budget in a loaded
-run (15,963 ms against the 12,000 ms budget) and answered inside it when run alone and in
-the measurement above. These failures surfaced when the app's Windows build compiled again
+run alone it passes. `big_listings.fbt` is the load-sensitive one rather than a defect:
+measured over 2026-11-12 it stayed inside both win budgets in one run and exceeded them in
+others — 15,963 ms against the 12,000 ms budget, then 13,084 ms (line 18) and 3,707 ms
+(line 10) in two suite runs, then 3,707 ms and 16,665 ms in two runs of that scenario
+alone, where an earlier run the same morning had answered green inside 25 s. The 16,665 ms
+run linked no icon resource at all (`data\icons\failbrauwser.rc` taken away from the
+build), and the 3,707 ms run carried it, so the stall does not come from the picture the
+shell reads: it comes from this machine's disk and Defender state while 15,000 fresh rows
+paint. Everything else `cargo test` runs answers green here (234 passed, 0 failed, 2
+ignored, measured 2026-11-12), the four `tests\app_icon.rs` scenarios among them.
+These failures surfaced when the app's Windows build compiled again
 after the `--lvm` helper stopped importing Linux; no Windows build had run these Linux-era
 update and drives paths before.
