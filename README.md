@@ -100,7 +100,9 @@ winpack\install.ps1 -Prefix D:\Apps\failBrauwser
 
 `package.ps1` also builds `failbrauwser-<version>-x86_64-windows.exe`: the whole application
 as one file — run it once and it unpacks itself into your Programs folder and starts; that
-single file is all that folder needs (see [docs/WINDOWS.md](docs/WINDOWS.md)).
+single file is all that folder needs (see [docs/WINDOWS.md](docs/WINDOWS.md)). An unpack that
+cannot be applied — a running instance holding that folder's program file, say — leaves your
+installed copy untouched and says why in a window rather than doing nothing quietly.
 
 Starting failBrauwser on Windows never opens a console window: the program file is linked as
 a windowed program, so a double-click, the Start Menu entry and the single-file launcher each

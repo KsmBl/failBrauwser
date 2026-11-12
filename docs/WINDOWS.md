@@ -55,7 +55,19 @@ copy, which a version comparison alone never does. `install.ps1` records the sam
 the package, so a manually installed tree is known to the launcher rather than read as
 unknown. The loader cache is regenerated for the new location, then the program starts and
 its exit code passes through. Nothing is registered in the system, and no DLLs or data ever
-sit next to the file itself. An in-app update (*Help → Check for Updates*) replaces the
+sit next to the file itself.
+
+That unpack is all-or-nothing. The payload is staged in a folder inside the install folder and
+its files are moved into place only once every entry has been read, inflated and CRC-verified,
+so a payload that cannot be applied — a file that stands where one belongs, an entry that fails
+its check — leaves the installed tree exactly as it was instead of replacing part of it, and the
+staging folder is taken away again; `.payload-version` is written only after a complete unpack.
+A launcher that cannot install says so where the person who started it will see it: a message
+box naming the install folder and the reason when it was started with no console, and that same
+text in the terminal when a terminal started it; either way it exits 1 rather than pretending to
+have started. One boundary stays: a refresh needs every instance running from that folder closed
+first, because Windows will not replace a running program file. *Help → Check for Updates* inside
+the app performs that swap (it renames the running file aside); the launcher does not. An in-app update (*Help → Check for Updates*) replaces the
 tree's contents and leaves that stamp text as the launcher wrote it, so the launcher keeps
 comparing against the payload it carried — for that launcher, an updated tree is not newer
 than its own payload, so it stays untouched.
