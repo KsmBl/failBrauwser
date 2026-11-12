@@ -1668,8 +1668,10 @@ impl Pane {
     }
 
     /// Sends a left button press or release onto the middle of the item `name` in the view
-    /// shown, through GTK as the mouse does, with the modifier keys `state` (self-test).
-    pub fn send_button(&self, name: &str, press: bool, state: gdk::ModifierType) -> Result<(), String> {
+    /// shown, through GTK as the mouse does, with the modifier keys `state` (self-test). In the
+    /// list `at` can instead be the start of its name ([`Spot::Name`]) or the empty end of its
+    /// name cell ([`Spot::Blank`]).
+    pub fn send_button(&self, name: &str, press: bool, state: gdk::ModifierType, at: Spot) -> Result<(), String> {
         use glib::translate::{IntoGlib, ToGlibPtr};
         let key = self.keys_for_names(&[OsString::from(name)]).pop().ok_or("no name")?;
         let path = {
@@ -1684,7 +1686,12 @@ impl Pane {
         } else {
             let rect = self.tree.cell_area(Some(&path), self.tree.column(0).as_ref());
             let bin = self.tree.bin_window().ok_or("the list is not realized")?;
-            (bin, rect.x() + rect.width() / 2, rect.y() + rect.height() / 2)
+            let x = match at {
+                Spot::Middle => rect.x() + rect.width() / 2,
+                Spot::Name => rect.x() + 4,
+                Spot::Blank => rect.x() + rect.width() - 4,
+            };
+            (bin, x, rect.y() + rect.height() / 2)
         };
         let pointer = window.display().default_seat().and_then(|s| s.pointer()).ok_or("no pointer")?;
         let (_, ox, oy) = window.origin();
@@ -1874,6 +1881,14 @@ impl Pane {
         self.st.borrow().generation
     }
 
+}
+
+/// Where on an item a test presses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spot {
+    Middle,
+    Name,
+    Blank,
 }
 
 /// Whether a press keeps the selection for a drag: a plain single left press on one of

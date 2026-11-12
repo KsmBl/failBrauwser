@@ -1,0 +1,18 @@
+# Dragging from a file's icon or name drags the file; from the empty part of its row it
+# draws the selection rectangle. A drag of several items shows them all, with their count.
+open $T/d
+press-name a.txt
+expect-selection a.txt
+expect-rubber-band off
+press-blank b.txt
+expect-rubber-band on
+press-name c.txt
+expect-rubber-band off
+select a.txt | b.txt | c.txt
+expect-drag-image 3 3
+select a.txt
+expect-drag-image 1 1
+action win.view-mode icons
+select a.txt | b.txt
+expect-drag-image 2 2
+action win.view-mode list

@@ -302,3 +302,37 @@ fn make_links(w: &Window, sources: &[ClipSource], dest: &Location) {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixel(s: &mut gtk::cairo::ImageSurface, x: i32, y: i32) -> [u8; 4] {
+        let stride = s.stride() as usize;
+        let data = s.data().unwrap();
+        let i = y as usize * stride + x as usize * 4;
+        [data[i], data[i + 1], data[i + 2], data[i + 3]]
+    }
+
+    #[test]
+    fn several_items_drag_as_a_stack_with_their_count() {
+        let solid = |c: u32| {
+            let p = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, DRAG_ICON_PX, DRAG_ICON_PX).unwrap();
+            p.fill(c);
+            p
+        };
+        let images: Vec<_> = [0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffff00ff, 0x00ffffff].into_iter().map(solid).collect();
+        let mut s = stacked_icon(&images, 12, (0.0, 0.0, 1.0), (1.0, 1.0, 1.0)).unwrap();
+        // Four shown, each 8 px further, and half the badge above.
+        assert_eq!((s.width(), s.height()), (48 + 3 * 8 + 11, 48 + 3 * 8 + 11));
+        // The first (red) in front at the bottom left; the pointer holds its middle.
+        let h = s.height();
+        assert_eq!(pixel(&mut s, 2, h - 2), [0, 0, 255, 255]);
+        assert_eq!(s.device_offset(), (-24.0, -(11.0 + 24.0 + 24.0)));
+        // The last one shown (yellow) behind, at the top right; the fifth is left out.
+        assert_eq!(pixel(&mut s, 3 * 8 + 2, 11 + 2), [0, 217, 217, 217]);
+        // The badge in the selection color.
+        let w = s.width();
+        assert_eq!(pixel(&mut s, w - 11, 2), [255, 0, 0, 255]);
+        assert!(stacked_icon(&images[..1], 3, (0.0, 0.0, 1.0), (1.0, 1.0, 1.0)).is_some());
+    }
+}
