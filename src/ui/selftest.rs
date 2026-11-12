@@ -879,6 +879,28 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("{got} rows"));
             }
         }
+        "press" | "release" => {
+            // press [ctrl|shift] <name>, release <name>: the left mouse button on an item.
+            let (state, name) = match arg.split_once(' ') {
+                Some(("ctrl", n)) => (gtk::gdk::ModifierType::CONTROL_MASK, n),
+                Some(("shift", n)) => (gtk::gdk::ModifierType::SHIFT_MASK, n),
+                _ => (gtk::gdk::ModifierType::empty(), arg),
+            };
+            // Waits until the view has laid the item out (right after switching views it may not).
+            let (name, press) = (name.to_string(), cmd == "press");
+            wait(r, move |r| Ok(r.window.current_pane().send_button(&name, press, state).is_ok()));
+        }
+        "drag-began" => w.current_pane().drag_began(),
+        "expect-selection" => {
+            // expect-selection a | b: exactly these are selected (in any order); waits.
+            let mut want: Vec<String> = arg.split(" | ").map(str::to_string).filter(|s| !s.is_empty()).collect();
+            want.sort();
+            wait(r, move |r| {
+                let mut got: Vec<String> = r.window.current_pane().selected_items().iter().map(|i| i.display_name()).collect();
+                got.sort();
+                Ok(got == want)
+            });
+        }
         "expect-selected" => {
             // Waits: new rows arrive through the file monitor a moment after the file exists.
             let want = vec![arg.to_string()];

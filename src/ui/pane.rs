@@ -1639,6 +1639,50 @@ impl Pane {
         self.press_in_selection.take();
     }
 
+    /// Sends a left button press or release onto the middle of the item `name` in the view
+    /// shown, through GTK as the mouse does, with the modifier keys `state` (self-test).
+    pub fn send_button(&self, name: &str, press: bool, state: gdk::ModifierType) -> Result<(), String> {
+        use glib::translate::{IntoGlib, ToGlibPtr};
+        let key = self.keys_for_names(&[OsString::from(name)]).pop().ok_or("no name")?;
+        let path = {
+            let st = self.st.borrow();
+            st.by_name.get(&key).and_then(|k| st.rows.get(k)).and_then(|(_, iter)| self.store.path(iter)).ok_or("no such row")?
+        };
+        let (window, x, y) = if self.view_is_icons() {
+            let rect = self.icons.cell_rect(&path, None::<&gtk::CellRenderer>).ok_or("the item is not laid out")?;
+            let bin = self.icons.window().and_then(|w| w.children().into_iter().next()).ok_or("the icon view is not realized")?;
+            let (bx, by) = bin.position();
+            (bin, rect.x() + rect.width() / 2 - bx, rect.y() + rect.height() / 2 - by)
+        } else {
+            let rect = self.tree.cell_area(Some(&path), self.tree.column(0).as_ref());
+            let bin = self.tree.bin_window().ok_or("the list is not realized")?;
+            (bin, rect.x() + rect.width() / 2, rect.y() + rect.height() / 2)
+        };
+        let pointer = window.display().default_seat().and_then(|s| s.pointer()).ok_or("no pointer")?;
+        let (_, ox, oy) = window.origin();
+        let state = if press { state } else { state | gdk::ModifierType::BUTTON1_MASK };
+        // SAFETY: a fresh event filled in field by field; it owns the window reference it
+        // is given and is freed after GTK handled it.
+        unsafe {
+            let ev = gdk::ffi::gdk_event_new(if press { gdk::ffi::GDK_BUTTON_PRESS } else { gdk::ffi::GDK_BUTTON_RELEASE });
+            let b = ev as *mut gdk::ffi::GdkEventButton;
+            (*b).window = window.to_glib_full();
+            (*b).time = (glib::monotonic_time() / 1000) as u32;
+            (*b).x = x as f64;
+            (*b).y = y as f64;
+            (*b).x_root = (ox + x) as f64;
+            (*b).y_root = (oy + y) as f64;
+            (*b).state = state.into_glib();
+            (*b).button = 1;
+            gdk::ffi::gdk_event_set_device(ev, pointer.to_glib_none().0);
+            // GTK's gestures ignore events without the device they physically came from.
+            gdk::ffi::gdk_event_set_source_device(ev, pointer.to_glib_none().0);
+            gtk::ffi::gtk_main_do_event(ev);
+            gdk::ffi::gdk_event_free(ev);
+        }
+        Ok(())
+    }
+
     fn handle_button(
         &self,
         ev: &gdk::EventButton,
@@ -1813,4 +1857,16 @@ fn keeps_selection<T: PartialEq>(single_press: bool, button: u32, plain: bool, s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_press_among_selected_items_keeps_them_for_a_drag() {
+        let sel = [1, 2, 3];
+        assert!(keeps_selection(true, 1, true, &sel, &2));
+        // Not selected, the only one selected, with Ctrl or Shift, another button, a double click.
+        assert!(!keeps_selection(true, 1, true, &sel, &4));
+        assert!(!keeps_selection(true, 1, true, &[2], &2));
+        assert!(!keeps_selection(true, 1, false, &sel, &2));
+        assert!(!keeps_selection(true, 3, true, &sel, &2));
+        assert!(!keeps_selection(false, 1, true, &sel, &2));
+    }
 }

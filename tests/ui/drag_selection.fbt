@@ -1,0 +1,30 @@
+# Pressing one of several selected items keeps them all selected, so they can be dragged
+# together; a release without a drag selects only that one, as a click does. Both views.
+open $T/d
+select a.txt | b.txt | c.txt
+press b.txt
+expect-selection a.txt | b.txt | c.txt
+drag-began
+release b.txt
+expect-selection a.txt | b.txt | c.txt
+press c.txt
+release c.txt
+expect-selection c.txt
+# An item outside the selection is selected alone right away.
+select a.txt | b.txt
+press c.txt
+expect-selection c.txt
+release c.txt
+expect-selection c.txt
+action win.view-mode icons
+select a.txt | b.txt | c.txt
+press a.txt
+expect-selection a.txt | b.txt | c.txt
+drag-began
+release a.txt
+expect-selection a.txt | b.txt | c.txt
+press b.txt
+expect-selection a.txt | b.txt | c.txt
+release b.txt
+expect-selection b.txt
+action win.view-mode list
