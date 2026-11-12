@@ -9,7 +9,8 @@
 #   ./install.sh --no-network    do not install the GVfs SMB backend (smb:// addresses)
 #   ./install.sh --no-archives   do not build archive support (needs no .NET SDK then)
 #   ./install.sh --no-file-chooser  keep the desktop's own open and save dialogs for
-#                                applications that ask the desktop portal for one
+#                                applications that ask the desktop portal for one, and
+#                                for GTK 3 applications
 #   ./install.sh --uninstall     remove what an install with the same options put in place
 #   ./install.sh --prebuilt      install the program from a release package (bin/, lib/) as is
 #   ./install.sh --reopen        open a window when done (Help > Check for Updates uses it)
@@ -76,6 +77,9 @@ PORTAL_NAME=org.freedesktop.impl.portal.desktop.failbrauwser
 PORTAL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/portals.conf"
 PORTAL_LINE="org.freedesktop.impl.portal.FileChooser=failbrauwser"
 PORTAL_MARK="# Written by failBrauwser's install.sh"
+# GTK 3 applications that make GTK's own dialog load this module, which asks the portal.
+MODULE_NAME=libfailbrauwser-chooser.so
+MODULE_ENV="${XDG_CONFIG_HOME:-$HOME/.config}/environment.d/60-failbrauwser.conf"
 
 # xdg-desktop-portal reads one portals.conf: the user's takes the place of the system's, so a
 # new one starts from the system's default and only the file chooser goes to failBrauwser.
@@ -102,6 +106,49 @@ portal_conf_remove() {
     if head -1 "$PORTAL_CONF" | grep -qF "$PORTAL_MARK" && [ "$(grep -cv '^\(#.*\|\[preferred\]\|default=.*\|\)$' "$PORTAL_CONF")" = 0 ]; then
         rm -f "$PORTAL_CONF"
     fi
+}
+
+# GTK3_MODULES with the module at $1 added (or, without $1, failBrauwser's taken out) of
+# the module list $2.
+gtk3_modules() {
+    local out=() m
+    local IFS=:
+    for m in $2; do
+        [ -n "$m" ] && [ "${m##*/}" != "$MODULE_NAME" ] && out+=("$m")
+    done
+    [ -n "$1" ] && out=("$1" "${out[@]}")
+    echo "${out[*]}"
+}
+
+# The session's GTK3_MODULES, for applications started through systemd or D-Bus from now
+# on (the ones started by the desktop itself get it at the next login, from environment.d).
+session_gtk3_modules() {
+    command -v systemctl >/dev/null || return 0
+    local now new
+    now=$(systemctl --user show-environment 2>/dev/null | sed -n 's/^GTK3_MODULES=//p')
+    new=$(gtk3_modules "${1:-}" "$now")
+    [ "$new" = "$now" ] && return 0
+    if [ -n "$new" ]; then
+        systemctl --user set-environment "GTK3_MODULES=$new" 2>/dev/null || true
+    else
+        systemctl --user unset-environment GTK3_MODULES 2>/dev/null || true
+    fi
+    command -v dbus-update-activation-environment >/dev/null &&
+        dbus-update-activation-environment "GTK3_MODULES=$new" 2>/dev/null || true
+}
+
+gtk_module_env_add() {
+    mkdir -p "$(dirname "$MODULE_ENV")"
+    {
+        echo "$PORTAL_MARK: GTK 3 applications get failBrauwser's open and save dialogs."
+        echo "GTK3_MODULES=$1\${GTK3_MODULES:+:\$GTK3_MODULES}"
+    } > "$MODULE_ENV"
+    session_gtk3_modules "$1"
+}
+
+gtk_module_env_remove() {
+    rm -f "$MODULE_ENV"
+    session_gtk3_modules ""
 }
 
 # The portal reads its backends when it starts.
@@ -190,7 +237,8 @@ if [ "$UNINSTALL" = 1 ]; then
     $SUDO rm -f "$BIN_DIR/failbrauwser" \
         "$SHARE/applications/$APP_ID.desktop" \
         "$SHARE/icons/hicolor/scalable/apps/$APP_ID.svg"
-    $SUDO rm -f "$LIB_DIR/fb-archive"
+    $SUDO rm -f "$LIB_DIR/fb-archive" "$LIB_DIR/$MODULE_NAME"
+    gtk_module_env_remove
     $SUDO rmdir "$LIB_DIR" 2>/dev/null || true
     rm -f "$AUTOSTART_FILE"
     $SUDO rm -f "$SHARE/xdg-desktop-portal/portals/failbrauwser.portal" "$SHARE/dbus-1/services/$PORTAL_NAME.service"
@@ -208,6 +256,8 @@ if [ "$PREBUILT" = 1 ]; then
     [ -x "$APP_BIN" ] || { echo "$APP_BIN is missing: not a release package" >&2; exit 1; }
     HELPER=""
     [ "$ARCHIVES" = 1 ] && [ -x "$HERE/lib/fb-archive" ] && HELPER="$HERE/lib/fb-archive"
+    MODULE=""
+    [ -f "$HERE/lib/$MODULE_NAME" ] && MODULE="$HERE/lib/$MODULE_NAME"
     # A package built on a newer system needs a newer C library than this one may have.
     if ! why=$("$APP_BIN" --version 2>&1); then
         echo "the ready-built program does not run on this system: $(echo "$why" | head -1)" >&2
@@ -283,6 +333,15 @@ else
     say "Building failBrauwser"
     (cd "$HERE" && cargo build --release --locked)
 
+    MODULE=""
+    if [ "$FILE_CHOOSER" = 1 ]; then
+        if (cd "$HERE" && make -s module CC="${CC:-cc}") >/dev/null; then
+            MODULE="$HERE/target/module/$MODULE_NAME"
+        else
+            echo "warning: the GTK 3 module did not build — GTK 3 applications keep GTK's own dialogs" >&2
+        fi
+    fi
+
     if [ -n "$HELPER_PID" ]; then
         say "Waiting for the archive helper"
         if wait "$HELPER_PID"; then
@@ -300,6 +359,9 @@ say "Installing into $PREFIX"
 $SUDO install -Dm755 "$APP_BIN" "$BIN_DIR/failbrauwser"
 if [ -n "$HELPER" ]; then
     $SUDO install -Dm755 "$HELPER" "$LIB_DIR/fb-archive"
+fi
+if [ "$FILE_CHOOSER" = 1 ] && [ -n "$MODULE" ]; then
+    $SUDO install -Dm755 "$MODULE" "$LIB_DIR/$MODULE_NAME"
 fi
 $SUDO install -Dm644 "$HERE/data/$APP_ID.desktop" "$SHARE/applications/$APP_ID.desktop"
 $SUDO install -Dm644 "$HERE/data/icons/$APP_ID.svg" "$SHARE/icons/hicolor/scalable/apps/$APP_ID.svg"
@@ -344,9 +406,15 @@ if [ "$FILE_CHOOSER" = 1 ]; then
     $SUDO install -Dm644 "$HERE/data/$PORTAL_NAME.service" "$SHARE/dbus-1/services/$PORTAL_NAME.service"
     $SUDO sed -i "s|^Exec=failbrauwser|Exec=$BIN_DIR/failbrauwser|" "$SHARE/dbus-1/services/$PORTAL_NAME.service"
     portal_conf_add
+    if [ -f "$LIB_DIR/$MODULE_NAME" ]; then
+        say "GTK 3 applications ask failBrauwser too (GTK3_MODULES in $MODULE_ENV)"
+        gtk_module_env_add "$LIB_DIR/$MODULE_NAME"
+    fi
 else
     $SUDO rm -f "$SHARE/xdg-desktop-portal/portals/failbrauwser.portal" "$SHARE/dbus-1/services/$PORTAL_NAME.service"
     portal_conf_remove
+    $SUDO rm -f "$LIB_DIR/$MODULE_NAME"
+    gtk_module_env_remove
 fi
 
 if [ "$MAKE_DEFAULT" = 1 ]; then

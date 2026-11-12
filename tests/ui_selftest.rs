@@ -239,6 +239,44 @@ fn file_chooser_through_xdg_desktop_portal() {
 }
 
 #[test]
+fn gtk3_applications_get_failbrauwsers_dialogs() {
+    if !Path::new("/usr/lib/xdg-desktop-portal").exists() && !Path::new("/usr/libexec/xdg-desktop-portal").exists() {
+        eprintln!("xdg-desktop-portal not installed, skipping");
+        return;
+    }
+    let gtk3_python = Command::new("python3").args(["-c", "import gi; gi.require_version('Gtk', '3.0')"]).status().is_ok_and(|s| s.success());
+    if !gtk3_python || !have("cc") || !have("pkg-config") {
+        eprintln!("python3 with GTK 3, cc or pkg-config missing, skipping");
+        return;
+    }
+    run("gtk3_dialogs.fbt", |t| {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // Built as install.sh builds it.
+        let flags = |what: &str| -> Vec<String> {
+            let out = Command::new("pkg-config").args([what, "gtk+-3.0"]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).split_whitespace().map(str::to_string).collect()
+        };
+        let built = Command::new("cc")
+            .args(["-shared", "-fPIC", "-O2", "-o"])
+            .arg(t.join("module.so"))
+            .args(flags("--cflags"))
+            .arg(root.join("gtkmodule/failbrauwser-chooser.c"))
+            .args(flags("--libs"))
+            .status()
+            .unwrap();
+        assert!(built.success());
+        std::fs::create_dir_all(t.join("data/xdg-desktop-portal/portals")).unwrap();
+        std::fs::copy(root.join("data/failbrauwser.portal"), t.join("data/xdg-desktop-portal/portals/failbrauwser.portal")).unwrap();
+        std::fs::create_dir_all(t.join("config/xdg-desktop-portal")).unwrap();
+        std::fs::write(t.join("config/xdg-desktop-portal/portals.conf"), "[preferred]\ndefault=gtk\norg.freedesktop.impl.portal.FileChooser=failbrauwser\n").unwrap();
+        std::fs::create_dir_all(t.join("home/sub")).unwrap();
+        for n in ["a.txt", "b.txt"] {
+            std::fs::write(t.join("home").join(n), n).unwrap();
+        }
+    });
+}
+
+#[test]
 fn update_from_release_or_source() {
     run_checked(
         "update.fbt",
