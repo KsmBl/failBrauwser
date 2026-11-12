@@ -79,7 +79,14 @@ current desktop theme (here: Adwaita dark with Breeze colors and a Windows XP ic
 
 The script builds everything, installs the program, the archive helper, a launcher and the icon,
 and registers a background instance that starts with your session (`--no-autostart` to skip
-that; windows then take a moment longer the first time). It also makes failBrauwser the open
+that; windows then take a moment longer the first time).
+
+failBrauwser's own icon is a **blue folder** with a paper sheet, a zipper and a speed bolt
+(`data/icons/org.failbrauwser.FailBrauwser.svg`). It is the window icon everywhere, and on
+Windows the same picture is compiled into both program files (`data\icons\failbrauwser.ico`,
+rendered from the svg by `winpack\mkico.ps1`), so Explorer, the Start Menu entry and the
+titlebar all carry it; the packaged tree also ships the svg under
+`share\icons\hicolor\scalable\apps\`, where GTK looks it up by application id. It also makes failBrauwser the open
 and save dialog of applications that ask the desktop portal for one (`--no-file-chooser` to
 keep the desktop's; see *File chooser for other applications* below).
 

@@ -19,13 +19,26 @@ winpack\install.ps1          # install the newest package for the current user
 MSYS2 mirror into `winpack\sysroot`, and `winpack\genimports.ps1` creates the MSVC import
 libraries for it; `winpack\env.ps1` points a shell at that sysroot. The toolchain needs
 Visual Studio's C++ tools (link, dumpbin) and, for archives, the .NET SDK (NativeAOT — no
-clang required).
+clang required). The program icon needs the Windows SDK's resource compiler: the build
+scripts pick the newest `rc.exe` under `Windows Kits\10\bin\*\x64`, and a machine without
+one builds the same programs with no icon, saying so at build time rather than failing.
 
 The packaged layout is `bin` (program, `fb-archive` helper, all DLLs), `lib` (gdk-pixbuf
 loaders) and `share` (icons, fonts, schemas, licenses) side by side — GTK finds the loaders
 relative to the binaries, which is why the folders keep that shape. `install.ps1` rewrites
 the pixbuf loader cache after copying (the built-in one names the building machine's
 folders), and adds a Start Menu entry.
+
+Both program files carry the application icon as a Win32 icon resource:
+`data\icons\failbrauwser.ico` — the sizes 16, 24, 32, 48, 64, 128 and 256 rendered from
+`data\icons\org.failbrauwser.FailBrauwser.svg` by `winpack\mkico.ps1` with the sysroot's
+`rsvg-convert` — is compiled by `rc.exe` and handed to the linker by `build.rs` and
+`winpack\onefile\build.rs`. That resource is what Explorer, the Start Menu entry
+(`install.ps1` points its `IconLocation` at the program file) and the window titlebar show.
+`package.ps1` additionally stages the svg into
+`share\icons\hicolor\scalable\apps\org.failbrauwser.FailBrauwser.svg`, where GTK's themed
+lookup finds it under the application id, so the window icon does not depend on the shell
+falling back to the program file.
 
 `package.ps1` delivers that tree twice: as the zip (the updater's channel, and what
 `install.ps1` unpacks) and as the single-file release
