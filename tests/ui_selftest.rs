@@ -675,6 +675,16 @@ fn right_click_menus_have_icons() {
 }
 
 #[test]
+fn dragging_from_a_name_and_several_items() {
+    run("drag_start.fbt", |t| {
+        std::fs::create_dir_all(t.join("d")).unwrap();
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(t.join("d").join(n), n).unwrap();
+        }
+    });
+}
+
+#[test]
 fn custom_actions() {
     // Any existing program makes the built-in "Open Terminal Here" appear, on any machine.
     run_checked("custom_actions.fbt", &[("TERMINAL", "sh")], |t| {

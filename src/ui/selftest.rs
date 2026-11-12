@@ -905,9 +905,34 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             };
             // Waits until the view has laid the item out (right after switching views it may not).
             let (name, press) = (name.to_string(), cmd == "press");
-            wait(r, move |r| Ok(r.window.current_pane().send_button(&name, press, state).is_ok()));
+            wait(r, move |r| Ok(r.window.current_pane().send_button(&name, press, state, super::pane::Spot::Middle).is_ok()));
         }
         "drag-began" => w.current_pane().drag_began(),
+        "press-name" | "press-blank" => {
+            // press-name <name>: on the start of the name in the list (its icon); press-blank
+            // <name>: on the empty end of its name cell. Released right after.
+            let at = if cmd == "press-name" { super::pane::Spot::Name } else { super::pane::Spot::Blank };
+            let name = arg.to_string();
+            wait(r, move |r| {
+                let p = r.window.current_pane();
+                Ok(p.send_button(&name, true, gtk::gdk::ModifierType::empty(), at).is_ok() && p.send_button(&name, false, gtk::gdk::ModifierType::empty(), at).is_ok())
+            });
+        }
+        "expect-rubber-band" => {
+            // expect-rubber-band on|off: whether dragging from the last press draws the selection rectangle.
+            let on = w.current_pane().tree.is_rubber_banding();
+            if on != (arg == "on") {
+                return Err(format!("rubber band is {}", if on { "on" } else { "off" }));
+            }
+        }
+        "expect-drag-image" => {
+            // expect-drag-image <selected> <images>: what a drag of the selection shows.
+            let (images, count) = w.current_pane().selected_images(48, 4);
+            let got = format!("{count} {}", images.len());
+            if got != arg {
+                return Err(format!("drag image of {got}"));
+            }
+        }
         "expect-selection" => {
             // expect-selection a | b: exactly these are selected (in any order); waits.
             let mut want: Vec<String> = arg.split(" | ").map(str::to_string).filter(|s| !s.is_empty()).collect();

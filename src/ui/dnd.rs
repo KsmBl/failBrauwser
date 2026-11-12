@@ -26,6 +26,53 @@ thread_local! {
     static DRAGGING: RefCell<Vec<ClipSource>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The size of each item's image in the drag image of several items.
+const DRAG_ICON_PX: i32 = 48;
+/// How far each image behind lies from the one in front.
+const STACK_STEP: i32 = 8;
+
+/// The drag image of `count` items: `images` (at most four shown) stacked, the first in
+/// front, with a badge showing `count` in the selection colors `bg` and `fg`. The pointer
+/// holds it at the middle of the front image.
+pub fn stacked_icon(images: &[gtk::gdk_pixbuf::Pixbuf], count: usize, bg: (f64, f64, f64), fg: (f64, f64, f64)) -> Option<gtk::cairo::ImageSurface> {
+    use gtk::cairo;
+    let shown = &images[..images.len().min(4)];
+    let behind = shown.len() as i32 - 1;
+    let badge = 22;
+    let width = DRAG_ICON_PX + behind * STACK_STEP + badge / 2;
+    let height = DRAG_ICON_PX + behind * STACK_STEP + badge / 2;
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height).ok()?;
+    let cr = cairo::Context::new(&surface).ok()?;
+    // The ones behind first, up and to the right; the first one in front, bottom left.
+    for (i, img) in shown.iter().enumerate().rev() {
+        let x = i as i32 * STACK_STEP + (DRAG_ICON_PX - img.width()) / 2;
+        let y = badge / 2 + (behind - i as i32) * STACK_STEP + (DRAG_ICON_PX - img.height()) / 2;
+        cr.set_source_pixbuf(img, x as f64, y as f64);
+        cr.paint_with_alpha(if i == 0 { 1.0 } else { 0.85 }).ok()?;
+    }
+    // The count, in a round badge at the top right.
+    let text = if count > 999 { "999+".to_string() } else { count.to_string() };
+    cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
+    cr.set_font_size(12.0);
+    let ext = cr.text_extents(&text).ok()?;
+    let r = badge as f64 / 2.0;
+    let w = (ext.width() + 10.0).max(badge as f64);
+    let (bx, by) = (width as f64 - w, 0.0);
+    cr.new_sub_path();
+    cr.arc(bx + w - r, by + r, r, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+    cr.arc(bx + r, by + r, r, std::f64::consts::FRAC_PI_2, 3.0 * std::f64::consts::FRAC_PI_2);
+    cr.close_path();
+    cr.set_source_rgb(bg.0, bg.1, bg.2);
+    cr.fill().ok()?;
+    cr.set_source_rgb(fg.0, fg.1, fg.2);
+    cr.move_to(bx + (w - ext.width()) / 2.0 - ext.x_bearing(), by + r - ext.height() / 2.0 - ext.y_bearing());
+    cr.show_text(&text).ok()?;
+    drop(cr);
+    let front_y = badge / 2 + behind * STACK_STEP;
+    surface.set_device_offset(-(DRAG_ICON_PX as f64 / 2.0), -((front_y + DRAG_ICON_PX / 2) as f64));
+    Some(surface)
+}
+
 fn targets() -> Vec<gtk::TargetEntry> {
     vec![
         gtk::TargetEntry::new(INTERNAL, gtk::TargetFlags::SAME_APP, 1),
@@ -74,6 +121,26 @@ fn connect_source(view: &gtk::Widget, pane: &Rc<Pane>) {
             DRAGGING.with(|d| *d.borrow_mut() = sources);
         }
     });
+    // Several items: their icons stacked with how many there are, instead of GTK's image of
+    // the one row pressed (set by the view's own handler, so this one runs after it).
+    let p = Rc::downgrade(pane);
+    view.connect_closure(
+        "drag-begin",
+        true,
+        glib::closure_local!(move |view: gtk::Widget, ctx: gdk::DragContext| {
+            let Some(p) = p.upgrade() else { return };
+            let (images, count) = p.selected_images(DRAG_ICON_PX, 4);
+            if count < 2 || images.is_empty() {
+                return;
+            }
+            let style = view.style_context();
+            let bg = style.lookup_color("theme_selected_bg_color").unwrap_or_else(|| gdk::RGBA::new(0.21, 0.52, 0.89, 1.0));
+            let fg = style.lookup_color("theme_selected_fg_color").unwrap_or_else(|| gdk::RGBA::new(1.0, 1.0, 1.0, 1.0));
+            if let Some(icon) = stacked_icon(&images, count, (bg.red(), bg.green(), bg.blue()), (fg.red(), fg.green(), fg.blue())) {
+                ctx.drag_set_icon_surface(&icon);
+            }
+        }),
+    );
     view.connect_drag_end(|_, _| DRAGGING.with(|d| d.borrow_mut().clear()));
     view.connect_drag_data_get(|_, _, sel, info, _| {
         let sources = DRAGGING.with(|d| d.borrow().clone());
@@ -232,4 +299,40 @@ fn make_links(w: &Window, sources: &[ClipSource], dest: &Location) {
         }
     }
     fileops::select_created(w, dest, &made);
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixel(s: &mut gtk::cairo::ImageSurface, x: i32, y: i32) -> [u8; 4] {
+        let stride = s.stride() as usize;
+        let data = s.data().unwrap();
+        let i = y as usize * stride + x as usize * 4;
+        [data[i], data[i + 1], data[i + 2], data[i + 3]]
+    }
+
+    #[test]
+    fn several_items_drag_as_a_stack_with_their_count() {
+        let solid = |c: u32| {
+            let p = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, DRAG_ICON_PX, DRAG_ICON_PX).unwrap();
+            p.fill(c);
+            p
+        };
+        let images: Vec<_> = [0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffff00ff, 0x00ffffff].into_iter().map(solid).collect();
+        let mut s = stacked_icon(&images, 12, (0.0, 0.0, 1.0), (1.0, 1.0, 1.0)).unwrap();
+        // Four shown, each 8 px further, and half the badge above.
+        assert_eq!((s.width(), s.height()), (48 + 3 * 8 + 11, 48 + 3 * 8 + 11));
+        // The first (red) in front at the bottom left; the pointer holds its middle.
+        let h = s.height();
+        assert_eq!(pixel(&mut s, 2, h - 2), [0, 0, 255, 255]);
+        assert_eq!(s.device_offset(), (-24.0, -(11.0 + 24.0 + 24.0)));
+        // The last one shown (yellow) behind, at the top right; the fifth is left out.
+        assert_eq!(pixel(&mut s, 3 * 8 + 2, 11 + 2), [0, 217, 217, 217]);
+        // The badge in the selection color.
+        let w = s.width();
+        assert_eq!(pixel(&mut s, w - 11, 2), [255, 0, 0, 255]);
+        assert!(stacked_icon(&images[..1], 3, (0.0, 0.0, 1.0), (1.0, 1.0, 1.0)).is_some());
+    }
 }

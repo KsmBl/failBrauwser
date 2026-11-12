@@ -375,6 +375,14 @@ impl Pane {
         self.stack.visible_child_name().as_deref() == Some("icons")
     }
 
+    /// The images of the first `max` selected items at `size` pixels, and how many are selected.
+    pub fn selected_images(&self, size: i32, max: usize) -> (Vec<gtk::gdk_pixbuf::Pixbuf>, usize) {
+        let paths: Vec<gtk::TreePath> = if self.view_is_icons() { self.icons.selected_items() } else { self.tree.selection().selected_rows().0 };
+        let model = self.store.upcast_ref::<gtk::TreeModel>();
+        let images = paths.iter().filter_map(|p| self.store.iter(p)).filter_map(|it| super::icons::row_image(model, &it, size)).take(max).collect();
+        (images, paths.len())
+    }
+
     pub fn selected_keys(&self) -> Vec<u64> {
         // While rows are rebuilt the views are detached from the model.
         let shown_has_model = if self.view_is_icons() { self.icons.model().is_some() } else { self.tree.model().is_some() };
@@ -1504,6 +1512,11 @@ impl Pane {
             let Some(p) = weak.upgrade() else { return glib::Propagation::Proceed };
             let (x, y) = ev.position();
             let hit = tree.path_at_pos(x as i32, y as i32).and_then(|(path, ..)| path);
+            // A press on a file's icon or name drags the file; anywhere else a drag draws the
+            // selection rectangle (GTK would draw it from every row not selected yet).
+            if ev.event_type() == gdk::EventType::ButtonPress && ev.button() == 1 {
+                tree.set_rubber_banding(!p.on_name(tree, x as i32, y as i32));
+            }
             let selection = tree.selection();
             p.keep_selection_for_drag(ev, &hit, selection.selected_rows().0, move |paths| paths.iter().for_each(|path| selection.select_path(path)));
             p.handle_button(ev, hit, |path| tree.selection().path_is_selected(path), |path| {
@@ -1634,14 +1647,31 @@ impl Pane {
         });
     }
 
+    /// Whether (`x`, `y`) in the list's rows is on a file's icon or name, not on the empty
+    /// part of its row or another column.
+    fn on_name(&self, tree: &gtk::TreeView, x: i32, y: i32) -> bool {
+        let Some((Some(path), Some(col), cell_x, _)) = tree.path_at_pos(x, y) else { return false };
+        if col.sort_column_id() != model::sort_id_for("name") as i32 {
+            return false;
+        }
+        let Some(iter) = self.store.iter(&path) else { return false };
+        col.cell_set_cell_data(&self.store, &iter, false, false);
+        let Some(text) = col.cells().into_iter().find_map(|c| c.downcast::<gtk::CellRendererText>().ok()) else { return false };
+        let Some((start, width)) = col.cell_get_position(&text) else { return false };
+        let (_, natural) = text.preferred_width(tree);
+        cell_x < start + width.min(natural)
+    }
+
     /// A drag of the selection started: the release that follows decides nothing.
     pub fn drag_began(&self) {
         self.press_in_selection.take();
     }
 
     /// Sends a left button press or release onto the middle of the item `name` in the view
-    /// shown, through GTK as the mouse does, with the modifier keys `state` (self-test).
-    pub fn send_button(&self, name: &str, press: bool, state: gdk::ModifierType) -> Result<(), String> {
+    /// shown, through GTK as the mouse does, with the modifier keys `state` (self-test). In the
+    /// list `at` can instead be the start of its name ([`Spot::Name`]) or the empty end of its
+    /// name cell ([`Spot::Blank`]).
+    pub fn send_button(&self, name: &str, press: bool, state: gdk::ModifierType, at: Spot) -> Result<(), String> {
         use glib::translate::{IntoGlib, ToGlibPtr};
         let key = self.keys_for_names(&[OsString::from(name)]).pop().ok_or("no name")?;
         let path = {
@@ -1656,7 +1686,12 @@ impl Pane {
         } else {
             let rect = self.tree.cell_area(Some(&path), self.tree.column(0).as_ref());
             let bin = self.tree.bin_window().ok_or("the list is not realized")?;
-            (bin, rect.x() + rect.width() / 2, rect.y() + rect.height() / 2)
+            let x = match at {
+                Spot::Middle => rect.x() + rect.width() / 2,
+                Spot::Name => rect.x() + 4,
+                Spot::Blank => rect.x() + rect.width() - 4,
+            };
+            (bin, x, rect.y() + rect.height() / 2)
         };
         let pointer = window.display().default_seat().and_then(|s| s.pointer()).ok_or("no pointer")?;
         let (_, ox, oy) = window.origin();
@@ -1846,6 +1881,14 @@ impl Pane {
         self.st.borrow().generation
     }
 
+}
+
+/// Where on an item a test presses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spot {
+    Middle,
+    Name,
+    Blank,
 }
 
 /// Whether a press keeps the selection for a drag: a plain single left press on one of
