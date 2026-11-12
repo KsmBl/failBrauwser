@@ -384,8 +384,10 @@ TrueCrypt*, *BitLocker*, *LUKS* and *dm-crypt (plain)* run that kind's own reade
 bytes — decided by you rather than by a name. A VeraCrypt header's bytes are
 indistinguishable from random noise, so a renamed container (`.bin`, `.img`, no suffix)
 cannot be recognized from the file; that is what the volume choices are for, and a
-headerless dm-crypt (plain) volume can be reached through no other door. The same one-ask
-password prompt serves any choice, and any chosen container opens read-only.
+headerless dm-crypt (plain) volume can be reached through no other door. A volume choice
+asks for the passphrase before the file is opened, so that answer is what reads it; *Archive*
+waits until a reader asks. The same one-ask password prompt serves any choice, and any chosen
+container opens read-only.
 
 What a wrong choice answers is the kind's own doing, and saying so is its job: BitLocker and
 LUKS carry plaintext headers, so their readers refuse foreign bytes as soon as the volume is
