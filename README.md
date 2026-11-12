@@ -193,6 +193,9 @@ if GVfs itself is stuck, it offers to restart GVfs. Cancel always ends a copy on
 within a few seconds, and a copy that moves no data for a minute stops with an error.
 
 Click empty space in the list to clear the selection (and to leave the typed path).
+Right-click the files while their right-click menu is open to get the folder's menu instead
+(*Show Hidden Files*, *Paste*, *Create Folder…*), as on Windows: handy when the folder is so
+full that no empty space is left.
 The status bar shows how many files and folders the current folder holds and how much space
 it needs, subfolders included.
 
