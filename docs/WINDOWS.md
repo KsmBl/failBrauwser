@@ -33,9 +33,14 @@ folders), and adds a Start Menu entry.
 (`src/portable.rs`, its own crate `winpack\onefile` with a static CRT, so the launcher
 itself imports only KERNEL32/ntdll: no installer, no VC++ runtime). On first run it
 unpacks the tree into `%LOCALAPPDATA%\Programs\failbrauwser` (`FB_PORTABLE_PREFIX`
-overrides), stamps `.payload-version` and re-unpacks only when the embedded version is
-newer than the stamp, regenerates the loader cache for the new location, then starts the
-program and passes its exit code through. Nothing is registered in the system, and no
+overrides), stamps `.payload-version` with the payload's version *and* its build id — the
+`payload-id.txt` that `package.ps1` writes into the tree — and re-unpacks whenever the payload
+it carries is not the tree that is installed: an older installed version, or the same version
+with an older or missing build id, is replaced, while a payload older than the installed one
+leaves it alone. A rebuild at the same version therefore reaches an installed copy, which a
+version comparison alone never does. `install.ps1` records the same id from the package, so a
+manually installed tree is known to the launcher rather than read as unknown. The loader cache
+is regenerated for the new location, then the program starts and its exit code passes through. Nothing is registered in the system, and no
 DLLs or data ever sit next to the file itself.
 
 To start the plain `target\release\failbrauwser.exe` without any PATH setup, run
