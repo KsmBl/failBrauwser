@@ -395,9 +395,14 @@ read — opening or copying an entry of that chosen view reports it and writes n
 *Extract Here* on the file itself never sees the choice — a VeraCrypt choice has to search the
 file for a header that answers the passphrase before it can tell, and a headerless dm-crypt
 (plain) mapping cannot tell a wrong passphrase from a right one, exactly as `cryptsetup
---type plain` cannot. A VeraCrypt choice with no passphrase yet answers with the volume as an
-unreadable shell marked *encrypted*: nothing is searched while there is no passphrase to search
-with, and the reading that needs one is what asks for it.
+--type plain` cannot. A VeraCrypt choice that was refused its passphrase answers with the volume as
+an unreadable shell marked *encrypted*: nothing is searched while there is no passphrase to search
+with, and the reading that needs one asks again.
+
+A volume file that another program holds open cannot be read at all: VeraCrypt keeps a mounted
+container closed to every other reader at any sharing, so failBrauwser reports the file as being in
+use and stops there. It never dismounts a volume, never takes a file away from the program holding
+it, and invents no result for it.
 
 **Compressed files** such as `notes.txt.gz` show the one file inside; open it, edit it and
 save, and the file is compressed again. *Extract Here* gives `notes.txt` itself.
