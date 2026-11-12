@@ -197,8 +197,10 @@ The status bar shows how many files and folders the current folder holds and how
 it needs, subfolders included.
 
 Drag and drop moves within a filesystem and copies across filesystems; hold
-<kbd>Shift</kbd> to move, <kbd>Ctrl</kbd> to copy, both to link. Middle-click a folder to open it
-in a new tab.
+<kbd>Shift</kbd> to move, <kbd>Ctrl</kbd> to copy, both to link. In the list, dragging from a
+file's icon or name drags it, and dragging from the empty part of a row draws a selection
+rectangle; pressing one of several selected files drags them all, shown as a stack with their
+count. Middle-click a folder to open it in a new tab.
 
 **Columns:** *View → Columns* or right-click a column header. For folders, *Size* shows
 everything inside, added up on background threads (“…” until known, “≥” while counting);
