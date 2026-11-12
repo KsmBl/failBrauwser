@@ -34,14 +34,18 @@ folders), and adds a Start Menu entry.
 itself imports only KERNEL32/ntdll: no installer, no VC++ runtime). On first run it
 unpacks the tree into `%LOCALAPPDATA%\Programs\failbrauwser` (`FB_PORTABLE_PREFIX`
 overrides), stamps `.payload-version` with the payload's version *and* its build id — the
-`payload-id.txt` that `package.ps1` writes into the tree — and re-unpacks whenever the payload
-it carries is not the tree that is installed: an older installed version, or the same version
-with an older or missing build id, is replaced, while a payload older than the installed one
-leaves it alone. A rebuild at the same version therefore reaches an installed copy, which a
-version comparison alone never does. `install.ps1` records the same id from the package, so a
-manually installed tree is known to the launcher rather than read as unknown. The loader cache
-is regenerated for the new location, then the program starts and its exit code passes through. Nothing is registered in the system, and no
-DLLs or data ever sit next to the file itself.
+`payload-id.txt` that `package.ps1` writes into the tree — and re-unpacks whenever the
+payload it carries is not the tree that is installed: an older installed version, or the
+same version with an older or missing build id, is replaced, while a payload older than the
+installed one leaves it alone. A rebuild at the same version therefore reaches an installed
+copy, which a version comparison alone never does. `install.ps1` records the same id from
+the package, so a manually installed tree is known to the launcher rather than read as
+unknown. The loader cache is regenerated for the new location, then the program starts and
+its exit code passes through. Nothing is registered in the system, and no DLLs or data ever
+sit next to the file itself. An in-app update (*Help → Check for Updates*) replaces the
+tree's contents and leaves that stamp text as the launcher wrote it, so the launcher keeps
+comparing against the payload it carried — for that launcher, an updated tree is not newer
+than its own payload, so it stays untouched.
 
 To start the plain `target\release\failbrauwser.exe` without any PATH setup, run
 `winpack\deps.ps1 -Exe target\release\failbrauwser.exe -Flat` once after building: it
@@ -130,29 +134,28 @@ Scenarios that need Linux-only services skip with a printed reason:
 and the portal/default-app parts elsewhere. Timing budgets for the big-listing paints are
 widened for win32 GTK plus Defender (`big_listings.fbt`) — measured here, not guessed.
 That makes 44 scripts across 45 scenario tests; run serially (`RUST_TEST_THREADS=1
-cargo test`), 36 answer green on this host as of this writing (measured 2026-11-11,
-288 s). Nine fail, in three groups. Two sit with where this checkout lives rather than
-with the archive work: the work folder lies under a path with a space
+cargo test --test ui_selftest`), 42 answer green on this host as of this writing
+(measured 2026-11-12, 217 s). Three fail. Two sit with where this checkout lives rather
+than with the archive work: the work folder lies under a path with a space
 (`A:\Working Copies`), so `update.fbt` meets `curl: (3)` — the updater passes its
-`file://` fixtures unescaped — and `custom_actions.fbt` loses its `%f`-expanded marker
-command to the same space (the very scenario answers green when driven through a
-space-free work folder; harness.ps1 takes one, re-checked 2026-11-10). One is the drives
-page: `lvm_drive.fbt` now reaches unlock, listing and remount on Windows, but its
-side-drive row never shows the mount path the way the script compares it.
+`file://` fixtures unescaped, and the fixture URL carries that same space — and
+`custom_actions.fbt` loses its `%f`-expanded marker command to the same space (that very
+scenario answers green when driven through a space-free work folder; harness.ps1 takes one,
+re-checked 2026-11-10). One is the drives page: `lvm_drive.fbt` now reaches unlock, listing
+and remount on Windows and answers green, while `encrypted_drive_with_lvm_inside` still
+waits for a side-drive row to show the mount path the way its script compares it.
 
-The remaining six — `file_ops.fbt`, `archives.fbt`, `undo.fbt`, `queue.fbt`,
-`share_refresh.fbt` and `checksums.fbt` — all wait for something through the clipboard,
-and none of them gets anything: `file_ops.fbt` fails *alone* at its first copy/paste with
-the destination folder empty, no error dialog and no job ever starting, and `queue.fbt`
-finds `jobs (running, waiting) = (0, 0)` where the script expects a running one. The
-actions that do not cross the clipboard answer green in the same run — `passwords.fbt`
-extracts, `compress_options.fbt` compresses, `archives.fbt` browses, edits and renames
-inside an archive until its first paste. Nothing on that path changed in this checkout
-between the 41-green record above and this measurement, which is what points at the
-machine's clipboard rather than at the tree; it is recorded here rather than papered over.
-`open_as.fbt` therefore pins the *Open as* menu and the views it produces, and leaves
-what each chosen kind reads out byte for byte to `archive_helper.rs` and `archive_vfs.rs`,
-where reading does not wait for a clipboard job. `trash.fbt` once timed out while the
-key-derivation tests held every core; run alone it passes. These failures surfaced when
-the app's Windows build compiled again after the `--lvm` helper stopped importing Linux;
-no Windows build had run these Linux-era update and drives paths before.
+The six that failed on 2026-11-11 as one clipboard group — `file_ops.fbt`, `archives.fbt`,
+`undo.fbt`, `queue.fbt`, `share_refresh.fbt` and `checksums.fbt`, each of them waiting on a
+copy/paste job to land inside a script step — answered green again on 2026-11-12 with
+nothing on that path changed in this checkout between the two measurements. Both records
+stay here because the difference belongs to this machine's clipboard, not to the tree.
+`open_as.fbt` pins the *Open as* menu, the passphrase prompt that comes before a chosen
+volume is read, and the views the chosen kinds produce; what each kind reads out byte for
+byte belongs to `archive_helper.rs` and `archive_vfs.rs`, where reading does not wait for a
+clipboard job. `trash.fbt` once timed out while the key-derivation tests held every core;
+run alone it passes. `big_listings.fbt` once exceeded its widened paint budget in a loaded
+run (15,963 ms against the 12,000 ms budget) and answered inside it when run alone and in
+the measurement above. These failures surfaced when the app's Windows build compiled again
+after the `--lvm` helper stopped importing Linux; no Windows build had run these Linux-era
+update and drives paths before.
