@@ -53,6 +53,22 @@ public class OpenAsTests {
       Is.EqualTo("21cc4f2f8db13fadca82bebb2ad574184dcbb441d447a5dee7363ceac729e0c0"), "the forced kind reads the real volume");
   }
 
+  /// <summary>
+  /// A container another program holds open is a sharing state, not a password state and not a
+  /// resource id: this is what a mounted VeraCrypt volume answers, since VeraCrypt keeps its
+  /// container closed to every other reader at any sharing.
+  /// </summary>
+  [Test]
+  public void AFileAnotherProgramHoldsOpenAnswersInUseAndNamesTheFile() {
+    var held = Path.Combine(_root, "held.hc");
+    File.Copy(Path.Combine(AppContext.BaseDirectory, "veracrypt", "test.sha256.hc"), held);
+    using var blocker = new FileStream(held, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    var error = (Exception?) Assert.Catch(() => Commands.Extract(held, Path.Combine(_root, "held-out"), null, "test", "VeraCrypt"));
+    Assert.That(error, Is.Not.Null, "a held container must answer, not half-read or hang");
+    Assert.That(ErrorCodes.Code(error!), Is.EqualTo("inuse"), "the holder's handle is the answer, not a password or a mystery");
+    Assert.That(ErrorCodes.Message(error!), Does.Contain("in use").And.Contain("held.hc"), "what the user reads names the file and the state");
+  }
+
   [Test]
   public void AWrongChosenKindSaysSoAndOpensNothing() {
     var dest = Path.Combine(_root, "wrong-out");

@@ -73,31 +73,12 @@ public static class Program {
         w.WriteStartObject();
         w.WriteNumber("id", id);
         w.WriteBoolean("ok", false);
-        w.WriteString("code", Classify(ex));
-        w.WriteString("error", Flatten(ex));
+        w.WriteString("code", ErrorCodes.Code(ex));
+        w.WriteString("error", ErrorCodes.Message(ex));
         w.WriteEndObject();
       }
     }
     return buffer.ToArray();
-  }
-
-  private static string Classify(Exception ex) {
-    for (var e = ex; e != null; e = e.InnerException) {
-      var msg = e.Message;
-      if (msg.Contains("password", StringComparison.OrdinalIgnoreCase) || msg.Contains("encrypt", StringComparison.OrdinalIgnoreCase))
-        return "password";
-      if (e is NotSupportedException) return "unsupported";
-      if (e is FileNotFoundException or DirectoryNotFoundException) return "notfound";
-      if (e is UnauthorizedAccessException) return "permission";
-      if (e is ProtocolException) return "protocol";
-    }
-    return "error";
-  }
-
-  private static string Flatten(Exception ex) {
-    var sb = new StringBuilder(ex.Message);
-    for (var e = ex.InnerException; e != null; e = e.InnerException) sb.Append(": ").Append(e.Message);
-    return sb.ToString();
   }
 
   private static string Str(JsonElement req, string name)
