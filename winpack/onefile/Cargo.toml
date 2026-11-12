@@ -1,7 +1,8 @@
 # The single-file Windows release (src/portable.rs), packaged on its own so the launcher
 # stays free of the GTK lib crate: it must have no DLL imports next to the embedded
-# payload. winpack\package.ps1 builds it with FB_PAYLOAD (the staging zip) and FB_VERSION
-# (the version stamped into it) set; that version, not this placeholder, is what the
+# payload. winpack\package.ps1 builds it with FB_PAYLOAD (the staging zip), FB_VERSION (the
+# version stamped into it) and FB_BUILD_ID (the packaging time, the same string the tree
+# carries as payload-id.txt) set; that version and id, not this placeholder, are what the
 # payload stamp compares against.
 [package]
 name = "failbrauwser-onefile"

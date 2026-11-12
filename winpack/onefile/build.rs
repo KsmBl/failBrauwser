@@ -11,6 +11,13 @@ fn main() {
         println!("cargo:rustc-env=FB_VERSION={}", v.to_string_lossy());
         println!("cargo:rerun-if-env-changed=FB_VERSION");
     }
+    // The payload's build id (package.ps1's packaging time, the same string the tree carries as
+    // payload-id.txt): a rebuild of the same version has to be a rebuild of this crate too, so
+    // the comparison rule reruns on it whether or not it is set.
+    println!("cargo:rerun-if-env-changed=FB_BUILD_ID");
+    if let Some(id) = std::env::var_os("FB_BUILD_ID") {
+        println!("cargo:rustc-env=FB_BUILD_ID={}", id.to_string_lossy());
+    }
 
     // The same manifest as the program itself - longPathAware matters while unpacking
     // the deep icon and locale trees below the install prefix.

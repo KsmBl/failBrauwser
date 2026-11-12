@@ -34,6 +34,12 @@ Copy-Item (Join-Path $repo 'target\release\failbrauwser.exe') (Join-Path $stage 
 Copy-Item (Join-Path $repo 'target\helper\fb-archive.exe') (Join-Path $stage 'bin\fb-archive.exe')
 foreach ($doc in 'LICENSE', 'README.md') { Copy-Item (Join-Path $repo $doc) (Join-Path $stage $doc) }
 
+# The payload's identity beside its version: the packaging time, riding in the tree as
+# payload-id.txt. Version alone cannot tell one 0.7.0 build from the next, which is what
+# the single-file launcher compares (src/portable.rs); install.ps1 records the same id.
+$buildId = Get-Date -Format 'yyyyMMddTHHmmss'   # sortable: the launcher compares these as text
+[IO.File]::WriteAllText((Join-Path $stage 'payload-id.txt'), $buildId)
+
 $zip = Join-Path (Join-Path $PSScriptRoot 'out') "$rootName.zip"
 if (Test-Path -LiteralPath $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $stage -DestinationPath $zip
@@ -46,6 +52,7 @@ Write-Output "PACKAGED: $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) 
 $onefileDir = Join-Path $PSScriptRoot 'onefile'
 $env:FB_PAYLOAD = $zip
 $env:FB_VERSION = $version
+$env:FB_BUILD_ID = $buildId   # the launcher stamps this beside the version, so a rebuild is a rebuild
 Push-Location $onefileDir
 & cargo build --release
 $onefileRc = $LASTEXITCODE

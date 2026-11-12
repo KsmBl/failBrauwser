@@ -31,11 +31,13 @@ fn main() {
             PathBuf::from(local).join("Programs\\failbrauwser")
         }
     };
+    let build = option_env!("FB_BUILD_ID").unwrap_or("");
     let exe = prefix.join("bin").join("failbrauwser.exe");
     let stamp = prefix.join(".payload-version");
     let installed = std::fs::read_to_string(&stamp).map(|s| s.trim().to_string()).unwrap_or_default();
-    if !exe.is_file() || is_newer(version, &installed) {
-        if let Err(e) = install(PAYLOAD, &prefix).and_then(|()| std::fs::write(&stamp, version)) {
+    if !exe.is_file() || needs_unpack((version, build), &installed) {
+        let stamp_text = if build.is_empty() { version.to_string() } else { format!("{version} {build}") };
+        if let Err(e) = install(PAYLOAD, &prefix).and_then(|()| std::fs::write(&stamp, stamp_text)) {
             let _ = writeln!(std::io::stderr(), "failBrauwser {version}: could not install into {}: {e}", prefix.display());
             exit(1);
         }
@@ -49,6 +51,30 @@ fn main() {
         }
     };
     exit(status.code().unwrap_or(1));
+}
+
+/// Whether the payload (its version and build id) replaces the installed tree the stamp describes.
+/// The version alone cannot answer a rebuild — both sides read 0.7.0 — so the build id (`package.ps1`'s
+/// packaging time, riding in the tree as `payload-id.txt`) decides whenever the versions are equal.
+/// A tree stamped without an id predates them and is unknown, so a payload that can date itself
+/// replaces it; one that cannot leaves a stamped install alone.
+fn needs_unpack(payload: (&str, &str), installed: &str) -> bool {
+    let (a_version, a_build) = payload;
+    let mut fields = installed.split(' ');
+    let (b_version, b_build) = (fields.next().unwrap_or(""), fields.next().unwrap_or(""));
+    if b_version.is_empty() {
+        return true; // no stamp at all: the first run
+    }
+    match (is_newer(a_version, b_version), is_newer(b_version, a_version)) {
+        (true, _) => true,
+        (false, true) => false,
+        _ => match (a_build.is_empty(), b_build.is_empty()) {
+            (false, true) => true,
+            (true, false) => false,
+            (true, true) => false,
+            (false, false) => a_build > b_build,
+        },
+    }
 }
 
 /// Whether version `a` is newer than `b` — the rule of `update::is_newer`, duplicated on
@@ -182,6 +208,23 @@ fn common_root(payload: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rebuild at the same version is a newer payload — the build id says so — and an installed
+    /// tree stamped before build ids existed names an unknown tree, which gets replaced. An older
+    /// payload never touches a newer install, and a payload that cannot date itself never touches
+    /// a stamped one.
+    #[test]
+    fn a_same_version_rebuild_replaces_an_installed_tree() {
+        assert!(needs_unpack(("0.7.0", "20261112T0700"), "0.7.0 20261110T1200"), "the same version built later is newer");
+        assert!(!needs_unpack(("0.7.0", "20261110T1200"), "0.7.0 20261112T0700"), "an older payload leaves a newer install alone");
+        assert!(!needs_unpack(("0.7.0", "20261112T0700"), "0.7.0 20261112T0700"), "the payload that is already installed does not unpack again");
+        assert!(needs_unpack(("0.7.0", "20261112T0700"), "0.7.0"), "a stamp with no build id names an unknown tree");
+        assert!(!needs_unpack(("0.7.0", ""), "0.7.0 20261112T0700"), "a payload that cannot date itself cannot claim to be newer");
+        assert!(!needs_unpack(("0.7.0", ""), "0.7.0"), "with nothing but versions the old rule holds");
+        assert!(needs_unpack(("0.8.0", ""), "0.7.0 20261112T0700"), "a higher version is newer whatever the ids say");
+        assert!(!needs_unpack(("0.7.0", ""), "0.8.0 20261112T0700"), "and a lower one is not");
+        assert!(needs_unpack(("0.7.0", "20261112T0700"), ""), "no stamp at all is a first run");
+    }
 
     #[test]
     fn versions_compare_like_the_updater() {

@@ -33,13 +33,26 @@ $inner = Get-ChildItem $src -Directory -Filter 'failbrauwser-*' -ErrorAction Sil
 if ($inner) { $src = $inner.FullName }
 if (-not (Test-Path -LiteralPath (Join-Path $src 'bin\failbrauwser.exe'))) { throw "$src holds no bin\failbrauwser.exe - is this the package from package.ps1?" }
 
+# Read the package's build id while the unpacked copy is still on disk — the temp folder is
+# dropped a few lines below, and the version alone cannot tell one 0.7.0 build from the next
+# (src/portable.rs compares the id beside it).
+$stampId = ''
+$idFile = Join-Path $src 'payload-id.txt'
+if (Test-Path -LiteralPath $idFile) { $stampId = (Get-Content -LiteralPath $idFile -Raw).Trim() }
+
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 Copy-Item (Join-Path $src '*') $Prefix -Recurse -Force
 if ($tmp) { Remove-Item $tmp -Recurse -Force }
 
 # The single-file launcher stamps the version of the tree it keeps current here; a
-# manually installed one is no tree it may overwrite, so record this version too.
-if ($src -match 'failbrauwser-(.+?)-[a-z0-9_]+-windows') { [IO.File]::WriteAllText((Join-Path $Prefix '.payload-version'), $Matches[1]) }
+# manually installed one is no tree it may overwrite, so record this version too — and the
+# package's build id beside it, so the launcher reads this tree as a known build rather
+# than an unknown one it would replace at the first chance (src/portable.rs).
+if ($src -match 'failbrauwser-(.+?)-[a-z0-9_]+-windows') {
+    $stamp = $Matches[1]
+    if ($stampId) { $stamp = "$stamp $stampId" }
+    [IO.File]::WriteAllText((Join-Path $Prefix '.payload-version'), $stamp)
+}
 
 # The loader cache is a list of absolute paths; it has to be written where the loaders
 # actually ended up. The tool ships in bin for exactly this step.
