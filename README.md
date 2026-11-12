@@ -102,6 +102,12 @@ winpack\install.ps1 -Prefix D:\Apps\failBrauwser
 as one file — run it once and it unpacks itself into your Programs folder and starts; that
 single file is all that folder needs (see [docs/WINDOWS.md](docs/WINDOWS.md)).
 
+Starting failBrauwser on Windows never opens a console window: the program file is linked as
+a windowed program, so a double-click, the Start Menu entry and the single-file launcher each
+show only failBrauwser's own window. Started from a terminal it still answers `--help`,
+`--version` and `--quit` in that terminal, and the archive helper it starts runs without a
+window of its own and ends together with the instance that started it.
+
 `winpack\bootstrap.ps1` fetches the pinned GTK stack (list in `winpack\packages.txt`) into
 `winpack\sysroot` from the MSYS2 repository named in `winpack\mirror.txt` — here the company
 Artifactory's mirror of `repo.msys2.org`; point it at any reachable MSYS2 tree — and
@@ -570,7 +576,11 @@ every local change), so this repository builds on its own.
 failBrauwser uses the archive logic of CompressionWorkbench (`Compression.Lib`) through a
 small NativeAOT helper, `fb-archive`, spoken to with one JSON object per line on stdin/stdout.
 It starts in about 15 ms, only when an archive is opened, and exits after 45 s without work,
-so plain browsing never carries the .NET runtime. Nested archives are extracted into
+so plain browsing never carries the .NET runtime. It also ends as soon as the failBrauwser
+instance that started it is gone, however that instance ends — normal exit, a killed process
+or a request still running: the program names its own process id as `--parent` when it starts
+the helper, and the helper waits for that process and quits. No `fb-archive` is left behind
+once the last window closes. Nested archives are extracted into
 `$XDG_RUNTIME_DIR/failbrauwser`, edited there and written back into their containers.
 
 ### Changes to CompressionWorkbench

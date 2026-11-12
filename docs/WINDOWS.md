@@ -60,6 +60,17 @@ tree's contents and leaves that stamp text as the launcher wrote it, so the laun
 comparing against the payload it carried — for that launcher, an updated tree is not newer
 than its own payload, so it stays untouched.
 
+Neither program file opens a console window. `bin\failbrauwser.exe` is linked as a windowed
+program (`#![cfg_attr(windows, windows_subsystem = "windows")]` in `src\main.rs`), so Explorer,
+the Start Menu entry and the launcher show only failBrauwser's own window — the black console
+that the CUI subsystem used to allocate for it is gone. Started from a terminal it still
+answers there: at startup it attaches to the parent console when one exists, and where none
+does its standard handles are pointed at `NUL`, so a setting that could not be written or a
+path that could not be opened cannot end the program by failing a write. `fb-archive.exe` is
+started with `CREATE_NO_WINDOW` and watches the process id the program hands it as `--parent`:
+it quits within a second once that instance is gone, request running or not, and while the
+instance lives it stops 45 s after its last request.
+
 To start the plain `target\release\failbrauwser.exe` without any PATH setup, run
 `winpack\deps.ps1 -Exe target\release\failbrauwser.exe -Flat` once after building: it
 copies the DLL chain beside the program and the loaders and data trees inside its own
