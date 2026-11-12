@@ -34,6 +34,12 @@ Copy-Item (Join-Path $repo 'target\release\failbrauwser.exe') (Join-Path $stage 
 Copy-Item (Join-Path $repo 'target\helper\fb-archive.exe') (Join-Path $stage 'bin\fb-archive.exe')
 foreach ($doc in 'LICENSE', 'README.md') { Copy-Item (Join-Path $repo $doc) (Join-Path $stage $doc) }
 
+# GTK looks the window icon up by application id in the tree next to the binaries; the program
+# files carry the same picture as an icon resource, so the shell and the titlebar agree.
+$appIcon = Join-Path $stage 'share\icons\hicolor\scalable\apps'
+New-Item -ItemType Directory -Force -Path $appIcon | Out-Null
+Copy-Item (Join-Path $repo 'data\icons\org.failbrauwser.FailBrauwser.svg') (Join-Path $appIcon 'org.failbrauwser.FailBrauwser.svg')
+
 # The payload's identity beside its version: the packaging time, riding in the tree as
 # payload-id.txt. Version alone cannot tell one 0.7.0 build from the next, which is what
 # the single-file launcher compares (src/portable.rs); install.ps1 records the same id.

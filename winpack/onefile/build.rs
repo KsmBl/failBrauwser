@@ -1,3 +1,5 @@
+include!("../iconresource.rs"); // the icon wiring the program crate shares (winpack\iconresource.rs)
+
 fn main() {
     // The payload and its version come from winpack\package.ps1: the staging zip is
     // copied where src/portable.rs can include_bytes! it, and the version becomes a
@@ -28,4 +30,8 @@ fn main() {
     for flag in ["/MANIFEST:EMBED", &format!("/MANIFESTINPUT:{}", manifest.display())] {
         println!("cargo:rustc-link-arg={flag}");
     }
+
+    // The launcher is the file Explorer shows and the file the user starts from, so it carries
+    // the same icon as the program inside it.
+    link_icon("../../data/icons/failbrauwser.rc");
 }
