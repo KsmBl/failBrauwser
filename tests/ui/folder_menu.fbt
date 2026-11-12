@@ -1,0 +1,23 @@
+# Right-clicking the files while their menu is open opens the folder's menu there (with
+# Show Hidden Files, Paste, …), also when no empty space is left to click; in both views.
+open $T/d
+right-click a.txt
+expect-context-menu file
+expect-selection a.txt
+right-click b.txt
+expect-context-menu folder
+expect-nothing-selected
+right-click a.txt
+expect-context-menu folder
+close-context-menu
+expect-context-menu none
+right-click b.txt
+expect-context-menu file
+close-context-menu
+action win.view-mode icons
+right-click a.txt
+expect-context-menu file
+right-click b.txt
+expect-context-menu folder
+close-context-menu
+action win.view-mode list

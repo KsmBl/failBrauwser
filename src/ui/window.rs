@@ -33,6 +33,8 @@ pub struct Window {
     up_btn: gtk::ToolButton,
     panes: RefCell<Vec<Rc<Pane>>>,
     weak: RefCell<Weak<Window>>,
+    /// The right-click menu of the files while it is open, and whether it is the folder's.
+    context_menu: RefCell<Option<(gtk::Menu, bool)>>,
     /// Called whenever the current tab or its location changes (sidebar, tree).
     location_listeners: RefCell<Vec<Box<dyn Fn(&Window)>>>,
 }
@@ -151,6 +153,7 @@ impl Window {
             up_btn,
             panes: RefCell::new(Vec::new()),
             weak: RefCell::new(Weak::new()),
+            context_menu: RefCell::new(None),
             location_listeners: RefCell::new(Vec::new()),
         });
         *window.weak.borrow_mut() = Rc::downgrade(&window);
@@ -388,6 +391,45 @@ impl Window {
         let model = super::extensions::context_menu_model(self, pane, &items);
         let menu = gtk::Menu::from_model(&model);
         menu.set_attach_widget(Some(&self.win));
+        // A right click on the files while the menu is open (it has the pointer then) opens
+        // the menu of the folder there, as on Windows: with no empty space left to click,
+        // that is how Show Hidden Files, Paste or Create Folder are reached.
+        let (weak, pw) = (self.weak.borrow().clone(), Rc::downgrade(pane));
+        menu.connect_button_press_event(move |menu, ev| {
+            let (Some(w), Some(p)) = (weak.upgrade(), pw.upgrade()) else { return glib::Propagation::Proceed };
+            if ev.event_type() != gdk::EventType::ButtonPress || ev.button() != 3 {
+                return glib::Propagation::Proceed;
+            }
+            // The press is on the files when it is in a window of the list or the icons.
+            let Some(mut at) = ev.window() else { return glib::Propagation::Proceed };
+            let views: Vec<gdk::Window> = [p.tree.upcast_ref::<gtk::Widget>(), p.icons.upcast_ref()].iter().filter_map(|v| v.window()).collect();
+            let on_files = loop {
+                if views.contains(&at) {
+                    break true;
+                }
+                match at.parent() {
+                    Some(parent) => at = parent,
+                    None => break false,
+                }
+            };
+            if !on_files {
+                return glib::Propagation::Proceed;
+            }
+            menu.popdown();
+            let ev = ev.clone();
+            glib::idle_add_local_once(move || w.show_folder_menu(&p, Some(&ev)));
+            glib::Propagation::Stop
+        });
+        let weak = self.weak.borrow().clone();
+        menu.connect_hide(move |m| {
+            if let Some(w) = weak.upgrade() {
+                let mut open = w.context_menu.borrow_mut();
+                if open.as_ref().is_some_and(|(o, _)| o == m) {
+                    *open = None;
+                }
+            }
+        });
+        *self.context_menu.borrow_mut() = Some((menu.clone(), items.is_empty()));
         menu.show_all();
         match ev {
             Some(ev) => menu.popup_at_pointer(Some(ev)),
@@ -400,6 +442,19 @@ impl Window {
                 menu.popup_at_widget(&anchor, gdk::Gravity::Center, gdk::Gravity::NorthWest, None);
             }
         }
+    }
+
+    /// The right-click menu of the folder shown (nothing selected any more, as after a click
+    /// into empty space).
+    pub fn show_folder_menu(&self, pane: &Rc<Pane>, ev: Option<&gdk::EventButton>) {
+        pane.unselect_all();
+        self.show_context_menu(pane, ev);
+    }
+
+    /// The right-click menu of the files while it is open, and whether it is the folder's
+    /// (tests).
+    pub fn open_context_menu(&self) -> Option<(gtk::Menu, bool)> {
+        self.context_menu.borrow().clone()
     }
 
     fn show_header_menu(&self, ev: &gdk::EventButton) {

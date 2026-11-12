@@ -685,6 +685,16 @@ fn dragging_from_a_name_and_several_items() {
 }
 
 #[test]
+fn folder_menu_from_an_open_menu() {
+    run("folder_menu.fbt", |t| {
+        std::fs::create_dir_all(t.join("d")).unwrap();
+        for n in ["a.txt", "b.txt"] {
+            std::fs::write(t.join("d").join(n), n).unwrap();
+        }
+    });
+}
+
+#[test]
 fn custom_actions() {
     // Any existing program makes the built-in "Open Terminal Here" appear, on any machine.
     run_checked("custom_actions.fbt", &[("TERMINAL", "sh")], |t| {

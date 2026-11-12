@@ -1672,6 +1672,11 @@ impl Pane {
     /// list `at` can instead be the start of its name ([`Spot::Name`]) or the empty end of its
     /// name cell ([`Spot::Blank`]).
     pub fn send_button(&self, name: &str, press: bool, state: gdk::ModifierType, at: Spot) -> Result<(), String> {
+        self.send_button_n(name, press, state, at, 1)
+    }
+
+    /// [`send_button`](Self::send_button) with mouse button `button` (3: the right one).
+    pub fn send_button_n(&self, name: &str, press: bool, state: gdk::ModifierType, at: Spot, button: u32) -> Result<(), String> {
         use glib::translate::{IntoGlib, ToGlibPtr};
         let key = self.keys_for_names(&[OsString::from(name)]).pop().ok_or("no name")?;
         let path = {
@@ -1695,7 +1700,8 @@ impl Pane {
         };
         let pointer = window.display().default_seat().and_then(|s| s.pointer()).ok_or("no pointer")?;
         let (_, ox, oy) = window.origin();
-        let state = if press { state } else { state | gdk::ModifierType::BUTTON1_MASK };
+        let held = if button == 3 { gdk::ModifierType::BUTTON3_MASK } else { gdk::ModifierType::BUTTON1_MASK };
+        let state = if press { state } else { state | held };
         // SAFETY: a fresh event filled in field by field; it owns the window reference it
         // is given and is freed after GTK handled it.
         unsafe {
@@ -1708,7 +1714,7 @@ impl Pane {
             (*b).x_root = (ox + x) as f64;
             (*b).y_root = (oy + y) as f64;
             (*b).state = state.into_glib();
-            (*b).button = 1;
+            (*b).button = button;
             gdk::ffi::gdk_event_set_device(ev, pointer.to_glib_none().0);
             // GTK's gestures ignore events without the device they physically came from.
             gdk::ffi::gdk_event_set_source_device(ev, pointer.to_glib_none().0);
