@@ -349,6 +349,19 @@ files; saving over a file asks first; several files are picked with <kbd>Ctrl</k
 `~/.config/xdg-desktop-portal/portals.conf` (created from the system's default when there is
 none; `--uninstall` takes it out again); every other portal stays as it was.
 
+GTK 3 applications that make GTK's own dialog instead (xfce4-terminal's *Save Contents…*, most
+older applications) get the same window through a small GTK 3 module
+(`lib/failbrauwser/libfailbrauwser-chooser.so`): it asks the portal in the dialog's place, with
+its title, button, file name, folder and file types, and hands back what was picked as if it
+had been picked in GTK's dialog (where the portal cannot be asked, GTK's dialog shows).
+`install.sh` names the module in `GTK3_MODULES` in `~/.config/environment.d/60-failbrauwser.conf`,
+which GNOME, KDE Plasma and other sessions started through systemd read at login, and for the
+running session; applications started before keep GTK's dialog until they are started again.
+A session that starts applications itself without reading `environment.d` passes it on with
+`set -a; eval "$(/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator)"; set +a`
+in its start script. `FAILBRAUWSER_NO_CHOOSER=1` keeps GTK's dialog for one application;
+`--no-file-chooser` and `--uninstall` take the module away again.
+
 **Checksums:** *Properties* of a file has *Calculate MD5 and SHA-256* (read once for both,
 with progress) and *Compare with Clipboard*, which finds an MD5 or SHA-256 in the copied text
 (also a `sha256sum` line or `sha256:…`) and says whether it is this file's.
