@@ -908,6 +908,31 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             wait(r, move |r| Ok(r.window.current_pane().send_button(&name, press, state, super::pane::Spot::Middle).is_ok()));
         }
         "drag-began" => w.current_pane().drag_began(),
+        "right-click" => {
+            // right-click <name>: the right mouse button pressed and released on an item.
+            let name = arg.to_string();
+            wait(r, move |r| {
+                let p = r.window.current_pane();
+                let none = gtk::gdk::ModifierType::empty();
+                Ok(p.send_button_n(&name, true, none, super::pane::Spot::Middle, 3).is_ok() && p.send_button_n(&name, false, none, super::pane::Spot::Middle, 3).is_ok())
+            });
+        }
+        "expect-context-menu" => {
+            // expect-context-menu file|folder|none: which right-click menu of the files is open.
+            let want = arg.to_string();
+            wait(r, move |r| {
+                let got = match r.window.open_context_menu() {
+                    Some((m, folder)) if m.is_visible() => if folder { "folder" } else { "file" },
+                    _ => "none",
+                };
+                Ok(got == want)
+            });
+        }
+        "close-context-menu" => {
+            if let Some((m, _)) = w.open_context_menu() {
+                m.popdown();
+            }
+        }
         "press-name" | "press-blank" => {
             // press-name <name>: on the start of the name in the list (its icon); press-blank
             // <name>: on the empty end of its name cell. Released right after.

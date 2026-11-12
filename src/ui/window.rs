@@ -451,6 +451,12 @@ impl Window {
         self.show_context_menu(pane, ev);
     }
 
+    /// The right-click menu of the files while it is open, and whether it is the folder's
+    /// (tests).
+    pub fn open_context_menu(&self) -> Option<(gtk::Menu, bool)> {
+        self.context_menu.borrow().clone()
+    }
+
     fn show_header_menu(&self, ev: &gdk::EventButton) {
         let menu = gtk::Menu::from_model(&actions::columns_menu());
         menu.set_attach_widget(Some(&self.win));
