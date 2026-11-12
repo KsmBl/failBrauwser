@@ -453,7 +453,7 @@ pub fn menu_item(pane: &Rc<Pane>, title: &str, row_text: &str, item: &str) -> Re
         .children()
         .into_iter()
         .filter_map(|c| c.downcast::<gtk::MenuItem>().ok())
-        .find(|m| m.label().is_some_and(|l| l.replace('_', "") == item))
+        .find(|m| super::menuicons::item_text(&m).is_some_and(|l| l.replace('_', "") == item))
         .ok_or_else(|| format!("no menu item {item:?}"))?;
     found.activate();
     Ok(())
@@ -665,7 +665,7 @@ impl DrivesPage {
         let u = self.usages.borrow().get(index).copied().flatten();
         let menu = gtk::Menu::new();
         let add = |label: &str, f: Box<dyn Fn(&DrivesPage)>| {
-            let item = gtk::MenuItem::with_mnemonic(label);
+            let item = super::menuicons::item(label);
             let weak = self.weak.borrow().clone();
             item.connect_activate(move |_| {
                 if let Some(p) = weak.upgrade() {

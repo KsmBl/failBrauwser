@@ -20,6 +20,7 @@ pub mod extensions;
 pub mod fileops;
 pub mod icons;
 pub mod jobs;
+pub mod menuicons;
 pub mod model;
 pub mod network;
 pub mod pane;
