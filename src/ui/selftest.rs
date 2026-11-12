@@ -625,6 +625,23 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
         "compare-show-identical" => super::compare::current().ok_or("no compare window")?.set_show_same(arg == "on"),
         "compare-copy" => super::compare::current().ok_or("no compare window")?.click_copy(arg == "right"),
         "close-compare" => unsafe { super::compare::current().ok_or("no compare window")?.window.destroy() },
+        "expect-menu-icons" => {
+            // Every item of the right-click menu of the selection (or the background) has an icon.
+            let p = w.current_pane();
+            let model = super::extensions::context_menu_model(&w, &p, &p.selected_items());
+            let missing = super::menuicons::model_without_icon(model.upcast_ref());
+            if !missing.is_empty() {
+                return Err(format!("without icon: {missing:?}"));
+            }
+        }
+        "expect-sidebar-menu-icons" => {
+            // expect-sidebar-menu-icons [entry]: every item of the side panel entry's menu
+            // (without an entry: of the empty space) has an icon.
+            let missing = super::sidebar::for_window(&w).ok_or("no sidebar")?.menu_without_icon(arg)?;
+            if !missing.is_empty() {
+                return Err(format!("without icon: {missing:?}"));
+            }
+        }
         "expect-menu-item" | "expect-no-menu-item" => {
             // The right-click menu of the selection has (or has not) this item.
             fn labels(m: &gio::MenuModel, out: &mut Vec<String>) {

@@ -984,6 +984,13 @@ impl Sidebar {
         Ok(())
     }
 
+    /// The items of an entry's right-click menu (`label` empty: of the empty space) shown
+    /// without an icon (tests).
+    pub fn menu_without_icon(self: &Rc<Self>, label: &str) -> Result<Vec<String>, String> {
+        let row = if label.is_empty() { None } else { Some(self.row_labelled(label)?.1) };
+        Ok(super::menuicons::without_icon(&self.menu_for(row.as_ref())))
+    }
+
     /// Activates an item (menu text without mnemonics) of a drive row's right-click menu (tests).
     pub fn drive_menu_item(self: &Rc<Self>, text: &str, item: &str) -> Result<(), String> {
         let (_, v, u) = self.drive_labelled(text)?;

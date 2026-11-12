@@ -117,3 +117,70 @@ pub fn item_text(item: &gtk::MenuItem) -> Option<glib::GString> {
         row.children().into_iter().find_map(|c| c.downcast::<gtk::Label>().ok()).map(|l| l.label())
     })
 }
+
+/// The texts of the items of `menu` (and its submenus) shown without an icon (self-test).
+pub fn without_icon(menu: &gtk::Menu) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in menu.children().into_iter().filter_map(|c| c.downcast::<gtk::MenuItem>().ok()) {
+        if m.is::<gtk::SeparatorMenuItem>() {
+            continue;
+        }
+        let text = item_text(&m).map(|t| t.replace('_', "")).unwrap_or_default();
+        let image = m.child().and_then(|c| c.downcast::<gtk::Box>().ok()).and_then(|b| b.children().into_iter().find_map(|c| c.downcast::<gtk::Image>().ok()));
+        if !image.is_some_and(|i| i.icon_name().is_some()) {
+            out.push(text.clone());
+        }
+        if let Some(sub) = m.submenu().and_then(|s| s.downcast::<gtk::Menu>().ok()) {
+            out.extend(without_icon(&sub).into_iter().map(|t| format!("{text}/{t}")));
+        }
+    }
+    out
+}
+
+/// The texts of the items of a menu model (and its sections and submenus) without an icon (self-test).
+pub fn model_without_icon(m: &gio::MenuModel) -> Vec<String> {
+    let mut out = Vec::new();
+    for i in 0..m.n_items() {
+        if let Some(l) = m.item_attribute_value(i, "label", None).and_then(|v| v.get::<String>()) {
+            if m.item_attribute_value(i, "icon", None).is_none() {
+                out.push(l.replace('_', ""));
+            }
+        }
+        for link in ["section", "submenu"] {
+            if let Some(sub) = m.item_link(i, link) {
+                out.extend(model_without_icon(&sub));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_menu_text_has_icons() {
+        assert_eq!(plain_text("_Properties…"), "Properties");
+        assert_eq!(plain_text("Co_mpare"), "Compare");
+        assert_eq!(icon_names("Cu_t"), ["edit-cut"]);
+        assert_eq!(icon_names("Move to T_rash")[0], "user-trash");
+        // Every text of the right-click menus (files, trash, side panel, drives, network).
+        for label in [
+            "_Open", "Open in New _Tab", "Open _With", "Other _Application…", "Cu_t", "_Copy", "_Copy Address", "_Paste", "_Paste Into Folder",
+            "Move to T_rash", "_Delete", "_Delete Permanently", "_Rename…", "_Edit…", "Edit Custom _Actions…", "E_xtract Here", "Extract _To…",
+            "Open as _Archive", "C_ompress…", "Co_mpare", "_Mount as Drive", "_Mount", "_Unmount", "_Eject", "_Unlock", "_Retry", "_Reload",
+            "Create _Link on Desktop", "Create _Folder…", "Create _Document…", "Select _All", "Show _Hidden Files", "_Show Hidden Entry", "_Hide",
+            "_Hide Mounted Volumes", "_Properties…", "_Empty Trash", "_Restore", "_Pin to Side Panel", "_Add Current Folder", "_Add Server…",
+            "_Remove", "Re_move", "Move _Up", "Move _Down",
+        ] {
+            assert!(!icon_names(label).is_empty(), "no icon for {label:?}");
+        }
+        assert!(icon_names("Something Else").is_empty());
+    }
+
+    #[test]
+    fn symbolic_icons_come_after_the_others() {
+        assert_eq!(with_symbolic(&["edit-cut", "view-reveal-symbolic"]), ["edit-cut", "view-reveal-symbolic", "edit-cut-symbolic"]);
+    }
+}

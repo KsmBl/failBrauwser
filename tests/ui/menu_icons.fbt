@@ -1,0 +1,22 @@
+# Every item of the right-click menus has an icon: on files, folders, both, the empty space
+# of a folder, the trash, and the side panel's entries and its empty space.
+open $T/d
+expect-menu-icons
+select a.txt
+expect-menu-icons
+select sub
+expect-menu-icons
+select a.txt | sub
+expect-menu-icons
+select a.txt
+action win.trash
+wait-missing $T/d/a.txt
+open trash:///
+wait-row a.txt
+expect-menu-icons
+select a.txt
+expect-menu-icons
+expect-sidebar-menu-icons Home
+expect-sidebar-menu-icons Drives
+expect-sidebar-menu-icons Trash
+expect-sidebar-menu-icons
