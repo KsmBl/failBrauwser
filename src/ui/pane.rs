@@ -90,6 +90,9 @@ pub struct Pane {
     /// Rows holding a thumbnail, oldest first (at most [`MAX_THUMBS`]).
     thumbs: RefCell<std::collections::VecDeque<OsString>>,
     scroll_pending: Cell<bool>,
+    /// The item pressed among several selected ones: the selection stays for a drag of them
+    /// all, and a release without a drag selects only this one.
+    press_in_selection: RefCell<Option<gtk::TreePath>>,
     /// Filter-as-you-type for the current folder (empty: everything).
     filter: RefCell<failbrauwser::search::Query>,
     /// Files of a type a file chooser asks for (folders are always shown).
@@ -221,6 +224,7 @@ impl Pane {
             grid_text: txt,
             thumbs: RefCell::new(std::collections::VecDeque::new()),
             scroll_pending: Cell::new(false),
+            press_in_selection: RefCell::new(None),
             filter: RefCell::new(failbrauwser::search::Query::new("")),
             type_filter: RefCell::new(None),
             search_cancel: RefCell::new(None),
@@ -1500,6 +1504,8 @@ impl Pane {
             let Some(p) = weak.upgrade() else { return glib::Propagation::Proceed };
             let (x, y) = ev.position();
             let hit = tree.path_at_pos(x as i32, y as i32).and_then(|(path, ..)| path);
+            let selection = tree.selection();
+            p.keep_selection_for_drag(ev, &hit, selection.selected_rows().0, move |paths| paths.iter().for_each(|path| selection.select_path(path)));
             p.handle_button(ev, hit, |path| tree.selection().path_is_selected(path), |path| {
                 tree.selection().unselect_all();
                 tree.selection().select_path(path);
@@ -1511,12 +1517,39 @@ impl Pane {
             let Some(p) = weak.upgrade() else { return glib::Propagation::Proceed };
             let (x, y) = ev.position();
             let hit = icons.path_at_pos(x as i32, y as i32);
+            let view = icons.clone();
+            p.keep_selection_for_drag(ev, &hit, icons.selected_items(), move |paths| paths.iter().for_each(|path| view.select_path(path)));
             p.handle_button(ev, hit, |path| icons.path_is_selected(path), |path| {
                 icons.unselect_all();
                 icons.select_path(path);
                 icons.set_cursor(path, None::<&gtk::CellRenderer>, false);
             })
         });
+        // The release of a press among several selected items that did not become a drag.
+        let weak = self.weak.borrow().clone();
+        self.tree.connect_button_release_event(move |tree, ev| {
+            if let Some(path) = weak.upgrade().and_then(|p| p.press_in_selection.take()).filter(|_| ev.button() == 1) {
+                tree.selection().unselect_all();
+                tree.selection().select_path(&path);
+            }
+            glib::Propagation::Proceed
+        });
+        let weak = self.weak.borrow().clone();
+        self.icons.connect_button_release_event(move |icons, ev| {
+            if let Some(path) = weak.upgrade().and_then(|p| p.press_in_selection.take()).filter(|_| ev.button() == 1) {
+                icons.unselect_all();
+                icons.select_path(&path);
+            }
+            glib::Propagation::Proceed
+        });
+        for w in [self.tree.upcast_ref::<gtk::Widget>(), self.icons.upcast_ref()] {
+            let weak = self.weak.borrow().clone();
+            w.connect_drag_begin(move |_, _| {
+                if let Some(p) = weak.upgrade() {
+                    p.drag_began();
+                }
+            });
+        }
         // Rows coming into view may want thumbnails: after scrolling, and after layout
         // (the scroll range changes once rows are measured). Settles before asking.
         for adj in [self.tree.vadjustment(), self.icons.vadjustment()].into_iter().flatten() {
@@ -1582,6 +1615,72 @@ impl Pane {
                 glib::Propagation::Proceed
             });
         }
+    }
+
+    /// GTK selects only the item a plain left press lands on, so several selected items could
+    /// not be dragged together: when the press is on one of them, the selection is put back
+    /// (`restore`) before anything is drawn or a drag can begin, and the release decides.
+    fn keep_selection_for_drag(&self, ev: &gdk::EventButton, hit: &Option<gtk::TreePath>, selected: Vec<gtk::TreePath>, restore: impl Fn(&[gtk::TreePath]) + 'static) {
+        self.press_in_selection.take();
+        let plain = (ev.state() & gtk::accelerator_get_default_mod_mask()).is_empty();
+        let Some(hit) = hit else { return };
+        if !keeps_selection(ev.event_type() == gdk::EventType::ButtonPress, ev.button(), plain, &selected, hit) {
+            return;
+        }
+        *self.press_in_selection.borrow_mut() = Some(hit.clone());
+        glib::idle_add_local_full(glib::Priority::HIGH, move || {
+            restore(&selected);
+            glib::ControlFlow::Break
+        });
+    }
+
+    /// A drag of the selection started: the release that follows decides nothing.
+    pub fn drag_began(&self) {
+        self.press_in_selection.take();
+    }
+
+    /// Sends a left button press or release onto the middle of the item `name` in the view
+    /// shown, through GTK as the mouse does, with the modifier keys `state` (self-test).
+    pub fn send_button(&self, name: &str, press: bool, state: gdk::ModifierType) -> Result<(), String> {
+        use glib::translate::{IntoGlib, ToGlibPtr};
+        let key = self.keys_for_names(&[OsString::from(name)]).pop().ok_or("no name")?;
+        let path = {
+            let st = self.st.borrow();
+            st.by_name.get(&key).and_then(|k| st.rows.get(k)).and_then(|(_, iter)| self.store.path(iter)).ok_or("no such row")?
+        };
+        let (window, x, y) = if self.view_is_icons() {
+            let rect = self.icons.cell_rect(&path, None::<&gtk::CellRenderer>).ok_or("the item is not laid out")?;
+            let bin = self.icons.window().and_then(|w| w.children().into_iter().next()).ok_or("the icon view is not realized")?;
+            let (bx, by) = bin.position();
+            (bin, rect.x() + rect.width() / 2 - bx, rect.y() + rect.height() / 2 - by)
+        } else {
+            let rect = self.tree.cell_area(Some(&path), self.tree.column(0).as_ref());
+            let bin = self.tree.bin_window().ok_or("the list is not realized")?;
+            (bin, rect.x() + rect.width() / 2, rect.y() + rect.height() / 2)
+        };
+        let pointer = window.display().default_seat().and_then(|s| s.pointer()).ok_or("no pointer")?;
+        let (_, ox, oy) = window.origin();
+        let state = if press { state } else { state | gdk::ModifierType::BUTTON1_MASK };
+        // SAFETY: a fresh event filled in field by field; it owns the window reference it
+        // is given and is freed after GTK handled it.
+        unsafe {
+            let ev = gdk::ffi::gdk_event_new(if press { gdk::ffi::GDK_BUTTON_PRESS } else { gdk::ffi::GDK_BUTTON_RELEASE });
+            let b = ev as *mut gdk::ffi::GdkEventButton;
+            (*b).window = window.to_glib_full();
+            (*b).time = (glib::monotonic_time() / 1000) as u32;
+            (*b).x = x as f64;
+            (*b).y = y as f64;
+            (*b).x_root = (ox + x) as f64;
+            (*b).y_root = (oy + y) as f64;
+            (*b).state = state.into_glib();
+            (*b).button = 1;
+            gdk::ffi::gdk_event_set_device(ev, pointer.to_glib_none().0);
+            // GTK's gestures ignore events without the device they physically came from.
+            gdk::ffi::gdk_event_set_source_device(ev, pointer.to_glib_none().0);
+            gtk::ffi::gtk_main_do_event(ev);
+            gdk::ffi::gdk_event_free(ev);
+        }
+        Ok(())
     }
 
     fn handle_button(
@@ -1747,4 +1846,27 @@ impl Pane {
         self.st.borrow().generation
     }
 
+}
+
+/// Whether a press keeps the selection for a drag: a plain single left press on one of
+/// several selected items.
+fn keeps_selection<T: PartialEq>(single_press: bool, button: u32, plain: bool, selected: &[T], hit: &T) -> bool {
+    single_press && button == 1 && plain && selected.len() > 1 && selected.contains(hit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_press_among_selected_items_keeps_them_for_a_drag() {
+        let sel = [1, 2, 3];
+        assert!(keeps_selection(true, 1, true, &sel, &2));
+        // Not selected, the only one selected, with Ctrl or Shift, another button, a double click.
+        assert!(!keeps_selection(true, 1, true, &sel, &4));
+        assert!(!keeps_selection(true, 1, true, &[2], &2));
+        assert!(!keeps_selection(true, 1, false, &sel, &2));
+        assert!(!keeps_selection(true, 3, true, &sel, &2));
+        assert!(!keeps_selection(false, 1, true, &sel, &2));
+    }
 }

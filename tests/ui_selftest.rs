@@ -657,6 +657,16 @@ fn click_into_empty_space() {
 }
 
 #[test]
+fn several_selected_items_stay_selected_for_a_drag() {
+    run("drag_selection.fbt", |t| {
+        std::fs::create_dir_all(t.join("d")).unwrap();
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(t.join("d").join(n), n).unwrap();
+        }
+    });
+}
+
+#[test]
 fn custom_actions() {
     // Any existing program makes the built-in "Open Terminal Here" appear, on any machine.
     run_checked("custom_actions.fbt", &[("TERMINAL", "sh")], |t| {
