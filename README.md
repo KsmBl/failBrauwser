@@ -474,6 +474,65 @@ types like in Thunar. Actions only for failBrauwser go into
 it with an example). *Open Terminal Here* is built in and uses `$TERMINAL` or the first
 terminal found.
 
+**Version control:** a folder some version-control tool manages says so in its right-click
+menu: *Repository* holds the commands that make sense for that folder and for the selection in
+it, in the order the work goes — *Commit*, *Pull*, *Push*, *Sync*, *Stash*, *Switch/Checkout*
+and *Revert*, then *Check for modifications*, then *Diff*, *Diff with previous version*, *Show
+Log*, *Browse Repository* and *Blame*, then what the selected items get done to — *Rename*,
+*Delete*, *Delete (keep local)* and *Delete and add to ignore list* — and *Settings* last. A
+plain folder keeps the menu item too, and its submenu holds only *Clone*. What a folder's tool
+has no equivalent for is left out of the submenu rather than greyed out, and so is what the
+selection cannot carry: a rename or a delete wants files, *Clone* wants no working copy above
+the folder. Nothing here runs over a tool's head: every command goes through that tool's own
+command-line client, asked inside the working copy, so a working copy is never rewritten behind
+its tool's back and a command the client refuses fails in the client's own words, which the
+window shows.
+
+| Working copy of | How the folder is recognised | Client |
+|---|---|---|
+| Git | a `.git` folder, or a `.git` file naming the repository it points at (`gitdir:` — linked worktrees and submodules) | `git` |
+| Mercurial | an `.hg` folder | `hg` |
+| Subversion | an `.svn` folder — one at the root since 1.7, one in every folder before that | `svn` |
+| CVS | a `CVS` folder holding its `Repository` file | `cvs` |
+| Visual Source Safe | a `vssver.scc` (6.0) or `vssver2.scc` (2005) file in the folder itself, because VSS records the binding folder by folder | `ss` |
+
+The nearest marker above the folder decides which tool a folder belongs to; where two markers
+sit in the folder itself, Git answers first, then Mercurial, Subversion, CVS and Visual Source
+Safe. A bare repository — `HEAD`, `objects` and `refs` without a working tree — is not a working
+copy, and neither is a folder that only contains one somewhere deeper down: the marker has to be
+the folder's own or one of its parents'.
+
+| Command | Git | Mercurial | Subversion | CVS | Visual Source Safe |
+|---|---|---|---|---|---|
+| Clone | `git clone` | `hg clone` | `svn checkout` | `cvs checkout` | — |
+| Commit | `git commit` | `hg commit` | `svn commit` | `cvs commit` | `ss Checkin` |
+| Pull | `git pull` | `hg pull` | `svn update` | `cvs update` | `ss Get` |
+| Push | `git push` | `hg push` | — | — | — |
+| Sync | fetch, then pull and push | `hg pull` then `hg push` | — | — | — |
+| Stash | `git stash` | `hg shelve` | — | — | — |
+| Switch/Checkout | `git switch` | `hg update` | `svn switch` | `cvs update -r` | `ss Restore` |
+| Revert | `git restore` | `hg revert` | `svn revert` | `cvs checkout -C` | `ss UndoCheckout` |
+| Check for modifications | `git status` | `hg status` | `svn status` | `cvs -n update` | `ss Status` |
+| Diff | `git diff` | `hg diff` | `svn diff` | `cvs diff` | `ss Diff` |
+| Diff with previous version | `git diff` between a file and its parent revision | `hg diff` of the file against its parent | `svn diff -r N-1:N` | `cvs diff -r prev -r cur` | `ss Diff` between two versions |
+| Show Log | `git log` | `hg log` | `svn log` | `cvs log` | `ss History` |
+| Browse Repository | its own log, over the whole working copy, in a window | ← | ← | ← | ← |
+| Blame | `git blame` | `hg annotate` | `svn annotate` | `cvs annotate` | — |
+| Rename | `git mv` | `hg rename` | `svn rename` | `cvs rename` | — |
+| Delete | `git rm` | `hg remove` | `svn delete` | `cvs remove` | `ss Delete` |
+| Delete (keep local) | `git rm --cached` | `hg remove --keep-files` | `svn delete --keep-local` | `cvs remove` leaving the file | — |
+| Delete and add to ignore list | `.gitignore` | `.hgignore` | the `svn:ignore` property | `.cvsignore` | — |
+| Settings | `git config --local` | `.hg/hgrc` | the working copy's own properties | — | — |
+
+A dash means the submenu leaves that command out, because the tool has no equivalent: a
+central-store tool (Subversion, CVS, Visual Source Safe) has nothing to *Push* or *Sync*,
+Visual Source Safe keeps no ignore list of its own and no blame. *Pull* is the update of a
+central tool, and for Git and Mercurial *Sync* is what their fetch plus pull plus push amount
+to. Only `git` is installed on this host, so Git's column is the measured one: the other four
+rows are read off each client's documented command line, and their commands are unmeasured
+here — the detection and the arguments each command builds are tested against fixtures for all
+five tools, the answers of `hg`, `svn`, `cvs` and `ss` are not.
+
 **Trash:** *Move to Trash* (<kbd>Delete</kbd>) follows the freedesktop.org Trash
 specification, exactly like Thunar, Nautilus and Dolphin: the file goes to
 `~/.local/share/Trash/files/` (or `.Trash-<uid>/` on other drives) and a
