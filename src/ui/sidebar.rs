@@ -1066,13 +1066,11 @@ impl Sidebar {
     pub fn children_of(&self, dir: &Path) -> Vec<String> {
         let Some(iter) = self.tree_path_of(dir).and_then(|p| self.store.iter(&p)) else { return Vec::new() };
         let mut out = Vec::new();
-        let mut child = self.store.iter_children(Some(&iter));
-        while let Some(c) = child {
+        for c in util::child_iters(&self.store, Some(&iter)) {
             let path: String = self.store.value(&c, T_PATH as i32).get().unwrap_or_default();
             if !path.is_empty() {
                 out.push(self.store.value(&c, T_NAME as i32).get().unwrap_or_default());
             }
-            child = if self.store.iter_next(&c) { Some(c) } else { None };
         }
         out
     }
@@ -1333,12 +1331,7 @@ impl Sidebar {
             // Add the real subfolders first, then drop the placeholder: a row that is left
             // without children for a moment gets collapsed by GTK, which made the first
             // click on an expander look like it did nothing.
-            let mut old = Vec::new();
-            let mut child = sb.store.iter_children(Some(&iter));
-            while let Some(c) = child {
-                old.push(c.clone());
-                child = if sb.store.iter_next(&c) { Some(c) } else { None };
-            }
+            let old = util::child_iters(&sb.store, Some(&iter));
             for d in dirs {
                 let icon = super::util::icon_for_entry(&d.entry);
                 let child = sb.store.insert_with_values(Some(&iter), None, &[(T_ICON, &icon), (T_NAME, &d.name), (T_PATH, &d.entry.path.to_string_lossy().to_string()), (T_LOADED, &!d.has_children)]);
@@ -1386,14 +1379,12 @@ impl Sidebar {
             &iter,
             Some(Box::new(move |sb: &Sidebar| {
                 let Some(iter) = row.and_then(|r| r.path()).and_then(|p| sb.store.iter(&p)) else { return };
-                let mut child = sb.store.iter_children(Some(&iter));
-                while let Some(c) = child {
+                for c in util::child_iters(&sb.store, Some(&iter)) {
                     let name: String = sb.store.value(&c, T_NAME as i32).get().unwrap_or_default();
                     if name == parts[i] {
                         sb.reveal_step(c, parts, i + 1);
                         return;
                     }
-                    child = if sb.store.iter_next(&c) { Some(c) } else { None };
                 }
                 // A hidden folder while hidden files are off: show just this one, since the
                 // user is in it.
