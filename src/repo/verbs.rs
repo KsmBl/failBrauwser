@@ -54,6 +54,17 @@ impl Selection {
     }
 }
 
+/// The kind of word a command asks its user for (M15). Which one a command wants is the window's
+/// question: a message wants lines of text, a reference a branch or a number, an address a place
+/// to read from, and a rename the name to move to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    Message,
+    Reference,
+    Address,
+    NewName,
+}
+
 /// The extra words a command needs before its client can run: the commit message, the branch or
 /// revision to switch to, the address to clone, the name a rename moves to. A command that needs
 /// one and is not given it says so by answering no arguments at all (M15).
@@ -115,6 +126,56 @@ impl Command {
             Command::Settings,
             Command::Clone,
         ]
+    }
+
+    /// The window action that runs this command (M15). The submenu names this action and the
+    /// window installs it, so the two agree by construction: an action nobody installed would
+    /// show the item greyed rather than run nothing at all.
+    pub fn action(&self) -> &'static str {
+        match self {
+            Command::Clone => "repo.clone",
+            Command::Commit => "repo.commit",
+            Command::Pull => "repo.pull",
+            Command::Push => "repo.push",
+            Command::Sync => "repo.sync",
+            Command::Stash => "repo.stash",
+            Command::SwitchCheckout => "repo.switch-checkout",
+            Command::Revert => "repo.revert",
+            Command::CheckModifications => "repo.check-modifications",
+            Command::Diff => "repo.diff",
+            Command::DiffWithPrevious => "repo.diff-previous",
+            Command::ShowLog => "repo.log",
+            Command::BrowseRepository => "repo.browse",
+            Command::Blame => "repo.blame",
+            Command::Rename => "repo.rename",
+            Command::Delete => "repo.delete",
+            Command::DeleteKeepLocal => "repo.delete-keep-local",
+            Command::DeleteAndIgnore => "repo.delete-ignore",
+            Command::Settings => "repo.settings",
+        }
+    }
+
+    /// Which word the user still has to give before this tool's client can run the command (M15).
+    /// `runs` answers no arguments at all without it, which is the point: a client left without
+    /// the words it needs would open its own editor or prompt on a keyboard nobody is sitting in
+    /// front of, so asking is the only way an answer can arrive.
+    pub fn asks(&self, tool: Tool) -> Option<Ask> {
+        if !self.supports(tool) {
+            return None;
+        }
+        match (self, tool) {
+            (Command::Commit, _) => Some(Ask::Message),
+            (Command::Clone, _) => Some(Ask::Address),
+            (Command::Rename, _) => Some(Ask::NewName),
+            // Subversion switches to a place, the counting tools and Git to a name or number.
+            (Command::SwitchCheckout, Tool::Subversion) => Some(Ask::Address),
+            (Command::SwitchCheckout, _) => Some(Ask::Reference),
+            // Git and Mercurial name the previous version of their own accord; the tools that
+            // count revisions need to be told which one is being compared.
+            (Command::DiffWithPrevious, Tool::Git | Tool::Mercurial) => None,
+            (Command::DiffWithPrevious, _) => Some(Ask::Reference),
+            _ => None,
+        }
     }
 
     /// Whether this tool has the command at all; a command it has no equivalent for stays out of
@@ -242,7 +303,9 @@ impl Command {
             (Command::DiffWithPrevious, _) => previous(tool, what, &names),
             (Command::ShowLog, _) => vec![log_of(tool, &names)],
             (Command::BrowseRepository, _) => vec![log_of(tool, &[])],
-            (Command::Blame, _) => vec![asked(match tool { Tool::Git => &["blame"], _ => &["annotate"] }, true)],
+            // Git's human blame layout shifts its columns under a long author name, so the
+            // annotation is asked for in the shape the client documents instead (M15).
+            (Command::Blame, _) => vec![asked(match tool { Tool::Git => &["blame", "--porcelain"], _ => &["annotate"] }, true)],
             (Command::Rename, _) => match (what.new_name, names.first()) {
                 (Some(new), Some(old)) => vec![vec![match tool { Tool::Git => "mv", _ => "rename" }.to_string(), old.clone(), new.to_string()]],
                 _ => Vec::new(),
@@ -308,7 +371,7 @@ fn previous(tool: Tool, what: &Request, names: &[String]) -> Vec<Vec<String>> {
     let mut argv: Vec<String> = match tool {
         Tool::Git => {
             let reference = what.reference.unwrap_or("HEAD");
-            vec!["diff".into(), format!("{reference}~1").into(), reference.into(), "--".into()]
+            vec!["diff".into(), format!("{reference}~1"), reference.into(), "--".into()]
         }
         Tool::Mercurial => vec!["diff".into(), "--change".into(), ".".into()],
         Tool::Subversion => match revision(1) {
@@ -477,7 +540,7 @@ mod tests {
         assert_eq!(Command::Diff.runs(Tool::Git, &Request::default(), &refs(&file)), vec![vec!["diff".to_string(), "--".to_string(), "src/a.rs".to_string()]]);
         assert_eq!(Command::Diff.runs(Tool::Git, &Request::default(), &[]), vec![vec!["diff".to_string()]]);
         assert_eq!(one(Command::DiffWithPrevious, Tool::Git, Request { reference: Some("HEAD"), ..Default::default() }, "src/a.rs"), ["diff", "HEAD~1", "HEAD", "--", "src/a.rs"]);
-        assert_eq!(one(Command::Blame, Tool::Git, Request::default(), "src/a.rs"), ["blame", "--", "src/a.rs"]);
+        assert_eq!(one(Command::Blame, Tool::Git, Request::default(), "src/a.rs"), ["blame", "--porcelain", "--", "src/a.rs"]);
         assert_eq!(one(Command::Rename, Tool::Git, Request { new_name: Some("b.rs"), ..Default::default() }, "src/a.rs"), ["mv", "src/a.rs", "b.rs"]);
         assert_eq!(one(Command::Delete, Tool::Git, Request::default(), "docs"), ["rm", "-r", "--", "docs"]);
         assert_eq!(one(Command::DeleteKeepLocal, Tool::Git, Request::default(), "src/a.rs"), ["rm", "--cached", "--", "src/a.rs"]);
@@ -561,6 +624,42 @@ mod tests {
 
     /// A command that needs a word it was not given runs nothing, rather than starting the
     /// client's own dialogue in a process whose keyboard nobody is looking at.
+    /// The window installs one action per command and the submenu names that action; two lists
+    /// that drift apart would leave a menu item running nothing, so the pair is pinned here.
+    #[test]
+    fn every_command_of_the_submenu_has_its_own_window_action() {
+        let names: Vec<&str> = Command::all().iter().map(|c| c.action()).collect();
+        assert_eq!(names.len(), names.iter().collect::<std::collections::HashSet<_>>().len(), "two commands share one action: {names:?}");
+        assert!(names.iter().all(|n| n.starts_with("repo.")), "the Repository actions live under one prefix: {names:?}");
+    }
+
+    /// A command whose client would otherwise read the words it needs from an editor or a prompt
+    /// is the command that runs nothing until those words arrive — so asking is what the window
+    /// has to do, and it asks for the kind of word the argument list is waiting for.
+    #[test]
+    fn a_command_asks_for_the_word_its_client_would_otherwise_read_from_an_editor() {
+        for tool in [Tool::Git, Tool::Mercurial, Tool::Subversion, Tool::Cvs, Tool::VisualSourceSafe] {
+            let here = targets(&["f.txt"]);
+            let asked = refs(&here);
+            for c in Command::all() {
+                if !c.supports(tool) {
+                    continue;
+                }
+                let waits = c.runs(tool, &Request::default(), &asked).is_empty();
+                assert_eq!(c.asks(tool).is_some(), waits, "{} on {} asks {:?} yet answers {:?} without words", c.label(), tool.cli(), c.asks(tool), c.runs(tool, &Request::default(), &asked));
+            }
+        }
+        // Not only that a word is wanted, but which kind of question the window has to show.
+        assert_eq!(Command::Commit.asks(Tool::Git), Some(Ask::Message));
+        assert_eq!(Command::Commit.asks(Tool::VisualSourceSafe), Some(Ask::Message));
+        assert_eq!(Command::Clone.asks(Tool::Subversion), Some(Ask::Address));
+        assert_eq!(Command::Rename.asks(Tool::Mercurial), Some(Ask::NewName));
+        assert_eq!(Command::SwitchCheckout.asks(Tool::Subversion), Some(Ask::Address), "Subversion switches to a place");
+        assert_eq!(Command::SwitchCheckout.asks(Tool::Git), Some(Ask::Reference), "and Git to a name it already knows");
+        assert_eq!(Command::DiffWithPrevious.asks(Tool::Git), None, "Git names the previous version of its own accord");
+        assert_eq!(Command::DiffWithPrevious.asks(Tool::Cvs), Some(Ask::Reference), "and CVS has to be told which revision");
+    }
+
     #[test]
     fn a_command_missing_the_words_it_needs_starts_nothing() {
         for (cmd, tool) in [
