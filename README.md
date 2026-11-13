@@ -43,7 +43,7 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
   green tick, a red exclamation mark, a blue plus, …), *Git Sync…*, *Git Commit -> "main"…*
   and the *TortoiseGit* submenu in the right-click menu, and TortoiseGit's dialogs: Commit,
   Log Messages with the revision graph, side-by-side diffs, Blame, Pull, Push, Switch, Merge,
-  Resolve, Revert and more.
+  Resolve, Revert and more. Off until switched on in *Edit → Git Integration (TortoiseGit)*.
 - **More details.** Folder sizes in the *Size* column (recursive, symlink-safe), a
   configurable column set, shortcuts and a folder tree rooted at the current folder, your home
   or `/`.
@@ -451,7 +451,8 @@ it with an example). *Open Terminal Here* is built in and uses `$TERMINAL`, the 
 choice (`xdg-terminal-exec`, Xfce's, or Debian's `x-terminal-emulator`) or the first terminal
 found.
 
-**Git:** folders that are Git working trees show the state of each file and folder as an
+**Git:** off until you switch it on in *Edit → Git Integration (TortoiseGit)* (switching it
+off again takes the overlays and menu items away). Then folders that are Git working trees show the state of each file and folder as an
 overlay icon in TortoiseGit's place, its lower left corner: a green tick for unchanged, a red
 exclamation mark for changed, a blue plus for added (or renamed), a red cross for deleted, a
 yellow warning sign for a conflict, a purple question mark for files Git does not know and a
