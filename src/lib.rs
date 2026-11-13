@@ -19,6 +19,7 @@ pub mod osprim;
 #[cfg(windows)]
 pub mod remote_fs;
 pub mod remote;
+pub mod repo;
 pub mod search;
 pub mod servers;
 pub mod shortcuts;
