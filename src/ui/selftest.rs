@@ -23,6 +23,7 @@
 //! `fake-share <folder>`, `fake-image <file> = <folder>`, `sleep-begin`, `sleep-end`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `wait-duplicates <n>`, `setenv NAME=value`, `wait-update-checked`, `expect-update-status <text>`, `update-choose <release|source>`, `update-start`, `wait-update-done`, `run <command>`, `wait-file-text <path> = <text>`, `wait-chooser`, `chooser-open <folder>`, `chooser-select <a | b>`, `expect-chooser-rows <a | b>`, `chooser-name <text>`, `chooser-filter <n>`, `chooser-accept`, `chooser-cancel`, `chooser-activate`, `expect-duplicate-group <*kept | …>`, `duplicate-keep <name>`, `duplicate-click <delete|skip|previous>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
 //! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
+//! the Git steps of `git/testing.rs`,
 //! `expect-side-drive-marked <name> : <place>`, `quit`. Blank lines and `#` comments are ignored.
 
 use super::app::AppCtx;
@@ -1231,7 +1232,12 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             println!("SELFTEST OK");
             std::process::exit(0);
         }
-        _ => return Err("unknown command".into()),
+        _ => match super::git::testing::step(&w, cmd, arg) {
+            Some(Ok(Some(check))) => wait(r, move |_| check()),
+            Some(Ok(None)) => {}
+            Some(Err(e)) => return Err(e),
+            None => return Err("unknown command".into()),
+        },
     }
     Ok(())
 }

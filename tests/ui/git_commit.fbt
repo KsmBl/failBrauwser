@@ -1,0 +1,52 @@
+# TortoiseGit's Commit dialog: what is ticked is committed, with the message given.
+open $T/repo
+wait-git-overlay changed.txt = Modified
+click-empty
+git-menu Git Commit -> "main"...
+wait-git-window Commit - TortoiseGit
+wait-git-rows Commit - TortoiseGit : changes = +added.txt Added | +changed.txt Modified | +src/lib.rs Modified
+expect-git-text Commit - TortoiseGit : 3 files selected, 3 files total
+expect-git-text Commit - TortoiseGit : Changes made (double-click on file for diff):
+# No message yet: nothing to commit.
+expect-git-disabled Commit - TortoiseGit : Commit
+# The Check: links.
+git-click Commit - TortoiseGit : None
+wait-git-rows Commit - TortoiseGit : changes = -added.txt Added | -changed.txt Modified | -src/lib.rs Modified
+git-click Commit - TortoiseGit : Modified
+wait-git-rows Commit - TortoiseGit : changes = -added.txt Added | +changed.txt Modified | +src/lib.rs Modified
+git-tick Commit - TortoiseGit : changes : src/lib.rs = off
+# Unversioned files shown on request, not ticked.
+git-set Commit - TortoiseGit : show-unversioned = on
+wait-git-rows Commit - TortoiseGit : changes = -added.txt Added | +changed.txt Modified | -new.txt Unversioned | -src/lib.rs Modified
+git-tick Commit - TortoiseGit : changes : new.txt = on
+expect-git-text Commit - TortoiseGit : 2 files selected, 4 files total
+git-set Commit - TortoiseGit : message = Change two files
+git-snapshot Commit - TortoiseGit = $T/commit.png
+git-click Commit - TortoiseGit : Commit
+wait-git-result Git Command Progress = Success
+expect-git-text Git Command Progress : git add -A -- changed.txt new.txt
+expect-git-text Git Command Progress : git commit -F -
+git-snapshot Git Command Progress = $T/progress.png
+git-click Git Command Progress : Close
+wait-no-git-window Git Command Progress
+wait-git-overlay changed.txt = Normal
+wait-git-overlay new.txt = Normal
+wait-git-overlay added.txt = Unversioned
+wait-git-overlay src = Modified
+# A folder's commit shows its changes only; a double click shows the diff.
+select src
+git-menu Git Commit -> "main"...
+wait-git-rows Commit - TortoiseGit : changes = +src/lib.rs Modified
+git-activate Commit - TortoiseGit : changes : src/lib.rs
+wait-git-diff TortoiseGitMerge = = s | + x
+git-snapshot TortoiseGitMerge = $T/diff.png
+git-close TortoiseGitMerge
+# Show Whole Project lists everything again.
+git-set Commit - TortoiseGit : whole-project = on
+wait-git-rows Commit - TortoiseGit : changes = +src/lib.rs Modified
+# Amend starts from the last message.
+git-set Commit - TortoiseGit : amend = on
+wait-git-text Commit - TortoiseGit : Change two files
+git-click Commit - TortoiseGit : Cancel
+wait-no-git-window Commit - TortoiseGit
+quit

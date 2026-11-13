@@ -16,6 +16,7 @@ thread_local! {
 
 pub fn clear_cache() {
     CACHE.with(|c| c.borrow_mut().clear());
+    super::git::icons::clear_cache();
 }
 
 /// The theme's image for `icon` at `size` pixels.
@@ -38,12 +39,20 @@ pub fn pixbuf_for(icon: &gio::Icon, size: i32) -> Option<Pixbuf> {
 }
 
 /// What a row shows: its thumbnail if there is one, else its icon at `size`.
+/// With the Git overlay of the row, if it has one.
 pub fn row_image(model: &gtk::TreeModel, iter: &gtk::TreeIter, size: i32) -> Option<Pixbuf> {
+    let git = model.value(iter, model::COL_GIT as i32).get::<u32>().unwrap_or(0);
     if let Ok(Some(thumb)) = model.value(iter, model::COL_THUMB as i32).get::<Option<Pixbuf>>() {
-        return Some(super::thumbnails::fit(&thumb, size));
+        let pb = super::thumbnails::fit(&thumb, size);
+        return Some(if git == 0 { pb } else { super::git::icons::with_overlay(&pb, git, None) });
     }
     let icon = model.value(iter, model::COL_ICON as i32).get::<Option<gio::Icon>>().ok().flatten()?;
-    pixbuf_for(&icon, size)
+    let pb = pixbuf_for(&icon, size)?;
+    if git == 0 {
+        return Some(pb);
+    }
+    let key = IconExt::to_string(&icon).map(|s| s.to_string()).unwrap_or_default();
+    Some(super::git::icons::with_overlay(&pb, git, Some(&key)))
 }
 
 /// Makes `renderer` draw the row image at the size `size` holds.

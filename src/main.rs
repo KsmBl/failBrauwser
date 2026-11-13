@@ -19,6 +19,10 @@ fn main() -> gtk::glib::ExitCode {
     if args.get(1).map(String::as_str) == Some("--lvm") {
         std::process::exit(failbrauwser::lvm::helper_main(&args[2..]));
     }
+    // Started by git or ssh to ask for a password while a Git command of ours runs.
+    if let Some(code) = ui::git::askpass::main_if_asked() {
+        std::process::exit(code);
+    }
     // Answered without GTK or D-Bus: never opens a window.
     for a in std::env::args().skip(1) {
         match a.as_str() {

@@ -27,21 +27,47 @@ fi
 # $T: the work folder; $UI: this folder (helpers next to the scripts).
 UI=$(cd "$(dirname "$0")" && pwd)
 sed "s|\$T|$T|g; s|\$UI|$UI|g" "$SCRIPT" > "$T/script.fbt"
+# A runtime folder of its own (short: socket paths are limited): the session's sockets and
+# GVfs mounts stay apart from the user's, and a share hanging there cannot hang the test.
+RUNDIR=$(mktemp -d /tmp/fbui.XXXXXX)
+chmod 700 "$RUNDIR"
 CONF=$(mktemp)
+# sway, or where it is missing tileWin (built on sway; set up as its own tests run it):
+# no panel, no session restore, its display name written to a file.
+WM=sway
+command -v sway >/dev/null || WM=tilewin
+DISPLAY_FILE="$T/display"
+rm -f "$DISPLAY_FILE"
+if [ "$WM" = sway ]; then
 cat > "$CONF" <<SWAY
 output HEADLESS-1 resolution 1280x800 bg #2e3440 solid_color
 default_border normal
 SWAY
+else
+cat > "$CONF" <<TILEWIN
+output HEADLESS-1 resolution 1280x800
+wallpaper solid #2e3440
+session_restore no
+panel_command true
+animations off
+default_border normal
+exec sh -c 'printf %s "\$WAYLAND_DISPLAY" > $DISPLAY_FILE'
+TILEWIN
+export TILEWIN_NO_APP_TWEAKS=1 TILEWIN_WAYLAND_SOCKET=wayland-fb-test-$$
+export SWAYSOCK="$RUNDIR/wm.sock" TILEWINSOCK="$RUNDIR/wm.sock"
+fi
 # Before the private bus starts: services it activates (Tumbler, …) use the test folders too.
 export XDG_CONFIG_HOME="$T/config" XDG_DATA_HOME="$T/data" XDG_CACHE_HOME="$T/cache" GTK_A11Y=none NO_AT_BRIDGE=1
+export XDG_RUNTIME_DIR=$RUNDIR
 exec dbus-run-session -- bash -c '
   unset DISPLAY
   before=$(ls "$XDG_RUNTIME_DIR" | grep -E "^wayland-[0-9]+$" | sort)
-  WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman sway -c "'"$CONF"'" >"'"$T"'/sway.log" 2>&1 &
+  WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman '"$WM"' -c "'"$CONF"'" >"'"$T"'/sway.log" 2>&1 &
   SP=$!
-  for i in $(seq 100); do
+  for i in $(seq 200); do
+    if [ -s "'"$DISPLAY_FILE"'" ]; then new=$(cat "'"$DISPLAY_FILE"'"); break; fi
     new=$(comm -13 <(echo "$before") <(ls "$XDG_RUNTIME_DIR" | grep -E "^wayland-[0-9]+$" | sort) | head -1)
-    [ -n "$new" ] && break; sleep 0.05
+    [ -n "$new" ] && [ "'"$WM"'" = sway ] && break; new=; sleep 0.05
   done
   export WAYLAND_DISPLAY=$new GDK_BACKEND=wayland FB_SELFTEST="'"$T"'/script.fbt"
   timeout 60 "'"$BIN"'"
@@ -50,5 +76,7 @@ exec dbus-run-session -- bash -c '
   exit $rc
 ' 2>&1 | grep -v -E "dbus-daemon|SpiRegistry|fusermount"
 rc=${PIPESTATUS[0]}
-rm -f "$CONF"
+rm -f "$CONF" "${SWAYSOCK:-}"
+fusermount -uz "$RUNDIR/gvfs" 2>/dev/null || fusermount3 -uz "$RUNDIR/gvfs" 2>/dev/null
+rm -rf "$RUNDIR" 2>/dev/null
 exit $rc

@@ -107,6 +107,8 @@ pub struct Settings {
     pub zoom_icons: usize,
     /// Throttle writes to removable and rotational drives so the page cache never fills up.
     pub smooth_writes: bool,
+    /// Git status overlays on files and folders in working trees (TortoiseGit's icons).
+    pub git_overlays: bool,
 }
 
 impl Default for Settings {
@@ -131,6 +133,7 @@ impl Default for Settings {
             zoom_list: 1,
             zoom_icons: 1,
             smooth_writes: true,
+            git_overlays: true,
         }
     }
 }
@@ -167,6 +170,7 @@ impl Settings {
         b("smooth_writes", &mut s.smooth_writes);
         b("show_thumbnails", &mut s.show_thumbnails);
         b("verify_copies", &mut s.verify_copies);
+        b("git_overlays", &mut s.git_overlays);
         i("window_width", &mut s.window_width, 300);
         i("window_height", &mut s.window_height, 200);
         i("sidebar_width", &mut s.sidebar_width, 0);
@@ -231,6 +235,7 @@ impl Settings {
         kf.set_boolean(GROUP, "smooth_writes", self.smooth_writes);
         kf.set_boolean(GROUP, "show_thumbnails", self.show_thumbnails);
         kf.set_boolean(GROUP, "verify_copies", self.verify_copies);
+        kf.set_boolean(GROUP, "git_overlays", self.git_overlays);
         kf.set_integer(GROUP, "window_width", self.window_width);
         kf.set_integer(GROUP, "window_height", self.window_height);
         kf.set_integer(GROUP, "sidebar_width", self.sidebar_width);
@@ -312,6 +317,7 @@ mod tests {
         s.set_column_visible("type", false);
         s.window_width = 1234;
         s.zoom_icons = 4;
+        s.git_overlays = false;
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);
     }

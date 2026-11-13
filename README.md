@@ -39,6 +39,11 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
   theme, the time and items left; pause and resume, copies to the same drive wait in a queue instead
   of fighting each other, and optional read-back verification.
 - **Custom actions** from Thunar (`uca.xml`) in the right-click menu, and *Open Terminal Here*.
+- **Git the TortoiseGit way.** Overlay icons on the files and folders of working trees (a
+  green tick, a red exclamation mark, a blue plus, …), *Git Sync…*, *Git Commit -> "main"…*
+  and the *TortoiseGit* submenu in the right-click menu, and TortoiseGit's dialogs: Commit,
+  Log Messages with the revision graph, side-by-side diffs, Blame, Pull, Push, Switch, Merge,
+  Resolve, Revert and more.
 - **More details.** Folder sizes in the *Size* column (recursive, symlink-safe), a
   configurable column set, shortcuts and a folder tree rooted at the current folder, your home
   or `/`.
@@ -446,6 +451,34 @@ it with an example). *Open Terminal Here* is built in and uses `$TERMINAL`, the 
 choice (`xdg-terminal-exec`, Xfce's, or Debian's `x-terminal-emulator`) or the first terminal
 found.
 
+**Git:** folders that are Git working trees show the state of each file and folder as an
+overlay icon in TortoiseGit's place, its lower left corner: a green tick for unchanged, a red
+exclamation mark for changed, a blue plus for added (or renamed), a red cross for deleted, a
+yellow warning sign for a conflict, a purple question mark for files Git does not know and a
+grey bar for ignored ones. A folder shows what is most important inside it, and a folder that
+is a working tree of its own shows from outside whether it has uncommitted changes. The icons
+follow edits, commits and checkouts as they happen (the repository is watched) and are read
+again when the window comes back into use; *Settings → Icon Overlays* in the TortoiseGit
+submenu turns them off. The right-click menu has, as in Explorer, *Git Sync…*,
+*Git Commit -> "branch"…* and the *TortoiseGit* submenu: *Pull…*, *Fetch…*, *Push…*, *Diff*,
+*Diff with previous version*, *Show log*, *Show Reflog*, *Blame*, *Check for modifications*,
+*Stash Save* / *Stash Pop*, *Resolve…*, *Revert…*, *Clean up…*, *Switch/Checkout…*, *Merge…*,
+*Create Branch…*, *Create Tag…*, *Export…*, *Add…*, *Delete*, *Delete (keep local)*,
+*Rename…*, *Add to ignore list*, *Create Patch Serial…*, *Apply Patch Serial…*, *Settings* and
+*About*, each where it applies (Diff for changed files, Add for unversioned ones, Resolve
+during a merge with conflicts); outside working trees, folders offer *Git Clone…* and *Git
+Create repository here…*. The dialogs are TortoiseGit's, laid out and worded as there:
+*Commit* ticks the changed files (the *Check:* links, *Show Unversioned Files*, *Show Whole
+Project*, *Amend Last Commit*, *Commit & Push*) and commits exactly what is ticked; *Log
+Messages* shows the revision graph, the kinds of change of each commit and its branch and tag
+labels, the message and changed files of the commit selected, and switches, branches, tags,
+resets, reverts or cherry-picks at a commit from its right-click menu; a double click on a
+changed file opens its diff side by side (removed lines red, added lines yellow, as in
+TortoiseGitMerge); every command runs in the *Git Command Progress* window, which shows what
+git prints and ends in green *Success* or a red error, with *Push…* after a commit. Passwords
+and key passphrases git or ssh ask for come in a window of their own. Git itself does the
+work: the `git` command must be installed.
+
 **Trash:** *Move to Trash* (<kbd>Delete</kbd>) follows the freedesktop.org Trash
 specification, exactly like Thunar, Nautilus and Dolphin: the file goes to
 `~/.local/share/Trash/files/` (or `.Trash-<uid>/` on other drives) and a
@@ -535,8 +568,10 @@ src/
     shortcuts.rs   side panel entries: order, names, hidden ones, saved
     thumbs.rs      freedesktop.org thumbnail cache
     actions.rs     custom actions (Thunar uca.xml)
+    git.rs         Git working trees through the git command: status, changes, log, blame, diffs, graph
     appearance.rs  light or dark: the theme variant for the desktop's colour scheme
   ui/              GTK: window, tabs, sidebar, drives page, jobs, clipboard, dnd, archives
+    git/           TortoiseGit's overlays, menus and dialogs
 helper/FbArchive/  fb-archive: C# (NativeAOT) host for CompressionWorkbench's archive logic
 tests/             engine, archive and headless UI tests
 ```
@@ -596,8 +631,10 @@ scripts/screenshots.sh
 ```
 
 The UI tests (`tests/ui/*.fbt`) drive the real application through its actions in a headless
-sway session with a private D-Bus and private config, data and trash folders; they need
-`sway`, `grim` and `dbus-run-session` and are skipped otherwise. `FB_SELFTEST=<script>` runs
+sway session (or tileWin where sway is missing) with a private D-Bus, a private runtime folder
+and private config, data and trash folders; they need `sway` or `tilewin`, `grim` and
+`dbus-run-session` and are skipped otherwise. The Git tests (`tests/ui_git.rs`) also need
+`git` and use a Git configuration of their own, never the user's. `FB_SELFTEST=<script>` runs
 such a script (see `src/ui/selftest.rs` for the commands).
 
 ## Limitations
@@ -622,6 +659,11 @@ such a script (see `src/ui/selftest.rs` for the commands).
   shortened when an ISO is rebuilt.
 - The folder total in the status bar follows changes in the folder itself; changes deeper
   down show after <kbd>F5</kbd>.
+- Git: TortoiseGit's *Rebase*, *Bisect*, submodules, *Revision graph*, *Repo-browser*,
+  *Daemon*, *Send Mail* and its three-way merge editor are not there; conflicts are edited in
+  the file and marked with *Resolve…*. Overlays of folders below the one shown follow changes
+  made there by other programs when the folder or repository changes or the window is used
+  again.
 
 ## License
 
