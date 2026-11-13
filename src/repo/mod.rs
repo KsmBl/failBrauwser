@@ -20,6 +20,23 @@ pub enum Tool {
 }
 
 impl Tool {
+    /// The five tools, in the order a folder carrying more than one marker answers in (M15). One
+    /// list settles detection, the menu labels and the clients, so none of the three can drift.
+    pub fn all() -> &'static [Tool] {
+        &[Tool::Git, Tool::Mercurial, Tool::Subversion, Tool::Cvs, Tool::VisualSourceSafe]
+    }
+
+    /// The name a menu or a form shows for this tool (M15).
+    pub fn label(&self) -> &'static str {
+        match self {
+            Tool::Git => "Git",
+            Tool::Mercurial => "Mercurial",
+            Tool::Subversion => "Subversion",
+            Tool::Cvs => "CVS",
+            Tool::VisualSourceSafe => "Visual Source Safe",
+        }
+    }
+
     /// The command-line client this tool's own commands run (M15).
     pub fn cli(&self) -> &'static str {
         match self {
@@ -67,27 +84,27 @@ pub fn find(dir: &Path) -> Option<WorkingCopy> {
 /// pointer is a line or two, so a file bigger than this is not one (M15).
 const POINTER_READ: u64 = 4096;
 
-/// One folder's own markers. `per_folder_too` says whether a Visual Source Safe `.scc` file
-/// counts: it does for the folder asked about, and not for a parent being walked past (M15).
+/// One folder's own markers, asked for in the order `Tool::all` lists the tools — which is what
+/// makes that list the answer to a folder carrying more than one marker. `per_folder_too` says
+/// whether a Visual Source Safe `.scc` file counts: it does for the folder asked about, and not
+/// for a parent being walked past (M15).
 fn marker(dir: &Path, per_folder_too: bool) -> Option<Tool> {
-    if dir.join(".git").is_dir() || names_a_repository(&dir.join(".git")) {
-        return Some(Tool::Git);
+    Tool::all().iter().copied().find(|t| marks(t, dir, per_folder_too))
+}
+
+/// The marker this tool itself leaves in a folder of its own making (M15).
+fn marks(tool: &Tool, dir: &Path, per_folder_too: bool) -> bool {
+    match tool {
+        Tool::Git => dir.join(".git").is_dir() || names_a_repository(&dir.join(".git")),
+        Tool::Mercurial => dir.join(".hg").is_dir(),
+        Tool::Subversion => dir.join(".svn").is_dir(),
+        // CVS leaves a CVS folder in every folder it tracks, and its Repository file names the
+        // module: without that file a folder of that name is just a folder.
+        Tool::Cvs => dir.join("CVS").join("Repository").is_file(),
+        // VSS records its binding folder by folder, in a `.scc` file, so it reaches no folder but
+        // the one holding it — hence `per_folder_too`.
+        Tool::VisualSourceSafe => per_folder_too && (dir.join("vssver.scc").is_file() || dir.join("vssver2.scc").is_file()),
     }
-    if dir.join(".hg").is_dir() {
-        return Some(Tool::Mercurial);
-    }
-    if dir.join(".svn").is_dir() {
-        return Some(Tool::Subversion);
-    }
-    // CVS leaves a CVS folder in every folder it tracks, and its Repository file names the
-    // module: without that file a folder of that name is just a folder.
-    if dir.join("CVS").join("Repository").is_file() {
-        return Some(Tool::Cvs);
-    }
-    if per_folder_too && (dir.join("vssver.scc").is_file() || dir.join("vssver2.scc").is_file()) {
-        return Some(Tool::VisualSourceSafe);
-    }
-    None
 }
 
 /// A linked worktree or a submodule keeps its repository elsewhere and leaves a `.git` file
@@ -214,28 +231,46 @@ mod tests {
         assert_eq!(find(&d.path().join("a/b/c")), Some(WorkingCopy { tool: Tool::Git, root: d.path().to_path_buf() }));
     }
 
-    /// One folder, several markers: the order the specification fixes settles which tool answers.
+    /// The marker each tool leaves, so a scenario can put a chosen set of them in one folder.
+    fn leave(base: &Path, tool: Tool) {
+        match tool {
+            Tool::Git => folders(base, &[".git"]),
+            Tool::Mercurial => folders(base, &[".hg"]),
+            Tool::Subversion => folders(base, &[".svn"]),
+            Tool::Cvs => files(base, &[("CVS/Repository", "m\n")]),
+            Tool::VisualSourceSafe => files(base, &[("vssver.scc", "")]),
+        }
+    }
+
+    /// One folder carrying every marker but the first `skip` of them answers the tool the list
+    /// puts first among those left — the same list detection walks, so the order cannot be spelled
+    /// in two places and disagree there.
     #[test]
-    fn one_folder_with_several_markers_answers_the_agreed_order() {
-        let all = fresh();
-        folders(all.path(), &[".git", ".hg", ".svn", "CVS"]);
-        files(all.path(), &[("CVS/Repository", "m\n"), ("vssver.scc", "")]);
-        assert_eq!(marker_in(all.path()), Some(Tool::Git));
+    fn a_folder_with_several_markers_answers_the_listed_order() {
+        let all = Tool::all();
+        for skip in 0..all.len() {
+            let d = fresh();
+            for t in all[skip..].iter().copied() {
+                leave(d.path(), t);
+            }
+            assert_eq!(marker_in(d.path()), Some(all[skip]), "with the first {skip} markers absent, {} should answer", all[skip].label());
+        }
+    }
 
-        let no_git = fresh();
-        folders(no_git.path(), &[".hg", ".svn", "CVS"]);
-        files(no_git.path(), &[("CVS/Repository", "m\n"), ("vssver.scc", "")]);
-        assert_eq!(marker_in(no_git.path()), Some(Tool::Mercurial));
-
-        let no_distributed = fresh();
-        folders(no_distributed.path(), &[".svn", "CVS"]);
-        files(no_distributed.path(), &[("CVS/Repository", "m\n"), ("vssver.scc", "")]);
-        assert_eq!(marker_in(no_distributed.path()), Some(Tool::Subversion));
-
-        let central = fresh();
-        folders(central.path(), &["CVS"]);
-        files(central.path(), &[("CVS/Repository", "m\n"), ("vssver.scc", "")]);
-        assert_eq!(marker_in(central.path()), Some(Tool::Cvs));
+    /// A form that asks which tool is meant (Clone, which no marker answers) lists them from one
+    /// source: each tool answers once, under a name of its own.
+    #[test]
+    fn every_tool_the_program_knows_answers_once_under_its_own_name() {
+        let all = Tool::all();
+        // The order is the one the specification fixes, and the scenario above shows detection
+        // following it: a folder carrying a Git marker and a Mercurial one answers Git.
+        assert_eq!(all, [Tool::Git, Tool::Mercurial, Tool::Subversion, Tool::Cvs, Tool::VisualSourceSafe]);
+        assert_eq!(all.iter().map(|t| t.label()).collect::<Vec<_>>(), ["Git", "Mercurial", "Subversion", "CVS", "Visual Source Safe"]);
+        let mut labels = all.iter().map(|t| t.label()).collect::<Vec<_>>();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), all.len(), "two tools share a name, so a form could not ask which one is meant");
+        assert!(all.iter().all(|t| !t.cli().is_empty()), "a listed tool has to have a client to run");
     }
 
     /// A marker deeper down belongs to the folder under it, not to the one holding it.
