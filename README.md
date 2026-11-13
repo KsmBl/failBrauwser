@@ -144,7 +144,7 @@ copy installed for everyone (`--system`) is updated from a terminal. `scripts/pa
 | Keys | Action |
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>T</kbd> | New window / tab |
-| <kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd>, <kbd>Backspace</kbd> | Back, forward, up |
+| <kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd>, <kbd>Backspace</kbd>, the mouse's back/forward keys | Back, forward, up |
 | <kbd>Alt</kbd>+<kbd>Home</kbd> / <kbd>Alt</kbd>+<kbd>D</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> | Home / Drives / Network |
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | Type a location (also paths through archives: `~/a.zip/docs`) |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> | Copy, cut, paste (works with other file managers too) |

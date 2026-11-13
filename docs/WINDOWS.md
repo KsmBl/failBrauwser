@@ -92,6 +92,29 @@ started with `CREATE_NO_WINDOW` and watches the process id the program hands it 
 it quits within a second once that instance is gone, request running or not, and while the
 instance lives it stops 45 s after its last request.
 
+The mouse's back and forward keys are read by the program itself, not by GTK. Measured here on
+2026-11-13 by posting messages to a realized GTK toplevel: `WM_XBUTTONDOWN` (`0x020B`, `winuser.h`)
+does arrive as a GDK button press, but as **button 5 whichever of the two keys it was** — GDK's
+win32 backend never looks at the high word of `wParam`, which is where Windows keeps
+`XBUTTON1` and `XBUTTON2` apart, and GDK's button 5 is its wheel-down button. So each of the two
+keys used to reach a folder view as a wheel click: nothing navigated. `src\win\xbuttons.rs` chains a
+window procedure in front of GDK's on each of the program's own windows (the handle comes from GDK's
+win32-only `gdk_win32_window_get_handle`), reads which key the message names, activates that
+window's `back` or `forward` action, and keeps the X-button messages from going on to GTK — which
+also leaves no phantom wheel click behind. The pane's `8`/`9` mapping in `src\ui\pane.rs` stays for
+X11, where GDK numbers those keys that way and no such messages exist.
+
+Measured with the key pair posted **from another process** into a running instance: the tab's
+location moved one step back for `XBUTTON1` and one step forward for `XBUTTON2`, while the same
+script against the build of 2026-11-12 — the same code except for that window procedure — kept the
+location exactly where it had been. `tests\ui\mouse_keys.fbt` drives the same two messages from
+inside the self-test, past both ends of the history included; its `!win` lines keep it out of a
+Linux run, where the keys come through GDK instead. Not measured here: the input stack's own step
+from a physical click to that message. Injected input does not land on this machine's desktop
+session (a `SendInput` cursor move reports success and the cursor ends up elsewhere), so the
+messages were posted rather than clicked; the pair and its `wParam` are Windows' documented shape
+for those keys.
+
 To start the plain `target\release\failbrauwser.exe` without any PATH setup, run
 `winpack\deps.ps1 -Exe target\release\failbrauwser.exe -Flat` once after building: it
 copies the DLL chain beside the program and the loaders and data trees inside its own
@@ -146,6 +169,10 @@ and the new program started. The *build from source* channel is Linux-only there
 - **Machine policy**: this project's updater hands PowerShell the swap script as a command,
   never as a file, because software-restriction policies can block script files below the
   temp folder. Same reason `install.ps1` lives in the repo.
+- **Mouse back/forward in auxiliary windows**: the window procedure that reads those keys is
+  chained onto failBrauwser's own file windows, because that is where a tab's history exists to
+  navigate. Compare, Find Duplicates, Properties and the message dialogs are plain GTK windows
+  with no history of their own, so a press there still reaches GTK as its wheel click.
 - **Search on remote folders** (SFTP/FTP VFS) does not crawl yet.
 - **Loop-mounted disk images**: Linux shows them through UDisks; on Windows they stay plain
   files (a virtual-CD story of its own).
