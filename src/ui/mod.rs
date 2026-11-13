@@ -18,6 +18,7 @@ pub mod duplicates;
 pub mod drives;
 pub mod extensions;
 pub mod fileops;
+pub mod git;
 pub mod icons;
 pub mod jobs;
 pub mod menuicons;

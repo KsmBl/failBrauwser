@@ -118,6 +118,22 @@ pub fn item_text(item: &gtk::MenuItem) -> Option<glib::GString> {
     })
 }
 
+/// GTK 3 leaves out the icons of items with a submenu in menus made from a model: gives
+/// them theirs (`icon` says which by the item's text), in `menu` and its submenus.
+pub fn submenu_icons(menu: &gtk::Menu, icon: &dyn Fn(&str) -> Option<gio::Icon>) {
+    for m in menu.children().into_iter().filter_map(|c| c.downcast::<gtk::MenuItem>().ok()) {
+        let Some(sub) = m.submenu().and_then(|s| s.downcast::<gtk::Menu>().ok()) else { continue };
+        let label = if m.find_property("text").is_some() { m.property::<Option<String>>("text") } else { m.label().map(|l| l.to_string()) };
+        let text = label.map(|l| l.replace("__", "\u{1}").replace('_', "").replace('\u{1}', "_")).unwrap_or_default();
+        if m.find_property("icon").is_some() {
+            if let Some(i) = icon(&text) {
+                m.set_property("icon", &i);
+            }
+        }
+        submenu_icons(&sub, icon);
+    }
+}
+
 /// The texts of the items of `menu` (and its submenus) shown without an icon (self-test).
 pub fn without_icon(menu: &gtk::Menu) -> Vec<String> {
     let mut out = Vec::new();

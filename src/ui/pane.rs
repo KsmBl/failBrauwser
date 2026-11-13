@@ -1887,6 +1887,24 @@ impl Pane {
         self.st.borrow().generation
     }
 
+    /// Sets the Git overlay of every row: by name, rows not named get none.
+    pub fn set_git_status(&self, codes: &HashMap<OsString, u32>) {
+        let st = self.st.borrow();
+        for (item, iter) in st.rows.values() {
+            let want = codes.get(&item.os_name()).copied().unwrap_or(0);
+            if self.store.value(iter, model::COL_GIT as i32).get::<u32>().unwrap_or(0) != want {
+                self.store.set_value(iter, model::COL_GIT, &want.to_value());
+            }
+        }
+    }
+
+    /// The Git overlay of the row `name` (tests).
+    pub fn git_status(&self, name: &str) -> Option<u32> {
+        let st = self.st.borrow();
+        let (_, iter) = st.by_name.get(&OsString::from(name)).and_then(|k| st.rows.get(k))?;
+        self.store.value(iter, model::COL_GIT as i32).get::<u32>().ok()
+    }
+
 }
 
 /// Where on an item a test presses.

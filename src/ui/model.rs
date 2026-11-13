@@ -32,6 +32,8 @@ pub const COL_SENSITIVE: u32 = 15;
 pub const COL_THUMB: u32 = 16;
 /// For search results: the folder a result is in.
 pub const COL_FOLDER: u32 = 17;
+/// Git overlay of the row (see `git::icons::status_code`; 0: none).
+pub const COL_GIT: u32 = 18;
 
 pub fn new_store() -> gtk::ListStore {
     gtk::ListStore::new(&[
@@ -53,6 +55,7 @@ pub fn new_store() -> gtk::ListStore {
         glib::Type::BOOL,
         gtk::gdk_pixbuf::Pixbuf::static_type(),
         glib::Type::STRING,
+        glib::Type::U32,
     ])
 }
 
