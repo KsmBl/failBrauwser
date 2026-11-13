@@ -109,11 +109,9 @@ pub fn with_input(tool: Tool, dir: &Path, argv: &[impl AsRef<std::ffi::OsStr>], 
     };
     // Writing and closing the input in one scope: a client reading a message ends its read only
     // when the pipe shuts, so an input left open would leave the call waiting forever.
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = stdin.write_all(input.as_bytes()) {
-            let _ = child.kill();
-            return Answer::refused(None, format!("the words could not reach {}: {e}", tool.cli()));
-        }
+    if let Some(mut stdin) = child.stdin.take() && let Err(e) = stdin.write_all(input.as_bytes()) {
+        let _ = child.kill();
+        return Answer::refused(None, format!("the words could not reach {}: {e}", tool.cli()));
     }
     match child.wait_with_output() {
         Ok(out) => {
