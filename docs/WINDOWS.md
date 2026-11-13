@@ -205,12 +205,13 @@ Scenarios that need Linux-only services skip with a printed reason:
 `desktop_links.fbt` (roaming-profile Desktop, see above), `summary.fbt` (symlink fixture),
 and the portal/default-app parts elsewhere. Timing budgets for the big-listing paints are
 widened for win32 GTK plus Defender (`big_listings.fbt`) — measured here, not guessed.
-That makes 44 scripts across 45 scenario tests; run serially (`RUST_TEST_THREADS=1
-cargo test --test ui_selftest`), 42 answered green on this host on 2026-11-12 morning
-(measured 217 s), 41 in each of three re-runs later that day (252 s, 288 s and 284 s) and 42
-again in a fourth (229.52 s, `cargo test --release --no-fail-fast`) — the extra one in the
-41s being `big_listings.fbt`, whose win paint budgets sit close to what this machine measures;
-see below. Three fail in every run: two sit with where this checkout lives rather
+That makes 45 scripts across 46 scenario tests; run serially (`RUST_TEST_THREADS=1
+cargo test --release --test ui_selftest`), 43 of them answered green on this host on
+2026-11-13 in 376.95 s, the suite's slowest run here, with `big_listings.fbt` inside both of
+its budgets that time. On 2026-11-12 the same command read 42 green of 45 in the morning
+(217 s), 41 in each of three re-runs later that day (252 s, 288 s and 284 s) and 42 again in a
+fourth (229.52 s, `cargo test --release --no-fail-fast`) — the extra one in the 41s being
+`big_listings.fbt`, whose win paint budgets sit close to what this machine measures; see below. Three fail in every run: two sit with where this checkout lives rather
 than with the archive work — the work folder lies under a path with a space
 (`A:\Working Copies`), so `update.fbt` meets `curl: (3)` — the updater passes its
 `file://` fixtures unescaped, and the fixture URL carries that same space — and
@@ -239,10 +240,27 @@ build), and the 3,707 ms run carried it, so the stall does not come from the pic
 shell reads: it comes from this machine's disk and Defender state while 15,000 fresh rows
 paint. The 284 s run failed it in yet another shape: no paint budget exceeded (longest
 freeze 2,626 ms) and `wait-count 15150` simply outlived its step while the rows filled.
-Everything else `cargo test` runs answers green here (238 passed, 0 failed, 2 ignored,
-measured 2026-11-12), the four `tests\app_icon.rs`, two `tests\win_startup.rs` and two
-`tests\helper_lifetime.rs` scenarios among them. One ordering note for a full run: cargo
-stops at the first failing target, and `tests\ui_selftest.rs` sorts before
+`thumbs::tests::generates_stores_and_reloads` is the same kind of miss on 2026-11-13: inside a
+run of all 184 lib scenarios at once, the large flavor it had just generated was not the one
+`load` answered a line later (`src\thumbs.rs:216`) — one of two reads of a png that `save` had
+renamed moments before, on a machine reading it while Defender did too. Five runs of that
+scenario alone and three runs of the whole lib binary that morning answered green.
+Everything else `cargo test` runs answers green here: on 2026-11-12 everything short of the UI
+suite read 238 passed, 0 failed and 2 ignored, the four `tests\app_icon.rs`, two
+`tests\win_startup.rs` and two `tests\helper_lifetime.rs` scenarios among them. Re-run on
+2026-11-13 over the same targets, doc-tests apart — that target carries no scenario — it read
+241 passed, 1 failed and 2 ignored in one `--no-fail-fast` run, that thumbnail scenario the one
+failure, while the lib binary on its own read 183 passed, 0 failed and 1 ignored in three further
+runs that morning.
+`cargo test` never builds the helper, and which exe `FB_ARCHIVE_HELPER` names is part of the
+answer: the framework-dependent Release tree here was older than `helper\FbArchive\ParentWatch.cs`,
+so `helper_lifetime` read the helper alive on a live pipe — the very shape the watch was written
+against — until `dotnet build helper/FbArchive -c Release` (44 s) brought it current, and both of
+its scenarios answer green since. The watch sits in `fb-archive.dll`, not in the 158 KiB apphost
+beside it, so searching that exe for `ParentWatch` says nothing either way; the hand check against
+a current build was that `fb-archive` ended 1 ms after the instance it was told to watch.
+One ordering note for a full run: cargo stops at the first failing target, and
+`tests\ui_selftest.rs` sorts before
 `tests\win_startup.rs`, so a UI failure hides the targets behind it — pass
 `--no-fail-fast`, or run what follows separately as those two scenarios were. The helper's own
 suite (`dotnet test helper/FbArchive.Tests`) answers 517 passed, 0 failed, 1 skipped
