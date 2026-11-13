@@ -1,6 +1,6 @@
 # failBrauwser
 
-A fast, native GTK 3 file manager in the spirit of Thunar — that opens archives like folders.
+A fast, native GTK 3 file manager for Linux and Windows, in the spirit of Thunar — that opens archives like folders.
 
 ![failBrauwser showing a home folder with folder sizes, shortcuts and folder tree](docs/screenshots/main.png)
 
@@ -85,20 +85,55 @@ current desktop theme (here: Adwaita dark with Breeze colors and a Windows XP ic
 
 The script builds everything, installs the program, the archive helper, a launcher and the icon,
 and registers a background instance that starts with your session (`--no-autostart` to skip
-that; windows then take a moment longer the first time). It also makes failBrauwser the open
+that; windows then take a moment longer the first time).
+
+failBrauwser's own icon is a **blue folder** with a paper sheet, a zipper and a speed bolt
+(`data/icons/org.failbrauwser.FailBrauwser.svg`). It is the window icon everywhere, and on
+Windows the same picture is compiled into both program files (`data\icons\failbrauwser.ico`,
+rendered from the svg by `winpack\mkico.ps1`), so Explorer, the Start Menu entry and the
+titlebar all carry it; the packaged tree also ships the svg under
+`share\icons\hicolor\scalable\apps\`, where GTK looks it up by application id. It also makes failBrauwser the open
 and save dialog of applications that ask the desktop portal for one (`--no-file-chooser` to
 keep the desktop's; see *File chooser for other applications* below).
+
+On Windows (PowerShell, in a checkout with the [toolchain below](#requirements) set up):
+
+```powershell
+winpack\package.ps1           # build release and pack failbrauwser-<version>-x86_64-windows.zip
+winpack\install.ps1           # install it for your user (default %LOCALAPPDATA%\Programs)
+winpack\install.ps1 -Prefix D:\Apps\failBrauwser
+```
+
+`package.ps1` also builds `failbrauwser-<version>-x86_64-windows.exe`: the whole application
+as one file — run it once and it unpacks itself into your Programs folder and starts; that
+single file is all that folder needs (see [docs/WINDOWS.md](docs/WINDOWS.md)). An unpack that
+cannot be applied — a running instance holding that folder's program file, say — leaves your
+installed copy untouched and says why in a window rather than doing nothing quietly.
+
+Starting failBrauwser on Windows never opens a console window: the program file is linked as
+a windowed program, so a double-click, the Start Menu entry and the single-file launcher each
+show only failBrauwser's own window. Started from a terminal it still answers `--help`,
+`--version` and `--quit` in that terminal, and the archive helper it starts runs without a
+window of its own and ends together with the instance that started it.
+
+`winpack\bootstrap.ps1` fetches the pinned GTK stack (list in `winpack\packages.txt`) into
+`winpack\sysroot` from the MSYS2 repository named in `winpack\mirror.txt` — here the company
+Artifactory's mirror of `repo.msys2.org`; point it at any reachable MSYS2 tree — and
+`winpack\genimports.ps1` makes its MSVC import libraries; `winpack\build.ps1 -Release` is the
+plain build without packaging. Uninstalling is deleting that folder and the Start Menu entry.
+See [docs/WINDOWS.md](docs/WINDOWS.md) for the full picture of how the two systems line up.
 
 ### Updating
 
 *Help → Check for Updates* says whether GitHub has a newer release and installs either the
 newest **release** — its ready-built package (`failbrauwser-<version>-<arch>-linux.tar.gz`,
-installed with `install.sh --prebuilt`) — or builds the current **source** (needs what a build
-needs, below). Both install into the same place with the options of the last install (kept in
+installed with `install.sh --prebuilt`; on Windows `failbrauwser-<version>-x86_64-windows.zip`,
+whose files replace the install folder while the program runs) — or builds the current
+**source** (needs what a build needs, below; Linux only, since it runs `install.sh`). Both install into the same place with the options of the last install (kept in
 `~/.config/failbrauwser/install-options`); the download, source included, is deleted when it is
 done, and failBrauwser restarts as the new version. The window shows the installer's output. A
-copy installed for everyone (`--system`) is updated from a terminal. `scripts/package.sh`
-makes the release package.
+copy installed for everyone (`--system`) is updated from a terminal. `scripts/package.sh` and
+`winpack\package.ps1` make the release packages.
 
 ### Requirements
 
@@ -135,7 +170,7 @@ works.
 | Keys | Action |
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>T</kbd> | New window / tab |
-| <kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd>, <kbd>Backspace</kbd> | Back, forward, up |
+| <kbd>Alt</kbd>+<kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd>, <kbd>Backspace</kbd>, the mouse's back/forward keys | Back, forward, up |
 | <kbd>Alt</kbd>+<kbd>Home</kbd> / <kbd>Alt</kbd>+<kbd>D</kbd> / <kbd>Alt</kbd>+<kbd>N</kbd> | Home / Drives / Network |
 | <kbd>Ctrl</kbd>+<kbd>L</kbd> | Type a location (also paths through archives: `~/a.zip/docs`) |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> | Copy, cut, paste (works with other file managers too) |
@@ -389,11 +424,45 @@ NTFS, HFS+, SquashFS, VHD/VHDX, VMDK, QCOW2, VDI, UDF, …) and packages (`.deb`
 `.whl`, …). A file without a suffix, or with one that says nothing (`.bin`, `.img`, `.dat`),
 opens as a folder too when the library recognises its contents and no application is set up
 for it. Files that belong to another program — office documents, e-books, pictures, fonts,
-programs and installers, databases — still open with that program; *Open as Archive* shows
-what is inside them, and inside audio and video files too. *Extract Here*, *Extract To…* and
+programs and installers, databases — still open with that program; the *Open as* submenu's
+*Archive* entry shows what is inside them instead, and inside audio and video files too.
+*Extract Here*, *Extract To…* and
 *Compress…* are in the context menu. Long archive operations show a progress bar with the
 bytes done. Formats the library can only read are shown read-only, and the status bar says
 why.
+
+**Encrypted volumes:** TrueCrypt (4.3–7.1a) and VeraCrypt (1.0–2.1) container files
+(`.hc`, `.tc`; any other file through *Open as*) open the same way: the password is asked for once (a wrong
+one asks again), and the FAT, exFAT, NTFS or ext4 volume inside is browsed and its files
+extracted like anywhere else. The whole volume shows as read-only — creating, resizing or
+re-keying a volume stays with the VeraCrypt program — and keyfiles and hidden volumes are
+not supported.
+
+*Open as* gathers these decisions for one selected file: *Archive* enters whatever the
+library detects without launching the program that owns the suffix, and *VeraCrypt /
+TrueCrypt*, *BitLocker*, *LUKS* and *dm-crypt (plain)* run that kind's own reader over the
+bytes — decided by you rather than by a name. A VeraCrypt header's bytes are
+indistinguishable from random noise, so a renamed container (`.bin`, `.img`, no suffix)
+cannot be recognized from the file; that is what the volume choices are for, and a
+headerless dm-crypt (plain) volume can be reached through no other door. A volume choice
+asks for the passphrase before the file is opened, so that answer is what reads it; *Archive*
+waits until a reader asks. The same one-ask password prompt serves any choice, and any chosen
+container opens read-only.
+
+What a wrong choice answers is the kind's own doing, and saying so is its job: BitLocker and
+LUKS carry plaintext headers, so their readers refuse foreign bytes as soon as the volume is
+read — opening or copying an entry of that chosen view reports it and writes nothing, while
+*Extract Here* on the file itself never sees the choice — a VeraCrypt choice has to search the
+file for a header that answers the passphrase before it can tell, and a headerless dm-crypt
+(plain) mapping cannot tell a wrong passphrase from a right one, exactly as `cryptsetup
+--type plain` cannot. A VeraCrypt choice that was refused its passphrase answers with the volume as
+an unreadable shell marked *encrypted*: nothing is searched while there is no passphrase to search
+with, and the reading that needs one asks again.
+
+A volume file that another program holds open cannot be read at all: VeraCrypt keeps a mounted
+container closed to every other reader at any sharing, so failBrauwser reports the file as being in
+use and stops there. It never dismounts a volume, never takes a file away from the program holding
+it, and invents no result for it.
 
 **Compressed files** such as `notes.txt.gz` show the one file inside; open it, edit it and
 save, and the file is compressed again. *Extract Here* gives `notes.txt` itself.
@@ -479,6 +548,100 @@ TortoiseGitMerge); every command runs in the *Git Command Progress* window, whic
 git prints and ends in green *Success* or a red error, with *Push…* after a commit. Passwords
 and key passphrases git or ssh ask for come in a window of their own. Git itself does the
 work: the `git` command must be installed.
+
+**Version control:** a folder some version-control tool manages says so in its right-click
+menu (a Git working tree with *Git Integration* switched on shows the TortoiseGit items above
+as well; the *Repository* submenu is there either way): *Repository* holds the commands that make sense for that folder and for the selection in
+it, in the order the work goes — *Commit*, *Pull*, *Push*, *Sync*, *Stash*, *Switch/Checkout*
+and *Revert*, then *Check for modifications*, then *Diff*, *Diff with previous version*, *Show
+Log*, *Browse Repository* and *Blame*, then what the selected items get done to — *Rename*,
+*Delete*, *Delete (keep local)* and *Delete and add to ignore list* — and *Settings* last. A
+plain folder keeps the menu item too, and its submenu holds only *Clone*. What a folder's tool
+has no equivalent for is left out of the submenu rather than greyed out, and so is what the
+selection cannot carry: a rename or a delete wants files, *Clone* wants no working copy above
+the folder. Nothing here runs over a tool's head: every command goes through that tool's own
+command-line client, asked inside the working copy, so a working copy is never rewritten behind
+its tool's back and a command the client refuses fails in the client's own words, which the
+window shows.
+
+| Working copy of | How the folder is recognised | Client |
+|---|---|---|
+| Git | a `.git` folder, or a `.git` file naming the repository it points at (`gitdir:` — linked worktrees and submodules) | `git` |
+| Mercurial | an `.hg` folder | `hg` |
+| Subversion | an `.svn` folder — one at the root since 1.7, one in every folder before that | `svn` |
+| CVS | a `CVS` folder holding its `Repository` file | `cvs` |
+| Visual Source Safe | a `vssver.scc` (6.0) or `vssver2.scc` (2005) file in the folder itself, because VSS records the binding folder by folder | `ss` |
+
+The nearest marker above the folder decides which tool a folder belongs to; where two markers
+sit in the folder itself, Git answers first, then Mercurial, Subversion, CVS and Visual Source
+Safe. A bare repository — `HEAD`, `objects` and `refs` without a working tree — is not a working
+copy, and neither is a folder that only contains one somewhere deeper down: the marker has to be
+the folder's own or one of its parents'.
+
+| Command | Git | Mercurial | Subversion | CVS | Visual Source Safe |
+|---|---|---|---|---|---|
+| Clone | `git clone` | `hg clone` | `svn checkout` | `cvs checkout` | — |
+| Commit | `git commit` | `hg commit` | `svn commit` | `cvs commit` | `ss Checkin` |
+| Pull | `git pull` | `hg pull` | `svn update` | `cvs update` | `ss Get` |
+| Push | `git push` | `hg push` | — | — | — |
+| Sync | fetch, then pull and push | `hg pull` then `hg push` | — | — | — |
+| Stash | `git stash` | `hg shelve` | — | — | — |
+| Switch/Checkout | `git switch` | `hg update` | `svn switch` | `cvs update -r` | `ss Get -V` |
+| Revert | `git restore` | `hg revert` | `svn revert` | `cvs checkout -C` | `ss UndoCheckout`, then `ss Restore` |
+| Check for modifications | `git status` | `hg status` | `svn status` | `cvs update -n -d` | `ss Status` |
+| Diff | `git diff` | `hg diff` | `svn diff` | `cvs diff` | `ss Diff` |
+| Diff with previous version | `git diff` between a file and its parent revision | `hg diff` of the file against its parent | `svn diff -r N-1:N` | `cvs diff -r prev -r cur` | `ss Diff` between two versions |
+| Show Log | `git log` | `hg log` | `svn log` | `cvs log` | `ss History` |
+| Browse Repository | its own log, over the whole working copy, in a window | ← | ← | ← | ← |
+| Blame | `git blame --porcelain` | `hg annotate` | `svn annotate` | `cvs annotate` | — |
+| Rename | `git mv` | `hg rename` | `svn rename` | `cvs rename` | — |
+| Delete | `git rm` | `hg remove` | `svn delete` | `cvs remove` | `ss Delete` |
+| Delete (keep local) | `git rm --cached` | `hg remove --keep-files` | `svn delete --keep-local` | `cvs remove` leaving the file | `ss DeleteKeepLocal` |
+| Delete and add to ignore list | `.gitignore` | `.hgignore` | the `svn:ignore` property | `.cvsignore` | — |
+| Settings | `git config --local` | `.hg/hgrc` | the working copy's own properties | — | — |
+
+A dash means the submenu leaves that command out, because the tool has no equivalent: a
+central-store tool (Subversion, CVS, Visual Source Safe) has nothing to *Push* or *Sync*,
+Visual Source Safe keeps no ignore list of its own and no blame. *Pull* is the update of a
+central tool, and for Git and Mercurial *Sync* is what their fetch plus pull plus push amount
+to. Only `git` is installed on this host, so Git's column is the measured one: the other four
+rows are read off each client's documented command line, and their commands are unmeasured
+here — the detection and the arguments each command builds are tested against fixtures for all
+five tools, the answers of `hg`, `svn`, `cvs` and `ss` are not.
+
+Every command answers in a window of failBrauwser's own — never by handing the work to another
+program's window. The window shows what the client said, line for line, and a status line naming
+the call that ran, whether it was refused and with which code; a refusal quotes the client's own
+sentence rather than an invented one, because that is the sentence a user can act on. A command
+whose client would otherwise open an editor or a prompt is asked for the word it needs *before*
+anything runs: *Commit* for the log message, *Clone* for the address, the folder to make and which
+tool is cloning, *Switch/Checkout* for the branch, tag or revision (Subversion is asked for the
+place to switch to), *Rename* for the new name, and *Diff with previous version* for the revision
+being compared when the tool counts revisions — Git and Mercurial name the previous version of
+their own accord and are asked nothing. A word that never arrives starts no client at all.
+
+The reading commands answer in a window shaped for their kind of answer. *Show Log* and *Browse
+Repository* list what the client's own machine-readable log format gives — the revision, who, when,
+and the first line of the message — one row per entry even when a message spans several lines.
+*Blame* reads the annotation the client gives per line: for Git `--porcelain`, whose shape the
+client documents, since the human layout's columns move under a long author name; elsewhere the
+annotation lines stand as their own client writes them. *Diff* and *Diff with previous version*
+show the client's diff as rows the two sides share: a marker column saying added, removed or
+unchanged, the line number on each side, and inside a changed pair the words that actually changed
+standing out against the words that did not. Unchanged runs between changes fold to three lines with
+the range they hide named, *next change* and *previous change* walk the changes, and the status line
+counts the files, the added lines and the removed ones. Nothing in those views is carried by colour
+alone.
+
+The shape of the diff views was learned from ShiftDiff (LGPL-3.0-or-later), which differs whole
+files and trees side by side; its behaviour — rows aligned by construction, the marker gutter,
+word-level highlighting inside a changed pair, folded unchanged runs, walking between changes — is
+re-implemented here for GTK and for what a version-control client reports, with no code, markup or
+naming taken from it. Its relationship ribbons and its detection of moved blocks are left out,
+because a client's diff of a working copy reports changes, not two trees to relate.
+*Delete and add to ignore list* hands the name to the tool's own ignore record: one line appended to
+`.gitignore`, `.hgignore` or `.cvsignore`, or the folder's `svn:ignore` property set through
+`svn propset` where Subversion keeps the list that way.
 
 **Trash:** *Move to Trash* (<kbd>Delete</kbd>) follows the freedesktop.org Trash
 specification, exactly like Thunar, Nautilus and Dolphin: the file goes to
@@ -586,7 +749,11 @@ every local change), so this repository builds on its own.
 failBrauwser uses the archive logic of CompressionWorkbench (`Compression.Lib`) through a
 small NativeAOT helper, `fb-archive`, spoken to with one JSON object per line on stdin/stdout.
 It starts in about 15 ms, only when an archive is opened, and exits after 45 s without work,
-so plain browsing never carries the .NET runtime. Nested archives are extracted into
+so plain browsing never carries the .NET runtime. It also ends as soon as the failBrauwser
+instance that started it is gone, however that instance ends — normal exit, a killed process
+or a request still running: the program names its own process id as `--parent` when it starts
+the helper, and the helper waits for that process and quits. No `fb-archive` is left behind
+once the last window closes. Nested archives are extracted into
 `$XDG_RUNTIME_DIR/failbrauwser`, edited there and written back into their containers.
 
 ### Changes to CompressionWorkbench
@@ -655,6 +822,11 @@ such a script (see `src/ui/selftest.rs` for the commands).
   entries of their own. `helper/FbArchive.Tests/format-baseline.tsv` lists each one.
 - CD images (CDI, MDF, NRG, BIN) show plain ISO 9660 names (upper case); BIN/CUE and ODS-1
   are read-only.
+- Opening an encrypted volume costs that volume's own key derivation, whatever the container's size:
+  measured on a 512 KiB test container in the release build, three to six seconds for a SHA-256 or
+  SHA-512 volume, five to thirteen for one written with Whirlpool, BLAKE2s or Streebog, and about
+  half a minute to refuse a wrong passphrase, which has to try every candidate first. The candidates
+  run side by side and stop at the one that opens, but the arithmetic belongs to the volume.
 - Edits to formats without in-place modification rebuild the archive.
 - Hybrid ISO images are read-only; Rock Ridge names longer than about 170 bytes are
   shortened when an ISO is rebuilt.

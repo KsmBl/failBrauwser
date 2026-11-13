@@ -37,6 +37,14 @@ Still local (candidates for upstream pull requests):
   named; the second removal failed with "not found"
 - `Compression.Registry/RebuildStaging.cs`, failBrauwser's former rebuild staging, kept for the
   helper's tests (`RebuildStaging.Normalize`)
+- (perf) VeraCrypt/TrueCrypt unlocking (`TcKdf.cs`, `TcVolume.cs`): the header-key derivations
+  of all candidate headers run side by side and stop once one opens, PBKDF2 keeps its pads and
+  hashes spans instead of allocating per round; a wrong passphrase is refused in seconds instead
+  of minutes. Upstream's order (standard header, then hidden) is kept: standard candidates come
+  first and the earliest header wins. Pinned by `helper/FbArchive.Tests/VeraCryptKdfTests.cs`.
+- (build) `Compression.Registry.Generator.csproj` pins Roslyn to 5.0.* and the analyzers to
+  3.11.0: the 5.3 analyzers do not load on the .NET 10.0.10x SDK compiler (CS9057), which the
+  Windows build uses
 
 Earlier changes, all taken over upstream by 2026-11-13 (in its own words and code):
 
