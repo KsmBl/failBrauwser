@@ -172,6 +172,10 @@ impl Window {
         super::showfilter::install_actions(self);
         super::showfilter::attach(&self.statusbar);
         super::extensions::window_created(self);
+        // The mouse's back and forward keys, which GDK reports to no one on Windows: the watch
+        // needs this window's handle, and that exists once the window has been shown.
+        #[cfg(windows)]
+        failbrauwser::win::xbuttons::watch(&self.win);
     }
 
     pub fn me(&self) -> Rc<Window> {

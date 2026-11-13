@@ -1650,6 +1650,9 @@ impl Pane {
                 }
                 glib::Propagation::Stop
             }
+            // The X11 numbering of the mouse's back and forward keys. Win32 GDK numbers those keys
+            // 5 — its wheel-down button — and alike for both of them, so on Windows they arrive
+            // through `win::xbuttons`, which reads the key out of the message itself.
             8 => {
                 self.go_back();
                 glib::Propagation::Stop

@@ -3,6 +3,7 @@
 //! Used by the UI tests (in a headless compositor) and to take the README screenshots.
 //!
 //! Script lines: `open <path>`, `tab <path>`, `select <name>…`, `action <name> [arg]`,
+//! `mouse-back` / `mouse-forward` (the mouse's own back and forward keys, written as `!win` lines),
 //! `answer <replace|skip|keepboth|cancel|delete>`, `text <reply for the next text prompt>`,
 //! `wait-idle`, `wait-exists <path>`, `wait-missing <path>`, `expect-rows <n>`,
 //! `expect-selected <name>`, `expect-location <text>`, `screenshot <file>`, `sleep <ms>`,
@@ -267,6 +268,23 @@ fn system_drive_title() -> String {
     failbrauwser::win::storage::volumes().into_iter().find(|v| v.mount_point().is_some_and(|m| m.starts_with(drive.as_str()))).map(|v| v.title()).unwrap_or_default()
 }
 
+/// A scenario's stand-in for a hand on the mouse's back or forward key: the press-and-release pair
+/// that key produces, posted to this window's own handle as the input driver posts it. What listens
+/// for it is `win::xbuttons`, which is why this can only be done to a Win32 window.
+#[cfg(windows)]
+fn post_side_key(w: &Window, back: bool) -> Result<(), String> {
+    use failbrauwser::win::xbuttons::SideKey;
+    failbrauwser::win::xbuttons::press(&w.win, if back { SideKey::Back } else { SideKey::Forward })
+}
+
+/// X11 hands the same two keys to GDK as buttons 8 and 9, and the pane acts on those directly;
+/// there is no message to post there, and driving the X server's input from inside the program is a
+/// story of its own — the scenarios keep these steps behind `!win`.
+#[cfg(not(windows))]
+fn post_side_key(_: &Window, _: bool) -> Result<(), String> {
+    Err("the mouse's back and forward keys can only be posted to a Win32 window".into())
+}
+
 fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
     let (cmd, arg) = step.split_once(' ').map(|(c, a)| (c, a.trim())).unwrap_or((step, ""));
     let arg_c = arg.to_string();
@@ -311,6 +329,9 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             }
             group.activate_action(short, variant.as_ref());
         }
+        // Deliberately not guarded by an enabled check the way `action` is: past the end of the
+        // history the real key simply does nothing, and a scenario has to be able to press it.
+        "mouse-back" | "mouse-forward" => post_side_key(&w, cmd == "mouse-back")?,
         "sidebar-drives" => {
             super::sidebar::for_window(&w).ok_or("no sidebar")?.click_drives();
             wait(r, |r| Ok(idle(r)));

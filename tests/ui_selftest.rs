@@ -638,6 +638,16 @@ fn path_bar() {
     });
 }
 
+/// The mouse's back and forward keys. Their Win32 half — the messages never reach GDK, so the
+/// program reads them from its own window procedure — is what the scenario drives; the same keys
+/// reach a pane through GDK as buttons 8 and 9 on X11, where there is no message to post.
+#[test]
+fn mouse_back_and_forward_keys() {
+    run("mouse_keys.fbt", |t| {
+        std::fs::create_dir_all(t.join("a/b/c")).unwrap();
+    });
+}
+
 /// The shell's Recycle Bin belongs to the whole machine, so an older run's `a.txt`
 /// would be picked by name instead of this run's, and our leftovers would pile up.
 /// Anything whose original place is under the test tmp root is ours: clear it out

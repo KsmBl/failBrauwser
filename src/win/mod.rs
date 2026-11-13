@@ -12,3 +12,4 @@ pub mod sidname;
 pub mod storage;
 pub mod volume;
 pub mod wnet;
+pub mod xbuttons;
