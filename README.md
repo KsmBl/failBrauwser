@@ -510,14 +510,14 @@ the folder's own or one of its parents'.
 | Push | `git push` | `hg push` | — | — | — |
 | Sync | fetch, then pull and push | `hg pull` then `hg push` | — | — | — |
 | Stash | `git stash` | `hg shelve` | — | — | — |
-| Switch/Checkout | `git switch` | `hg update` | `svn switch` | `cvs update -r` | `ss Restore` |
-| Revert | `git restore` | `hg revert` | `svn revert` | `cvs checkout -C` | `ss UndoCheckout` |
-| Check for modifications | `git status` | `hg status` | `svn status` | `cvs -n update` | `ss Status` |
+| Switch/Checkout | `git switch` | `hg update` | `svn switch` | `cvs update -r` | `ss Get -V` |
+| Revert | `git restore` | `hg revert` | `svn revert` | `cvs checkout -C` | `ss UndoCheckout`, then `ss Restore` |
+| Check for modifications | `git status` | `hg status` | `svn status` | `cvs update -n -d` | `ss Status` |
 | Diff | `git diff` | `hg diff` | `svn diff` | `cvs diff` | `ss Diff` |
 | Diff with previous version | `git diff` between a file and its parent revision | `hg diff` of the file against its parent | `svn diff -r N-1:N` | `cvs diff -r prev -r cur` | `ss Diff` between two versions |
 | Show Log | `git log` | `hg log` | `svn log` | `cvs log` | `ss History` |
 | Browse Repository | its own log, over the whole working copy, in a window | ← | ← | ← | ← |
-| Blame | `git blame` | `hg annotate` | `svn annotate` | `cvs annotate` | — |
+| Blame | `git blame --porcelain` | `hg annotate` | `svn annotate` | `cvs annotate` | — |
 | Rename | `git mv` | `hg rename` | `svn rename` | `cvs rename` | — |
 | Delete | `git rm` | `hg remove` | `svn delete` | `cvs remove` | `ss Delete` |
 | Delete (keep local) | `git rm --cached` | `hg remove --keep-files` | `svn delete --keep-local` | `cvs remove` leaving the file | `ss DeleteKeepLocal` |
@@ -532,6 +532,40 @@ to. Only `git` is installed on this host, so Git's column is the measured one: t
 rows are read off each client's documented command line, and their commands are unmeasured
 here — the detection and the arguments each command builds are tested against fixtures for all
 five tools, the answers of `hg`, `svn`, `cvs` and `ss` are not.
+
+Every command answers in a window of failBrauwser's own — never by handing the work to another
+program's window. The window shows what the client said, line for line, and a status line naming
+the call that ran, whether it was refused and with which code; a refusal quotes the client's own
+sentence rather than an invented one, because that is the sentence a user can act on. A command
+whose client would otherwise open an editor or a prompt is asked for the word it needs *before*
+anything runs: *Commit* for the log message, *Clone* for the address, the folder to make and which
+tool is cloning, *Switch/Checkout* for the branch, tag or revision (Subversion is asked for the
+place to switch to), *Rename* for the new name, and *Diff with previous version* for the revision
+being compared when the tool counts revisions — Git and Mercurial name the previous version of
+their own accord and are asked nothing. A word that never arrives starts no client at all.
+
+The reading commands answer in a window shaped for their kind of answer. *Show Log* and *Browse
+Repository* list what the client's own machine-readable log format gives — the revision, who, when,
+and the first line of the message — one row per entry even when a message spans several lines.
+*Blame* reads the annotation the client gives per line: for Git `--porcelain`, whose shape the
+client documents, since the human layout's columns move under a long author name; elsewhere the
+annotation lines stand as their own client writes them. *Diff* and *Diff with previous version*
+show the client's diff as rows the two sides share: a marker column saying added, removed or
+unchanged, the line number on each side, and inside a changed pair the words that actually changed
+standing out against the words that did not. Unchanged runs between changes fold to three lines with
+the range they hide named, *next change* and *previous change* walk the changes, and the status line
+counts the files, the added lines and the removed ones. Nothing in those views is carried by colour
+alone.
+
+The shape of the diff views was learned from ShiftDiff (LGPL-3.0-or-later), which differs whole
+files and trees side by side; its behaviour — rows aligned by construction, the marker gutter,
+word-level highlighting inside a changed pair, folded unchanged runs, walking between changes — is
+re-implemented here for GTK and for what a version-control client reports, with no code, markup or
+naming taken from it. Its relationship ribbons and its detection of moved blocks are left out,
+because a client's diff of a working copy reports changes, not two trees to relate.
+*Delete and add to ignore list* hands the name to the tool's own ignore record: one line appended to
+`.gitignore`, `.hgignore` or `.cvsignore`, or the folder's `svn:ignore` property set through
+`svn propset` where Subversion keeps the list that way.
 
 **Trash:** *Move to Trash* (<kbd>Delete</kbd>) follows the freedesktop.org Trash
 specification, exactly like Thunar, Nautilus and Dolphin: the file goes to
