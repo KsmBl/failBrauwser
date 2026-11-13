@@ -180,7 +180,7 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
         section(&menu, &[("_Paste", "win.paste")]);
         section(&menu, &[("Select _All", "win.select-all"), ("Show _Hidden Files", "win.show-hidden"), ("_Reload", "win.reload")]);
         // TortoiseGit's items, where Explorer has them: after the folder's own.
-        if let Some(g) = super::git::menu_section(pane, items) {
+        if let Some(g) = super::git::menu_section(w, pane, items) {
             menu.append_section(None, &g);
         }
         if local {
@@ -203,7 +203,7 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
     menu.append_section(None, &open);
     // TortoiseGit's items, as in Explorer: right after opening.
     if local || matches!(pane.location(), Location::Search(_)) {
-        if let Some(g) = super::git::menu_section(pane, items) {
+        if let Some(g) = super::git::menu_section(w, pane, items) {
             menu.append_section(None, &g);
         }
     }

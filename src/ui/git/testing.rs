@@ -233,7 +233,7 @@ fn split<'a>(s: &'a str, sep: &str) -> Result<(&'a str, &'a str), String> {
 /// The Git part of the menu for the current selection.
 fn model(w: &Window) -> Option<gio::Menu> {
     let p = w.current_pane();
-    super::menu_section(&p, &p.selected_items())
+    super::menu_section(w, &p, &p.selected_items())
 }
 
 /// Every item as "A/B" (sections flattened), with its action and target.

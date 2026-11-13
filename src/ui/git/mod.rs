@@ -165,8 +165,8 @@ fn escape(s: &str) -> String {
 /// The Git part of the right-click menu, as TortoiseGit has it in Explorer: in a working
 /// tree "Git Sync…", "Git Commit -> "branch"…" and the TortoiseGit submenu; elsewhere
 /// "Git Clone…" and "Git Create repository here…" for folders.
-pub fn menu_section(pane: &Rc<Pane>, items: &[Item]) -> Option<gio::Menu> {
-    if !git::available() {
+pub fn menu_section(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> Option<gio::Menu> {
+    if !w.app.settings.borrow().git_integration || !git::available() {
         return None;
     }
     let t = target_of(pane, items)?;

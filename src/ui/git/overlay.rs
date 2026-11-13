@@ -69,7 +69,10 @@ pub fn compute(dir: &Path, dirs: &[OsString]) -> (Option<git::Repo>, HashMap<OsS
 
 /// Reads the overlays of the tab's folder again (soon, when asked often).
 pub fn update(w: &Window, pane: &Rc<Pane>) {
-    let enabled = w.app.settings.borrow().git_overlays;
+    let enabled = {
+        let s = w.app.settings.borrow();
+        s.git_integration && s.git_overlays
+    };
     let dir = match pane.location() {
         Location::Dir(d) if enabled && !failbrauwser::ops::gvfs::is_gvfs_path(&d) => d,
         _ => {
