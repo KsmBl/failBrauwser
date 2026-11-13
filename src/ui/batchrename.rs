@@ -310,15 +310,10 @@ pub fn preview_rows() -> Vec<String> {
     let Some(tree) = find_tree(d.upcast_ref()) else { return Vec::new() };
     let Some(model) = tree.model() else { return Vec::new() };
     let mut out = Vec::new();
-    if let Some(iter) = model.iter_first() {
-        loop {
-            let old: String = model.value(&iter, COL_OLD as i32).get().unwrap_or_default();
-            let new: String = model.value(&iter, COL_NEW as i32).get().unwrap_or_default();
-            out.push(format!("{old} -> {new}"));
-            if !model.iter_next(&iter) {
-                break;
-            }
-        }
+    for iter in super::util::child_iters(&model, None) {
+        let old: String = model.value(&iter, COL_OLD as i32).get().unwrap_or_default();
+        let new: String = model.value(&iter, COL_NEW as i32).get().unwrap_or_default();
+        out.push(format!("{old} -> {new}"));
     }
     out
 }

@@ -64,6 +64,15 @@ pub fn icon_for_type(content_type: &str) -> gio::Icon {
     })
 }
 
+/// The rows below `parent` (the top rows for None), each with an iterator of its own.
+///
+/// Never step through rows with `iter_next(&iter)`: it changes an iterator that Rust sees as
+/// borrowed unchanged, so an optimised build may keep reading the first row and loop forever
+/// (failBrauwser 0.8.1 froze entering folders in the folder tree this way).
+pub fn child_iters(model: &impl IsA<gtk::TreeModel>, parent: Option<&gtk::TreeIter>) -> Vec<gtk::TreeIter> {
+    (0..model.iter_n_children(parent)).filter_map(|i| model.iter_nth_child(parent, i)).collect()
+}
+
 /// The icon for a file: special folders get their own, symlinks get the link emblem.
 pub fn icon_for_entry(e: &FileEntry) -> gio::Icon {
     if e.kind == Kind::Dir {

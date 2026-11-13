@@ -1063,16 +1063,11 @@ impl Pane {
         let mut rows = Vec::new();
         {
             let st = self.st.borrow();
-            if let Some(it) = self.store.iter_first() {
-                loop {
-                    let key: u64 = self.store.value(&it, model::COL_KEY as i32).get().unwrap_or_default();
-                    if let Some((item, _)) = st.rows.get(&key) {
-                        keys.push(key);
-                        rows.push((item.display_name(), item.is_dir_like()));
-                    }
-                    if !self.store.iter_next(&it) {
-                        break;
-                    }
+            for it in super::util::child_iters(&self.store, None) {
+                let key: u64 = self.store.value(&it, model::COL_KEY as i32).get().unwrap_or_default();
+                if let Some((item, _)) = st.rows.get(&key) {
+                    keys.push(key);
+                    rows.push((item.display_name(), item.is_dir_like()));
                 }
             }
         }
@@ -1310,10 +1305,10 @@ impl Pane {
         let Some((start, end)) = range else { return Vec::new() };
         let st = self.st.borrow();
         let mut out = Vec::new();
-        let Some(iter) = self.store.iter(&start) else { return out };
+        let Some(first) = start.indices().first().copied() else { return out };
         // A few rows beyond the edge, so short scrolls find thumbnails ready.
-        let last = end.indices().first().copied().unwrap_or(0) + 8;
-        loop {
+        let last = (end.indices().first().copied().unwrap_or(0) + 8).min(self.store.iter_n_children(None) - 1);
+        for iter in (first..=last).filter_map(|i| self.store.iter_nth_child(None, i)) {
             let key: u64 = self.store.value(&iter, model::COL_KEY as i32).get().unwrap_or_default();
             let has: bool = self.store.value(&iter, model::COL_THUMB as i32).get::<Option<gtk::gdk_pixbuf::Pixbuf>>().ok().flatten().is_some();
             if let Some((item, _)) = st.rows.get(&key) {
@@ -1322,10 +1317,6 @@ impl Pane {
                         out.push((item.os_name(), e.path.clone(), e.mtime, e.content_type.clone()));
                     }
                 }
-            }
-            let idx = self.store.path(&iter).and_then(|p| p.indices().first().copied()).unwrap_or(i32::MAX);
-            if idx >= last || !self.store.iter_next(&iter) {
-                break;
             }
         }
         out

@@ -557,18 +557,13 @@ fn set_widget(w: &gtk::Widget, value: &str) -> Result<(), String> {
     if let Some(c) = w.downcast_ref::<gtk::ComboBoxText>() {
         let model = c.model().ok_or("empty list")?;
         let mut i = 0;
-        if let Some(it) = model.iter_first() {
-            loop {
-                let text: String = model.value(&it, 0).get().unwrap_or_default();
-                if text.starts_with(value) {
-                    c.set_active(Some(i));
-                    return Ok(());
-                }
-                i += 1;
-                if !model.iter_next(&it) {
-                    break;
-                }
+        for it in super::util::child_iters(&model, None) {
+            let text: String = model.value(&it, 0).get().unwrap_or_default();
+            if text.starts_with(value) {
+                c.set_active(Some(i));
+                return Ok(());
             }
+            i += 1;
         }
         // Typed in, where it can be.
         if let Some(e) = c.child().and_then(|e| e.downcast::<gtk::Entry>().ok()) {
