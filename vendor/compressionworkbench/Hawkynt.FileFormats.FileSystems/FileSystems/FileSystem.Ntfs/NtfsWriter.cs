@@ -433,7 +433,12 @@ public sealed class NtfsWriter {
     long overhead = (long)LogFileBytes + UpCaseBytes
       + 16L * clusterSize   // boot + bitmaps + mirror + slack
       + mftBytes;
-    var total = (overhead + dataBytes) * 11 / 10; // 10 % headroom
+    // Headroom, as a formatted volume has it: an eighth of the payload (the share NTFS
+    // keeps as its MFT zone) and never less than 2 MiB. A volume laid out to just fit has
+    // no free MFT record, and the kernel grows $MFT in chunks it then cannot place, so
+    // the first file anyone adds fails with "no space left".
+    var payload = overhead + dataBytes;
+    var total = payload + Math.Max(2L * 1024 * 1024, payload / 8);
     if (total < 4 * 1024 * 1024) total = 4 * 1024 * 1024; // never smaller than the default
 
     return (total, clusterSize, mftRecordSize);
@@ -584,19 +589,26 @@ public sealed class NtfsWriter {
     var mftMirrClusters = (4 * this._mftRecordSize + this._clusterSize - 1) / this._clusterSize;
     // Reserve that region before placing other files.
 
-    var logFileCluster = nextCluster;
+    // The system files that follow skip the $MFTMirr region like every other
+    // allocation: an $MFT reaching past the volume midpoint pushes the mirror right
+    // behind it, and $LogFile laid over the mirror carried four MFT records instead
+    // of its clean 0xFF pages, so Linux's ntfs3 refused to mount the volume read-write.
     var logFileClusters = (LogFileBytes + this._clusterSize - 1) / this._clusterSize;
+    SkipMftMirror(ref nextCluster, logFileClusters, mftMirrCluster, mftMirrClusters);
+    var logFileCluster = nextCluster;
     nextCluster += logFileClusters;
 
-    var upCaseCluster = nextCluster;
     var upCaseClusters = (UpCaseBytes + this._clusterSize - 1) / this._clusterSize;
+    SkipMftMirror(ref nextCluster, upCaseClusters, mftMirrCluster, mftMirrClusters);
+    var upCaseCluster = nextCluster;
     nextCluster += upCaseClusters;
 
     // Rounded to a whole 64-bit word: a driver reads the cluster bitmap in words and
     // measures the attribute against that, so a byte-exact size is short.
     var bitmapBytes = (totalClusters + 63) / 64 * 8;
-    var bitmapCluster = nextCluster;
     var bitmapClusters = (int)((bitmapBytes + this._clusterSize - 1) / this._clusterSize);
+    SkipMftMirror(ref nextCluster, bitmapClusters, mftMirrCluster, mftMirrClusters);
+    var bitmapCluster = nextCluster;
     nextCluster += bitmapClusters;
 
     // $MFT's own $BITMAP attribute (type 0xB0) — tracks which MFT records are
@@ -604,9 +616,10 @@ public sealed class NtfsWriter {
     // 16-record image needs a real cluster-backed bitmap. Bit i set ⇔ record i
     // is allocated. Stored non-resident in its own cluster.
     var mftBitmapBitsBytes = (totalMftRecords + 7) / 8;
-    var mftBitmapCluster = nextCluster;
     var mftBitmapClusters = (mftBitmapBitsBytes + this._clusterSize - 1) / this._clusterSize;
     if (mftBitmapClusters < 1) mftBitmapClusters = 1;
+    SkipMftMirror(ref nextCluster, mftBitmapClusters, mftMirrCluster, mftMirrClusters);
+    var mftBitmapCluster = nextCluster;
     nextCluster += mftBitmapClusters;
 
     // $AttrDef, when it does not fit inside its record, gets its clusters here with
@@ -616,10 +629,11 @@ public sealed class NtfsWriter {
     // reads the attribute definitions before anything else called the volume corrupt.
     var attrDefTable = BuildAttrDefTable(this._version);
     var attrDefIsResident = attrDefTable.Length <= ResidentThreshold;
-    var attrDefCluster = nextCluster;
     var attrDefClusters = attrDefIsResident
       ? 0
       : (attrDefTable.Length + this._clusterSize - 1) / this._clusterSize;
+    SkipMftMirror(ref nextCluster, attrDefClusters, mftMirrCluster, mftMirrClusters);
+    var attrDefCluster = nextCluster;
     nextCluster += attrDefClusters;
 
     // Skip over the $MFTMirr region if we've grown into it.
@@ -2017,7 +2031,7 @@ public sealed class NtfsWriter {
 
     var fileNameValue = 66 + dir.Name.Length * 2;
     var fileNameAttr = (24 + fileNameValue + 7) & ~7;
-    var stdInfoAttr = (24 + 48 + 7) & ~7;
+    var stdInfoAttr = (24 + this._version.StandardInformationLength() + 7) & ~7;
     var indexRootAttrOverhead = ((24 + 8 + 7) & ~7) /*hdr + "$I30"*/ + 8 /*end marker + pad*/;
     var residentBudget = this._mftRecordSize - this.AttrStart - stdInfoAttr - fileNameAttr - indexRootAttrOverhead;
 
@@ -2096,7 +2110,16 @@ public sealed class NtfsWriter {
         if (n.Sep is { } sep) bytes += PointerEntryLength(sep.Name);
       return bytes;
     }
-    while (level.Count > 1 && RoutingBytes(level) > residentBudget) {
+    int SpilledRootBudget() {
+      // The same record also carries the named non-resident allocation attribute
+      // and its resident bitmap. One mapping pair can use eight bytes each for
+      // its cluster count and LCN, plus its header and terminator.
+      const int allocationAttrBudget = (64 + 8 + 18 + 7) & ~7;
+      var bitmapBytes = Math.Max(8, ((blocks.Count + 63) / 64) * 8);
+      var bitmapAttrBytes = (24 + 8 + bitmapBytes + 7) & ~7;
+      return residentBudget - allocationAttrBudget - bitmapAttrBytes;
+    }
+    while (level.Count > 1 && RoutingBytes(level) > SpilledRootBudget()) {
       var next = new List<(long Vcn, (uint Record, string Name)? Sep)>();
       var group = new List<(long Vcn, (uint Record, string Name)? Sep)>();
       var groupBytes = 0;
@@ -2121,6 +2144,9 @@ public sealed class NtfsWriter {
       Flush();
       level = next;
     }
+
+    if (RoutingBytes(level) > SpilledRootBudget())
+      throw new NotSupportedException("The directory name leaves too little space for its NTFS index attributes in the MFT record.");
 
     var pointers = level.Select(n => (n.Sep?.Record ?? 0u, n.Sep?.Name ?? string.Empty, n.Vcn)).ToList();
     using var alloc = new MemoryStream();

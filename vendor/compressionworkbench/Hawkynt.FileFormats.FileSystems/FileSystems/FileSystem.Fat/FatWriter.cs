@@ -412,7 +412,7 @@ public sealed class FatWriter {
     // cluster chain in the data area; the FAT12/16 root lives in its fixed
     // region, the FAT32 root in the cluster chain at cluster 2.
     var dataAreaOffset = firstDataSector * bytesPerSector;
-    var placement = PlaceTree(BuildTree(), fatType, clusterSize, enableLfn, forceLfn);
+    var placement = PlaceTree(BuildTree(), fatType, clusterSize, enableLfn, forceLfn, VolumeLabelEntry(volumeLabel));
 
     // For FAT12/16 the root directory is a fixed-size region. Overflow would
     // silently write directory entries into the data clusters that follow it,
@@ -629,7 +629,7 @@ public sealed class FatWriter {
 
     // Lay out the directory tree onto contiguous cluster runs (no image
     // allocation). The same planner drives Build, so output is byte-identical.
-    var placement = PlaceTree(BuildTree(), fatType, (int)clusterSize, enableLfn, forceLfn);
+    var placement = PlaceTree(BuildTree(), fatType, (int)clusterSize, enableLfn, forceLfn, VolumeLabelEntry(volumeLabel));
     if (fatType != 32 && placement.RootContentBytes > rootEntryCount * 32)
       throw new InvalidOperationException(
         $"FAT{fatType}: the root directory needs {placement.RootContentBytes / 32} entries " +
@@ -1201,8 +1201,14 @@ public sealed class FatWriter {
   /// file, fills in their content (patching child start-cluster/size fields
   /// and writing '.'/'..'), and returns a <see cref="Placement"/> that both
   /// <see cref="Build"/> and <see cref="BuildTo"/> render identically.</summary>
-  private static Placement PlaceTree(DirNode root, int fatType, int clusterSize, bool enableLfn, bool forceLfn = false) {
+  private static Placement PlaceTree(DirNode root, int fatType, int clusterSize, bool enableLfn, bool forceLfn = false,
+                                     byte[]? volumeLabelEntry = null) {
     BuildSlots(root, enableLfn, forceLfn);
+
+    // The label lives twice on a FAT volume: in the boot sector and as the first root entry. Writing
+    // it only into the boot sector leaves a volume fsck reports as inconsistent, and which it
+    // "repairs" by removing the label.
+    if (volumeLabelEntry is not null) root.ChildSlots.Insert(0, (volumeLabelEntry, null, null));
     var p = new Placement { RootContentBytes = ContentLength(root, true) };
 
     // The root either occupies a fixed region (FAT12/16) or a cluster chain at
@@ -1256,6 +1262,12 @@ public sealed class FatWriter {
         BuildDotEntry(true, parentStart, fatType, null).CopyTo(content, pos); pos += 32;
       }
       foreach (var (slots, file, sub) in dir.ChildSlots) {
+        if (file is null && sub is null) {
+          // The volume label: no cluster, no size, written as built.
+          slots.CopyTo(content, pos); pos += slots.Length;
+          continue;
+        }
+
         var sn = slots.AsSpan(slots.Length - 32, 32);
         var start = file is not null ? file.StartCluster : sub!.StartCluster;
         var size = file?.EffectiveLength ?? 0;
@@ -1318,7 +1330,7 @@ public sealed class FatWriter {
     // know cluster size, FAT type, total sector count etc. up front.
     var tree = BuildTree();
     BuildSlots(tree, enableLfn, forceLfn);
-    var rootDirentBytes = ContentLength(tree, isRoot: true);
+    var rootDirentBytes = ContentLength(tree, isRoot: true) + (VolumeLabelEntry(volumeLabel) is null ? 0 : 32);
     var fileSizes = new List<long>();
     var dirContentBytes = new List<long>();
     void CollectSizes(DirNode dir, bool isRoot) {
@@ -1418,7 +1430,7 @@ public sealed class FatWriter {
     var dataAreaOffset = (long)actualBpb.FirstDataSector * actualBpb.BytesPerSector;
     var actualClusterBytes = (long)actualBpb.SectorsPerCluster * actualBpb.BytesPerSector;
     var streamingTree = BuildTree();
-    _ = PlaceTree(streamingTree, actualBpb.FatType, (int)actualClusterBytes, enableLfn, forceLfn);
+    _ = PlaceTree(streamingTree, actualBpb.FatType, (int)actualClusterBytes, enableLfn, forceLfn, VolumeLabelEntry(volumeLabel));
 
     // Walk the freshly-placed tree and copy each streaming file's bytes
     // straight into the data area at its allocated cluster offset.
@@ -1508,7 +1520,7 @@ public sealed class FatWriter {
     // clusters but never overflow the root.
     var tree = BuildTree();
     BuildSlots(tree, enableLfn, forceLfn);
-    var rootDirentBytes = ContentLength(tree, isRoot: true);
+    var rootDirentBytes = ContentLength(tree, isRoot: true) + (VolumeLabelEntry(volumeLabel) is null ? 0 : 32);
     var fileSizes = new List<long>();
     var dirContentBytes = new List<long>();
     void CollectSizes(DirNode dir, bool isRoot) {
@@ -1748,8 +1760,7 @@ public sealed class FatWriter {
     foreach (var i in inputs) {
       if (i.IsDirectory) { w.AddDirectory(i.ArchiveName); continue; }
       var data = i.ReadContent();
-      var modified = i.InMemoryContent == null && File.Exists(i.FullPath) ? File.GetLastWriteTime(i.FullPath) : (DateTime?)null;
-      w.AddFile(i.ArchiveName, data, modified);
+      w.AddFile(i.ArchiveName, data, i.SourceLastModifiedUtc?.ToLocalTime()); // FAT times are local
       totalData += data.Length;
     }
     // Auto-size: data + ~50% overhead (directories, long names), minimum 1.44 MB.
@@ -1779,6 +1790,20 @@ public sealed class FatWriter {
   /// Characters outside the allowed 8.3 set are replaced with underscore; the
   /// result is truncated to 11 bytes if longer.
   /// </summary>
+  /// <summary>
+  /// The root directory entry that carries the volume label (ATTR_VOLUME_ID), or null when no label
+  /// was given — an unlabelled volume keeps "NO NAME" in its boot sector and no label entry, which
+  /// is what the formatting tools write too.
+  /// </summary>
+  private static byte[]? VolumeLabelEntry(string? volumeLabel) {
+    if (string.IsNullOrWhiteSpace(volumeLabel)) return null;
+
+    var entry = new byte[32];
+    BuildVolumeLabelBytes(volumeLabel).CopyTo(entry, 0);
+    entry[11] = 0x08; // ATTR_VOLUME_ID
+    return entry;
+  }
+
   private static byte[] BuildVolumeLabelBytes(string? label) {
     if (string.IsNullOrWhiteSpace(label))
       return Encoding.ASCII.GetBytes("NO NAME    ");

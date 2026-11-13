@@ -1,6 +1,7 @@
 #pragma warning disable CS1591
 using System.Globalization;
-using System.IO.Compression;
+using Compression.Core.Streams;
+using FileFormat.Gzip;
 using System.Text;
 using Compression.Registry;
 using static Compression.Registry.FormatHelpers;
@@ -133,7 +134,7 @@ public sealed class AfioFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     if (!m.IsGzip) return m.StoredData;
     try {
       using var src = new MemoryStream(m.StoredData);
-      using var gz = new GZipStream(src, CompressionMode.Decompress);
+      using var gz = new GzipStream(src, CompressionStreamMode.Decompress);
       using var ms = new MemoryStream();
       gz.CopyTo(ms);
       return ms.ToArray();
@@ -218,13 +219,6 @@ public sealed class AfioFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     return Convert.ToInt64(slice, 8);
   }
 
-  private static bool TryReadExact(Stream stream, Span<byte> buffer) {
-    var read = 0;
-    while (read < buffer.Length) {
-      var n = stream.Read(buffer[read..]);
-      if (n <= 0) return read == buffer.Length;
-      read += n;
-    }
-    return true;
-  }
+  private static bool TryReadExact(Stream stream, Span<byte> buffer) =>
+    stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false) == buffer.Length;
 }

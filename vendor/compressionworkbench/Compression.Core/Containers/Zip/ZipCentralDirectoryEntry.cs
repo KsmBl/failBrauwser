@@ -31,11 +31,13 @@ internal static class ZipCentralDirectoryEntry {
     var externalAttrs = reader.ReadUInt32();
     var localHeaderOffset = reader.ReadUInt32();
 
-    var encoding = (flags & ZipConstants.FlagUtf8) != 0 ? Encoding.UTF8 : Encoding.Latin1;
+    var utf8 = (flags & ZipConstants.FlagUtf8) != 0;
     var rawName = reader.ReadBytes(fileNameLen);
     var extra = extraLen > 0 ? reader.ReadBytes(extraLen) : null;
     var fileName = ZipNameEncoding.Decode(rawName, flags, extra);
-    var comment = commentLen > 0 ? encoding.GetString(reader.ReadBytes(commentLen)) : null;
+    var comment = commentLen > 0
+      ? (utf8 ? Encoding.UTF8.GetString(reader.ReadBytes(commentLen)) : ZipNameEncoding.DecodeWithoutFlag(reader.ReadBytes(commentLen)))
+      : null;
 
     var entry = new ZipEntry {
       FileName = fileName,
@@ -69,13 +71,15 @@ internal static class ZipCentralDirectoryEntry {
     var flags = ZipConstants.FlagUtf8;
 
     if (entry.IsEncrypted)
-      flags |= ZipConstants.FlagEncrypted;
-    if (entry.CompressionMethod == ZipCompressionMethod.Implode)
+      flags |= (ushort)(ZipConstants.FlagEncrypted | (entry.GeneralPurposeFlags & ZipStrongEncryption.FlagStrongEncryption));
+    if (entry.CompressionMethod is ZipCompressionMethod.Implode or ZipCompressionMethod.Lzma)
       flags |= (ushort)(entry.GeneralPurposeFlags & 0x0006);
 
-    var needUncompressed64 = entry.UncompressedSize > uint.MaxValue;
-    var needCompressed64 = entry.CompressedSize > uint.MaxValue;
-    var needOffset64 = entry.LocalHeaderOffset > uint.MaxValue;
+    // 0xFFFFFFFF is the ZIP64 sentinel (APPNOTE.TXT 4.4.8/4.4.9/4.4.16), so a value of
+    // exactly that size already needs the 64-bit field.
+    var needUncompressed64 = entry.UncompressedSize >= uint.MaxValue;
+    var needCompressed64 = entry.CompressedSize >= uint.MaxValue;
+    var needOffset64 = entry.LocalHeaderOffset >= uint.MaxValue;
 
     var compSize = needCompressed64 ? ZipConstants.Zip64Sentinel32 : (uint)entry.CompressedSize;
     var uncompSize = needUncompressed64 ? ZipConstants.Zip64Sentinel32 : (uint)entry.UncompressedSize;

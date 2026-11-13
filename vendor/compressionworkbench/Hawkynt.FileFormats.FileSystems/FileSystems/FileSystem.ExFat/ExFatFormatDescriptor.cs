@@ -14,7 +14,19 @@ namespace FileSystem.ExFat;
 ///   <item><description><c>https://en.wikipedia.org/wiki/ExFAT</c> — Wikipedia overview</description></item>
 /// </list>
 /// </summary>
-public sealed class ExFatFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveShrinkable, IArchiveModifiable, IArchiveDefragmentable, IFilesystemExtentMap, IFilesystemBlockMover, IWipeEmpty, IFormatOptionsSchema, ILayoutOptimizable {
+public sealed class ExFatFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveModifiable, IArchiveDefragmentable, IFilesystemExtentMap, IFilesystemBlockMover, IWipeEmpty, IFormatOptionsSchema, ILayoutOptimizable, IFilesystemDirectoryOrderer {
+
+  /// <summary>
+  /// Sorts every directory by name in place (<see cref="ExFatDirectoryOrderer"/>): only directory
+  /// records move, no cluster is touched, and the pass is verified against the volume's own
+  /// listing — paths, contents, timestamps — before it is kept; anything else rolls back and
+  /// is refused.
+  /// </summary>
+  public void SortDirectoryEntries(Stream image)
+    => DefragContentGuard.RunVerifiedInPlace(image, this, ExFatDirectoryOrderer.Sort, "exFAT directory sort");
+
+  /// <inheritdoc />
+  public DefragFeature SupportedDefragFeatures => DefragFeature.Packing | DefragFeature.CarveHole | DefragFeature.MetadataZone;
 
   // The optimization adapters are keyed on this descriptor's runtime type, so the
   // registration has to have run before any instance can be looked up. Doing it from
@@ -69,7 +81,8 @@ public sealed class ExFatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpe
       Kind: FormatOptionKind.Enum,
       Default: "Auto (fit to files)",
       AllowedValues: ["Auto (fit to files)", "32 MB", "128 MB", "256 MB", "512 MB", "1 GB", "2 GB", "4 GB", "16 GB", "32 GB", "128 GB"],
-      Description: "Total image capacity. Auto sizes the image to exactly hold the files (recommended)."),
+      Description: "Total image capacity. Auto sizes the image to exactly hold the files (recommended).",
+      IsAllocationGeometry: true),
     new FormatOptionDescriptor(
       Key: "VolumeLabel",
       DisplayName: "Volume label",
@@ -83,7 +96,8 @@ public sealed class ExFatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpe
       Default: "Auto",
       AllowedValues: ["Auto", "4 KB", "8 KB", "16 KB", "32 KB", "64 KB", "128 KB"],
       Description: "Allocation unit size. Auto picks the size that minimises slack + FAT overhead " +
-        "for the files being stored. Larger clusters reduce FAT overhead but waste more space per file."),
+        "for the files being stored. Larger clusters reduce FAT overhead but waste more space per file.",
+      IsAllocationGeometry: true),
   ];
 
   /// <summary>
@@ -145,27 +159,20 @@ public sealed class ExFatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpe
     => this.Defragment(archive, new DefragOptions { Mode = DefragMode.ConsolidateAtStart });
 
   /// <summary>
-  /// Mode-aware exFAT defragmentor. Supports planner-driven in-place path
-  /// and falls back to legacy rebuild path.
+  /// Mode-aware exFAT defragmentor, planner-driven and in place. A layout the
+  /// planner cannot reach in place is refused before anything moves.
   /// </summary>
+  /// <remarks>
+  /// The rebuild that used to follow every refusal wrote a volume at another size
+  /// with no label, a new serial, fresh timestamps, plain attributes and no empty
+  /// folders.
+  /// </remarks>
   public void Defragment(Stream archive, DefragOptions options) {
     ArgumentNullException.ThrowIfNull(options);
-    if (options.Mode is DefragMode.ConsolidateAtStart or DefragMode.ConsolidateAtEnd or DefragMode.FillHolesLazy or DefragMode.CarveHole) {
-      try {
-        DefragmentWithPlanner(archive, options);
-        return;
-      } catch (Exception planFailure) {
-        // A silent fallback looks exactly like a successful in-place
-        // defragmentation from outside, so the reason is reported.
-        options.OnProgress?.Invoke(new DefragProgressEvent(
-          "fallback", 0, -1, -1, archive.Length, null,
-          $"In-place planning declined ({planFailure.GetType().Name}: " +
-          $"{FirstLine(planFailure.Message)}); rebuilding instead"));
-        archive.Position = 0;
-      }
-    }
-    DefragmentWithRebuild(archive, options);
+    DefragSupport.Require(options, this.SupportedDefragFeatures, "exFAT");
+    DefragmentWithPlanner(archive, options);
   }
+
 
   private void DefragmentWithPlanner(Stream archive, DefragOptions options) {
     archive.Position = 0;
@@ -187,76 +194,28 @@ public sealed class ExFatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpe
 
     // The allocation bitmap and up-case table are files with a directory entry
     // apiece, so a metadata placement can move them where it wants.
-    var moves = DefragPlanner.Plan(extents, mover.FirstDataByte, volumeSize, mover.ClusterSize,
+    var moves = DefragPlanner.PlanOrRefuse("exFAT", () => DefragPlanner.Plan(extents, mover.FirstDataByte, volumeSize, mover.ClusterSize,
       options.Profile, options.Mode, holeSize: options.HoleSize, holeAt: options.HoleAt,
-      metadataZone: options.MetadataZonePlacement, movableMetadata: mover.RelocatableMetadata);
+      metadataZone: options.MetadataZonePlacement, movableMetadata: mover.RelocatableMetadata,
+      allowMemoryStaging: mover.SupportsHeldRuns));
     if (moves.Count == 0) {
       options.OnProgress?.Invoke(new DefragProgressEvent("complete", 1, -1, -1, volumeSize, extents, "Already defragmented"));
       return;
     }
 
-    // Refuse the whole plan before any of it is carried out. An exFAT directory
-    // entry describes one contiguous run, so a file whose destination is not
-    // contiguous cannot be expressed — and the mover says so, but it says it
-    // while relinking, which is after the data has been moved. The caller then
-    // falls back to rebuilding from a volume that is already half-migrated, and
-    // rebuilds the damage faithfully: files came back at full length holding
-    // other files' bytes.
-    //
-    // The executor has a check of its own for an owner that arrives in several
-    // moves. This is the other half of the same rule: one move can still land on
-    // clusters that are not consecutive.
-    foreach (var owner in moves.Where(m => !string.IsNullOrEmpty(m.FileName))
-                               .GroupBy(m => m.FileName, StringComparer.OrdinalIgnoreCase)) {
-      if (mover.RelocatableMetadata.Contains(owner.Key)) continue;   // repointed, not relinked
-      var destinations = owner.OrderBy(m => m.SrcOffset)
-                              .Select(m => (Start: m.DstOffset, End: m.DstOffset + m.Length))
-                              .ToList();
-      for (var i = 1; i < destinations.Count; ++i)
-        if (destinations[i].Start != destinations[i - 1].End)
-          throw new NotSupportedException(
-            $"exFAT: '{owner.Key}' would end up in {destinations.Count} runs that are not "
-            + "consecutive, which its directory entry cannot describe; rebuild the volume instead.");
-    }
+    // A file whose packed runs are not consecutive keeps a FAT chain: the mover
+    // clears its NoFatChain flag and links the clusters in order.
 
     // VBR doesn't change during defrag — no per-move re-init needed.
+    // The layout is what gives each file's clusters their chain order when they
+    // are relinked; without it the order is the order the moves happened in, and a
+    // fragmented file came back with its runs swapped.
     DefragPlannerExecutor.Execute(archive, options, mover, moves, volumeSize,
-      reinitAfterMove: null, metadataMover: mover);
+      reinitAfterMove: null, metadataMover: mover, layout: extents);
 
     options.OnProgress?.Invoke(new DefragProgressEvent("complete", 1, -1, -1, volumeSize, null, "Defragmentation complete"));
   }
 
-  /// <summary>
-  /// Rebuild fallback for when the planner refuses. The volume is laid out
-  /// straight into the stream: a byte[] tops out at two gigabytes, so building
-  /// the image in memory threw on exactly the volumes that reach this path.
-  /// </summary>
-  private void DefragmentWithRebuild(Stream archive, DefragOptions options) {
-    ExFatWriter? writer = null;
-    Stream? target = null;
-    var spill = new List<string>();
-    try {
-      DefragRebuilder.RebuildStreaming(archive, options,
-        readEntries: stream => {
-          var r = new ExFatReader(stream);
-          return r.Entries.Where(e => !e.IsDirectory).Select(e => (e.Name, r.Extract(e)));
-        },
-        beginWrite: s => { writer = new ExFatWriter(); target = s; },
-        writeEntry: (name, data) => {
-          var path = Path.GetTempFileName();
-          spill.Add(path);
-          File.WriteAllBytes(path, data);
-          writer!.AddStreamingFile(name, data.LongLength, () => File.OpenRead(path));
-        },
-        // BuildToStreaming is the finaliser that pairs with AddStreamingFile —
-        // BuildTo only writes entries added as byte arrays, so the volume came
-        // back the right shape with every file's contents missing.
-        finishWrite: () => writer!.BuildToStreaming(target!));
-    } finally {
-      foreach (var path in spill)
-        try { File.Delete(path); } catch { /* scratch file already gone */ }
-    }
-  }
   /// <summary>
   /// Gets the default extension.
   /// </summary>
@@ -459,11 +418,42 @@ public sealed class ExFatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpe
   /// data clusters, and the VBR PercentInUse byte are touched. The up-case table
   /// and all other files are never read.
   /// </summary>
+  /// <remarks>
+  /// Only the root directory is edited in place: a path into a folder is refused
+  /// rather than flattened to its leaf name. All inputs are applied to a working
+  /// copy and committed together, so a replace that cannot be finished leaves the
+  /// old file in place.
+  /// </remarks>
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
+    foreach (var input in inputs.Where(i => !i.IsDirectory))
+      if (input.ArchiveName.Replace('\\', '/').Trim('/').Contains('/'))
+        throw new NotSupportedException(
+          $"exFAT: '{input.ArchiveName}' is inside a folder; only the root directory is edited in place.");
+    using var work = Stage(archive);
     foreach (var (name, data) in FlatFiles(inputs)) {
-      ExFatModifier.RemoveFile(archive, name, wipeData: true);
-      ExFatModifier.AddFile(archive, name, data);
+      ExFatModifier.RemoveFile(work, name, wipeData: true);
+      ExFatModifier.AddFile(work, name, data);
     }
+    Commit(archive, work);
+  }
+
+  /// <summary>A working copy of the volume the edit is applied to before it is committed.</summary>
+  private static MemoryStream Stage(Stream archive) {
+    if (archive.Length > Array.MaxLength)
+      throw new NotSupportedException(
+        $"exFAT: in-place editing stages the volume in memory; a {archive.Length:N0}-byte volume is refused.");
+    var work = new MemoryStream((int)archive.Length);
+    archive.Position = 0;
+    archive.CopyTo(work);
+    work.Position = 0;
+    return work;
+  }
+
+  private static void Commit(Stream archive, MemoryStream work) {
+    archive.Position = 0;
+    work.Position = 0;
+    work.CopyTo(archive);
+    archive.SetLength(work.Length);
   }
 
   /// <summary>
@@ -473,8 +463,15 @@ public sealed class ExFatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpe
   /// forensic recovery of the removed content is possible from the resulting bytes.
   /// </summary>
   public void Remove(Stream archive, string[] entryNames) {
-    foreach (var name in entryNames)
-      ExFatModifier.RemoveFile(archive, name, wipeData: true);
+    using var work = Stage(archive);
+    foreach (var raw in entryNames ?? []) {
+      var name = raw.Replace('\\', '/').Trim('/');
+      if (name.Contains('/'))
+        throw new NotSupportedException($"exFAT: '{raw}' is inside a folder; only the root directory is edited in place.");
+      if (!ExFatModifier.RemoveFile(work, name, wipeData: true))
+        throw new FileNotFoundException($"exFAT: '{raw}' is not in the root directory.", raw);
+    }
+    Commit(archive, work);
   }
   /// <summary>
   /// Turns buffered inputs into streaming ones. Only a length is needed to lay a
@@ -519,10 +516,5 @@ public sealed class ExFatFormatDescriptor : IFormatDescriptor, IArchiveFormatOpe
   }
 
 
-  /// <summary>The first line of a message, for a one-line progress note.</summary>
-  private static string FirstLine(string message) {
-    var end = message.IndexOf('\n');
-    return end < 0 ? message : message[..end].TrimEnd('\r');
-  }
 
 }

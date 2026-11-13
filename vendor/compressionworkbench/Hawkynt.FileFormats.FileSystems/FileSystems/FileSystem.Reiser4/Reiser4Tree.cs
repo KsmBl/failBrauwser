@@ -1,29 +1,22 @@
 #pragma warning disable CS1591
 using System.Buffers.Binary;
-using System.Text;
+using Compression.Core.Checksums;
+using Compression.Core.DiskImage;
 
 namespace FileSystem.Reiser4;
 
 /// <summary>
-/// Builds the leaf of a reiser4 tree: the root directory's stat data and entries,
-/// and for each file a stat data and the extents holding its bytes.
+/// Lays a <see cref="Reiser4Plan" /> out as a volume: data blocks for extents, then a node40 (or
+/// node41) tree of stat data, directory entries and tail items in leaves, extents in twigs, and as
+/// many internal levels above them as it takes — plus the allocator bitmaps and the counters the
+/// format superblock keeps.
 /// </summary>
 /// <remarks>
-/// <para>A node is a 28-byte header, item bodies growing up from there, and an
-/// array of 38-byte item headers growing down from the node's end — each a
-/// four-word key, the body's offset, flags, and which plugin reads it. Items sit
-/// in key order.</para>
-///
-/// <para>A key is four little-endian words: the locality in the top sixty bits of
-/// the first with the item's type in its low four, an ordering, an object id, and
-/// an offset. A file's stat data and its body share the first three and differ in
-/// the type and the offset, so every stat data sorts ahead of every body.</para>
-///
-/// <para>A directory entry carries its name in its own key rather than a hash of
-/// it, for any name of twenty-three characters or fewer. The bytes pack
-/// big-endian into the ordering starting one byte in, then the object id, then the
-/// offset; the ordering's top seven bits hold a fibre, which is the last character
-/// when the one before it is a dot. A name held that way is stored nowhere else.</para>
+/// <para>A node is a 28-byte header (32 for node41, whose last four bytes are a CRC-32C of the
+/// rest), item bodies growing up from there, and an array of 38-byte item headers growing down
+/// from the node's end — each a four-word key, the body's offset, flags, and the item plugin.
+/// Items sit in key order. A leaf never straddles a twig extent: the leaf run is ended before an
+/// extent's key and resumed after it.</para>
 /// </remarks>
 internal static class Reiser4Tree {
 
@@ -31,237 +24,321 @@ internal static class Reiser4Tree {
   internal const int ItemHeaderBytes = 38;
   internal const int NodeMagic = 0x52344653;
 
-  private const int PluginStat40 = 0x0;
-  private const int PluginCde40 = 0x2;
-  private const int PluginExtent40 = 0x5;
+  /// <summary>First data block: blocks 0..24 are the jump area, superblocks, journal, status, backup and the first two nodes.</summary>
+  internal const ulong FirstDataBlock = 25;
 
-  private const byte MinorFileName = 0;
-  private const byte MinorStatData = 1;
-  private const byte MinorFileBody = 4;
+  internal const ulong BlocksPerBitmap = (ulong)(Reiser4Volume.BlockSize - 4) * 8;
 
-  /// <summary>Characters of a name the ordering holds, its top byte being the fibre.</summary>
-  private const int OrderingChars = 7;
+  internal static bool IsBitmapBlock(ulong block) => block == 18 || block != 0 && block % BlocksPerBitmap == 0;
 
-  /// <summary>And the object id after it.</summary>
-  private const int ObjectIdChars = 8;
+  private sealed record Item(Reiser4Key Key, ushort Plugin, byte[] Body);
 
-  /// <summary>Past this many a name no longer fits its key and is hashed into it.</summary>
-  internal const int MaxInlineNameLength = OrderingChars + ObjectIdChars + 8;
+  /// <summary>What a laid-out volume amounts to.</summary>
+  internal sealed record Result(ulong Blocks, ushort Height, ulong ObjectCount, IReadOnlyList<ulong> NodeBlocks);
 
-  /// <summary>The bit in the ordering that says the name was hashed, not held.</summary>
-  private const ulong HashedNameBit = 0x0100000000000000;
+  /// <summary>Lays <paramref name="plan" /> out and writes the whole volume to <paramref name="output" />.</summary>
+  internal static Result Write(Reiser4Plan plan, Stream output) {
+    ArgumentNullException.ThrowIfNull(plan);
+    ArgumentNullException.ThrowIfNull(output);
+    const int blockSize = Reiser4Volume.BlockSize;
+    var headerBytes = plan.NodePlugin == 1 ? 32 : NodeHeaderBytes;
+    var capacity = blockSize - headerBytes;
+    var maxBody = capacity - ItemHeaderBytes;
 
-  /// <summary>One run of blocks holding part of a file.</summary>
-  internal readonly record struct Run(ulong Start, ulong Width);
-
-  /// <summary>A file to put in the tree.</summary>
-  internal sealed class Entry {
-    internal required string Name { get; init; }
-    internal required ulong ObjectId { get; init; }
-    internal required long Size { get; init; }
-    internal required IReadOnlyList<Run> Runs { get; init; }
-  }
-
-  /// <summary>The name packed into a word, big-endian, from <paramref name="from" />.</summary>
-  private static ulong PackName(string name, int from, int skip) {
-    ulong value = 0;
-    var taken = 0;
-    for (var i = from; i < name.Length && taken < 8 - skip; ++i, ++taken)
-      value = value << 8 | (byte)name[i];
-
-    return value << (8 - taken - skip) * 8;
-  }
-
-  /// <summary>The fibre a name sorts under: its last character after a one-letter suffix.</summary>
-  private static byte Fibre(string name)
-    => name.Length > 2 && name[^2] == '.' ? (byte)name[^1] : (byte)0;
-
-  private static void WriteKey(Span<byte> at, ulong locality, byte minor,
-                               ulong ordering, ulong objectId, ulong offset) {
-    BinaryPrimitives.WriteUInt64LittleEndian(at, locality << 4 | minor);
-    BinaryPrimitives.WriteUInt64LittleEndian(at[8..], ordering);
-    BinaryPrimitives.WriteUInt64LittleEndian(at[16..], objectId);
-    BinaryPrimitives.WriteUInt64LittleEndian(at[24..], offset);
-  }
-
-  /// <summary>
-  /// The r5 hash, which a name too long to be held in its key is reduced to.
-  /// </summary>
-  private static ulong R5Hash(string name, int from) {
-    ulong a = 0;
-    for (var i = from; i < name.Length; ++i) {
-      var b = (byte)name[i];
-      a += (ulong)(b << 4);
-      a += (ulong)(b >> 4);
-      a *= 11;
+    var cursor = FirstDataBlock;
+    ulong Allocate() {
+      while (IsBitmapBlock(cursor)) ++cursor;
+      return cursor++;
     }
 
-    return a;
-  }
+    // ── Data blocks, in object order ────────────────────────────────────
+    var payloads = new DeferredPayloads();
+    var items = new List<Item>();
+    foreach (var obj in plan.Objects) {
+      items.Add(new Item(obj.StatKey, Reiser4ItemPlugin.StatData, obj.Stat));
+      if (obj.IsDirectory) {
+        items.AddRange(DirectoryItems(obj, maxBody));
+        continue;
+      }
+      foreach (var (key, plugin, body) in obj.Items) {
+        if (body.Length > maxBody) throw new InvalidDataException("Reiser4: a body item exceeds node capacity.");
+        items.Add(new Item(key, plugin, body));
+      }
+      if (obj.Extents.Count == 0) continue;
 
-  /// <summary>The three words a directory entry's key carries a name in.</summary>
-  /// <remarks>
-  /// A name of twenty-three characters or fewer fits whole; past that only its
-  /// first fifteen are held and the rest becomes a hash, with a bit set in the
-  /// ordering to say so — and the name itself is then stored beside the entry.
-  /// </remarks>
-  private static (ulong Ordering, ulong ObjectId, ulong Offset, bool Hashed) NameKey(string name) {
-    if (name == ".") return (0, 0, 0, false);
-
-    var ordering = PackName(name, 0, 1);
-    var objectId = name.Length > OrderingChars ? PackName(name, OrderingChars, 0) : 0;
-
-    ulong offset;
-    var hashed = name.Length > MaxInlineNameLength;
-    if (hashed) {
-      ordering |= HashedNameBit;
-      offset = R5Hash(name, OrderingChars + ObjectIdChars);
-    } else {
-      offset = name.Length > OrderingChars + ObjectIdChars
-        ? PackName(name, OrderingChars + ObjectIdChars, 0)
-        : 0;
+      var units = new List<(ulong Start, ulong Width)>();
+      foreach (var unit in obj.Extents) {
+        if (unit.Payload is not { } payload) { units.Add((0, unit.Width)); continue; }
+        // A run of blocks never includes an allocator bitmap; one that would is split around it.
+        ulong done = 0;
+        while (done < unit.Width) {
+          var start = Allocate();
+          ulong width = 1;
+          while (done + width < unit.Width && !IsBitmapBlock(cursor)) { ++cursor; ++width; }
+          var byteOffset = (long)(done * blockSize);
+          var byteLength = Math.Min((long)(width * blockSize), payload.Size - byteOffset);
+          if (byteLength > 0) payloads.Add((long)start * blockSize, Slice(payload, byteOffset, byteLength));
+          if (units.Count > 0 && units[^1].Start != 0 && units[^1].Start + units[^1].Width == start)
+            units[^1] = (units[^1].Start, units[^1].Width + width);
+          else
+            units.Add((start, width));
+          done += width;
+        }
+      }
+      var perItem = maxBody / 16;
+      ulong logical = 0;
+      var bodyKey = obj.StatKey;
+      for (var first = 0; first < units.Count; first += perItem) {
+        var count = Math.Min(perItem, units.Count - first);
+        var body = new byte[count * 16];
+        for (var i = 0; i < count; ++i) {
+          BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(i * 16), units[first + i].Start);
+          BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(i * 16 + 8), units[first + i].Width);
+        }
+        items.Add(new Item(Reiser4Key.Of(bodyKey.Locality, Reiser4Key.MinorBody, bodyKey.Ordering, bodyKey.ObjectId, logical),
+          Reiser4ItemPlugin.Extent, body));
+        for (var i = 0; i < count; ++i) logical = checked(logical + units[first + i].Width * blockSize);
+      }
     }
 
-    return (ordering | (ulong)Fibre(name) << 57, objectId, offset, hashed);
-  }
+    items.Sort(static (a, b) => a.Key.CompareTo(b.Key));
+    for (var i = 1; i < items.Count; ++i)
+      if (items[i].Key.CompareTo(items[i - 1].Key) == 0 && items[i].Plugin != Reiser4ItemPlugin.DirEntries)
+        throw new InvalidDataException("Reiser4: two items share one key.");
 
-  /// <summary>A stat data saying what a file is and how long.</summary>
-  private static byte[] StatData(ushort mode, uint links, ulong size, ulong bytes, uint time) {
-    var body = new byte[2 + 14 + 28];
-    BinaryPrimitives.WriteUInt16LittleEndian(body, 0x3);              // light-weight and unix
-    BinaryPrimitives.WriteUInt16LittleEndian(body.AsSpan(2), mode);
-    BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(4), links);
-    BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(8), size);
-    BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(16), 0);     // uid
-    BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(20), 0);     // gid
-    BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(24), time);
-    BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(28), time);
-    BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(32), time);
-    BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(36), bytes);
-    return body;
-  }
+    // ── Leaves and twigs ────────────────────────────────────────────────
+    var nodes = new Dictionary<ulong, byte[]>();
+    var twigItems = new List<Item>();
+    var pending = new List<Item>();
+    var firstLeaf = true;
+    void FlushLeaves() {
+      foreach (var group in Pack(pending, capacity)) {
+        var block = firstLeaf ? 24UL : Allocate();
+        firstLeaf = false;
+        nodes.Add(block, EncodeNode(group, plan, headerBytes, 1));
+        twigItems.Add(new Item(group[0].Key, Reiser4ItemPlugin.NodePointer, PointerBody(block)));
+      }
+      pending.Clear();
+    }
+    foreach (var item in items) {
+      if (item.Plugin == Reiser4ItemPlugin.Extent) {
+        FlushLeaves();
+        twigItems.Add(item);
+      } else pending.Add(item);
+    }
+    FlushLeaves();
 
-  /// <summary>The root's entries, its own two and one for each file.</summary>
-  private static byte[] Directory(ulong rootLocality, ulong rootObjectId,
-                                  IReadOnlyList<Entry> files, int blockSize) {
-    var names = new List<(string Name, ulong Locality, ulong ObjectId)> {
-      (".", rootLocality, rootObjectId),
-      ("..", rootLocality, rootObjectId),
-    };
-    foreach (var file in files) names.Add((file.Name, rootObjectId, file.ObjectId));
-
-    var keyed = new List<(ulong Ordering, ulong ObjectId, ulong Offset, bool Hashed,
-                          string Name, ulong Locality, ulong Target)>();
-    foreach (var (name, locality, target) in names) {
-      var (ordering, objectId, offset, hashed) = NameKey(name);
-      keyed.Add((ordering, objectId, offset, hashed, name, locality, target));
+    ushort level = 2;
+    var parentItems = twigItems;
+    while (true) {
+      var groups = Pack(parentItems, capacity).ToList();
+      if (groups.Count == 1) {
+        nodes.Add(23, EncodeNode(groups[0], plan, headerBytes, (byte)level));
+        break;
+      }
+      parentItems = [];
+      foreach (var group in groups) {
+        var block = Allocate();
+        nodes.Add(block, EncodeNode(group, plan, headerBytes, (byte)level));
+        parentItems.Add(new Item(group[0].Key, Reiser4ItemPlugin.NodePointer, PointerBody(block)));
+      }
+      level = checked((ushort)(level + 1));
     }
 
-    keyed.Sort((a, b) => a.Ordering != b.Ordering ? a.Ordering.CompareTo(b.Ordering)
-      : a.ObjectId != b.ObjectId ? a.ObjectId.CompareTo(b.ObjectId)
-      : a.Offset.CompareTo(b.Offset));
+    // ── Counters, bitmaps and the fixed blocks ──────────────────────────
+    var used = cursor;
+    var blocks = Math.Max(plan.MinimumBlocks, used + 1);
+    var format = plan.Format.ToArray();
+    var backup = plan.Backup.ToArray();
+    var objects = (ulong)plan.Objects.Count;
+    var tailBitmaps = (blocks - 1) / BlocksPerBitmap - (used - 1) / BlocksPerBitmap;
+    BinaryPrimitives.WriteUInt64LittleEndian(format.AsSpan(0), blocks);
+    BinaryPrimitives.WriteUInt64LittleEndian(format.AsSpan(8), blocks - used - tailBitmaps);
+    BinaryPrimitives.WriteUInt64LittleEndian(format.AsSpan(16), 23);
+    BinaryPrimitives.WriteUInt64LittleEndian(format.AsSpan(24), plan.NextObjectId);
+    BinaryPrimitives.WriteUInt64LittleEndian(format.AsSpan(32), objects);
+    BinaryPrimitives.WriteUInt32LittleEndian(format.AsSpan(48), plan.MkfsId);
+    BinaryPrimitives.WriteUInt16LittleEndian(format.AsSpan(68), level);
+    BinaryPrimitives.WriteUInt64LittleEndian(backup.AsSpan(0x4D), blocks);
+    BinaryPrimitives.WriteUInt32LittleEndian(backup.AsSpan(0x55), plan.MkfsId);
 
+    var basePosition = output.Position;
+    var zero = new byte[blockSize];
+    var bitmaps = BuildBitmaps(blocks, used);
+    for (var b = 0UL; b < FirstDataBlock; ++b) {
+      var bytes = b switch {
+        16 => plan.Master,
+        17 => format,
+        18 => bitmaps[0].Bytes,
+        21 => plan.Status,
+        22 => backup,
+        23 => nodes[23],
+        24 => nodes[24],
+        _ => zero,
+      };
+      output.Write(bytes, 0, blockSize);
+    }
+    output.SetLength(basePosition + checked((long)blocks * blockSize));
+    foreach (var (block, bytes) in bitmaps.Skip(1)) {
+      output.Position = basePosition + (long)block * blockSize;
+      output.Write(bytes);
+    }
+    foreach (var (block, node) in nodes) {
+      if (block is 23 or 24) continue;
+      output.Position = basePosition + checked((long)block * blockSize);
+      output.Write(node);
+    }
+    payloads.FlushTo(output, basePosition);
+    output.Position = basePosition + (long)blocks * blockSize;
+    output.Flush();
+    return new Result(blocks, level, objects, [.. nodes.Keys]);
+  }
+
+  /// <summary>The cde40 items of a directory: its entries in key order, packed into items that fit a node.</summary>
+  private static IEnumerable<Item> DirectoryItems(Reiser4PlanObject directory, int maxBody) {
+    var entries = directory.Entries.Select(static (entry, index) => (entry, index)).ToList();
+    entries.Sort(static (a, b) => {
+      var c = a.entry.Ordering.CompareTo(b.entry.Ordering);
+      if (c != 0) return c;
+      c = a.entry.ObjectId.CompareTo(b.entry.ObjectId);
+      if (c != 0) return c;
+      c = a.entry.Offset.CompareTo(b.entry.Offset);
+      return c != 0 ? c : a.index.CompareTo(b.index);
+    });
     const int unitHeaderBytes = 26;
     const int targetKeyBytes = 24;
-
-    // A hashed name is kept beside the key it did not fit into, NUL-terminated.
-    var unitBytes = 0;
-    foreach (var entry in keyed)
-      unitBytes += targetKeyBytes + (entry.Hashed ? Encoding.ASCII.GetByteCount(entry.Name) + 1 : 0);
-
-    var body = new byte[2 + keyed.Count * unitHeaderBytes + unitBytes];
-    BinaryPrimitives.WriteUInt16LittleEndian(body, (ushort)keyed.Count);
-
-    var unit = 2 + keyed.Count * unitHeaderBytes;
-    for (var i = 0; i < keyed.Count; ++i) {
-      var (ordering, objectId, offset, hashed, name, locality, target) = keyed[i];
-      var header = 2 + i * unitHeaderBytes;
-      BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(header), ordering);
-      BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(header + 8), objectId);
-      BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(header + 16), offset);
-      BinaryPrimitives.WriteUInt16LittleEndian(body.AsSpan(header + 24), (ushort)unit);
-
-      // What the entry points at: the first three words of its target's stat-data key.
-      BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(unit), locality << 4 | MinorStatData);
-      BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(unit + 8), 0);
-      BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(unit + 16), target);
-      unit += targetKeyBytes;
-
-      if (!hashed) continue;
-
-      var nameBytes = Encoding.ASCII.GetBytes(name);
-      nameBytes.CopyTo(body.AsSpan(unit));
-      unit += nameBytes.Length + 1;
+    var first = 0;
+    while (first < entries.Count) {
+      var last = first;
+      var bodySize = 2;
+      while (last < entries.Count) {
+        var entrySize = unitHeaderBytes + targetKeyBytes + (entries[last].entry.Hashed ? entries[last].entry.Name.Length + 1 : 0);
+        if (bodySize + entrySize > maxBody) break;
+        bodySize += entrySize;
+        ++last;
+      }
+      if (last == first) throw new InvalidDataException("Reiser4: a directory unit exceeds node capacity.");
+      var body = new byte[bodySize];
+      BinaryPrimitives.WriteUInt16LittleEndian(body, checked((ushort)(last - first)));
+      var unit = 2 + (last - first) * unitHeaderBytes;
+      for (var i = first; i < last; ++i) {
+        var entry = entries[i].entry;
+        var header = 2 + (i - first) * unitHeaderBytes;
+        BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(header), entry.Ordering);
+        BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(header + 8), entry.ObjectId);
+        BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(header + 16), entry.Offset);
+        BinaryPrimitives.WriteUInt16LittleEndian(body.AsSpan(header + 24), checked((ushort)unit));
+        BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(unit), entry.Target.Word0);
+        BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(unit + 8), entry.Target.Ordering);
+        BinaryPrimitives.WriteUInt64LittleEndian(body.AsSpan(unit + 16), entry.Target.ObjectId);
+        unit += targetKeyBytes;
+        if (entry.Hashed) {
+          entry.Name.CopyTo(body.AsSpan(unit));
+          unit += entry.Name.Length + 1;
+        }
+      }
+      var key = entries[first].entry;
+      yield return new Item(Reiser4Key.Of(directory.StatKey.ObjectId, Reiser4Key.MinorName, key.Ordering, key.ObjectId, key.Offset),
+        Reiser4ItemPlugin.DirEntries, body);
+      first = last;
     }
+  }
 
+  /// <summary>The body bytes of a directory's entries as its stat data's "bytes" counts them.</summary>
+  internal static ulong DirectoryBytes(IEnumerable<Reiser4DirEntry> entries)
+    => (ulong)entries.Sum(static e => 26 + 24 + (e.Hashed ? e.Name.Length + 1 : 0));
+
+  /// <summary>A byte range of <paramref name="payload" />, read lazily.</summary>
+  internal static FilePayload Slice(FilePayload payload, long offset, long length) {
+    if (offset == 0 && length == payload.Size) return payload;
+    if (payload.Data is { } data) return FilePayload.FromBytes(data.AsSpan(checked((int)offset), checked((int)length)).ToArray());
+    return FilePayload.FromStream(length, () => SkipTo(payload.Open(), offset));
+  }
+
+  private static Stream SkipTo(Stream source, long offset) {
+    if (offset <= 0) return source;
+    if (source.CanSeek) {
+      source.Position = offset;
+      return source;
+    }
+    var buffer = new byte[64 * 1024];
+    var remaining = offset;
+    while (remaining > 0) {
+      var n = source.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+      if (n <= 0) break;
+      remaining -= n;
+    }
+    return source;
+  }
+
+  private static byte[] PointerBody(ulong block) {
+    var body = new byte[8];
+    BinaryPrimitives.WriteUInt64LittleEndian(body, block);
     return body;
   }
 
-  /// <summary>
-  /// Rewrites <paramref name="leaf" /> so it holds the root and every file given.
-  /// </summary>
-  /// <param name="leaf">The leaf as mkfs left it, whose root stat data is kept.</param>
-  internal static void Build(Span<byte> leaf, int blockSize, uint mkfsId, uint time,
-                             ulong rootLocality, ulong rootObjectId, IReadOnlyList<Entry> files) {
-    // The root's own stat data, kept as mkfs wrote it — it carries the plugin set
-    // every file below it inherits, which this does not attempt to rebuild.
-    var rootStatOffset = BinaryPrimitives.ReadUInt16LittleEndian(leaf[(blockSize - ItemHeaderBytes + 32)..]);
-    var rootStatLength = BinaryPrimitives.ReadUInt16LittleEndian(leaf[(blockSize - 2 * ItemHeaderBytes + 32)..])
-      - rootStatOffset;
-    var rootStat = leaf.Slice(rootStatOffset, rootStatLength).ToArray();
-
-    var bodies = new List<(ulong Locality, byte Minor, ulong Ordering, ulong ObjectId, ulong Offset,
-                           int Plugin, byte[] Body)> {
-      (rootLocality, MinorStatData, 0, rootObjectId, 0, PluginStat40, rootStat),
-      (rootObjectId, MinorFileName, 0, 0, 0, PluginCde40, Directory(rootLocality, rootObjectId, files, blockSize)),
-    };
-
-    foreach (var file in files) {
-      var held = 0UL;
-      foreach (var run in file.Runs) held += run.Width;
-      bodies.Add((rootObjectId, MinorStatData, 0, file.ObjectId, 0, PluginStat40,
-        StatData(0x81A4, 1, (ulong)file.Size, held * (ulong)blockSize, time)));
-    }
-
-    foreach (var file in files) {
-      if (file.Runs.Count == 0) continue;
-
-      var extents = new byte[file.Runs.Count * 16];
-      for (var i = 0; i < file.Runs.Count; ++i) {
-        BinaryPrimitives.WriteUInt64LittleEndian(extents.AsSpan(i * 16), file.Runs[i].Start);
-        BinaryPrimitives.WriteUInt64LittleEndian(extents.AsSpan(i * 16 + 8), file.Runs[i].Width);
+  private static IEnumerable<List<Item>> Pack(IReadOnlyList<Item> items, int capacity) {
+    var group = new List<Item>();
+    var bytes = 0;
+    foreach (var item in items) {
+      var need = checked(item.Body.Length + ItemHeaderBytes);
+      if (need > capacity) throw new InvalidDataException("Reiser4: an indivisible item exceeds node capacity.");
+      if (bytes + need > capacity) {
+        yield return group;
+        group = [];
+        bytes = 0;
       }
-
-      bodies.Add((rootObjectId, MinorFileBody, 0, file.ObjectId, 0, PluginExtent40, extents));
+      group.Add(item);
+      bytes += need;
     }
+    if (group.Count > 0) yield return group;
+  }
 
-    leaf[..blockSize].Clear();
-    var at = NodeHeaderBytes;
-    for (var i = 0; i < bodies.Count; ++i) {
-      var (locality, minor, ordering, objectId, offset, plugin, body) = bodies[i];
-      if (at + body.Length > blockSize - (i + 1) * ItemHeaderBytes)
-        throw new InvalidOperationException(
-          $"Reiser4: {bodies.Count} items do not fit one {blockSize}-byte leaf; this writer builds one.");
-
-      body.CopyTo(leaf[at..]);
+  private static byte[] EncodeNode(IReadOnlyList<Item> items, Reiser4Plan plan, int headerBytes, byte level) {
+    const int blockSize = Reiser4Volume.BlockSize;
+    var node = new byte[blockSize];
+    var at = headerBytes;
+    for (var i = 0; i < items.Count; ++i) {
+      var item = items[i];
+      item.Body.CopyTo(node.AsSpan(at));
       var header = blockSize - (i + 1) * ItemHeaderBytes;
-      WriteKey(leaf[header..], locality, minor, ordering, objectId, offset);
-      BinaryPrimitives.WriteUInt16LittleEndian(leaf[(header + 32)..], (ushort)at);
-      BinaryPrimitives.WriteUInt16LittleEndian(leaf[(header + 34)..], 0);
-      BinaryPrimitives.WriteUInt16LittleEndian(leaf[(header + 36)..], (ushort)plugin);
-      at += body.Length;
+      item.Key.Write(node.AsSpan(header));
+      BinaryPrimitives.WriteUInt16LittleEndian(node.AsSpan(header + 32), checked((ushort)at));
+      BinaryPrimitives.WriteUInt16LittleEndian(node.AsSpan(header + 36), item.Plugin);
+      at += item.Body.Length;
     }
+    BinaryPrimitives.WriteUInt16LittleEndian(node, plan.NodePlugin);
+    BinaryPrimitives.WriteUInt16LittleEndian(node.AsSpan(2), checked((ushort)items.Count));
+    BinaryPrimitives.WriteUInt16LittleEndian(node.AsSpan(4), checked((ushort)(blockSize - items.Count * ItemHeaderBytes - at)));
+    BinaryPrimitives.WriteUInt16LittleEndian(node.AsSpan(6), checked((ushort)at));
+    BinaryPrimitives.WriteUInt32LittleEndian(node.AsSpan(8), plan.NodePlugin == 1 ? Reiser4Volume.Node41Magic : unchecked((uint)NodeMagic));
+    BinaryPrimitives.WriteUInt32LittleEndian(node.AsSpan(12), plan.MkfsId);
+    node[26] = level;
+    if (plan.NodePlugin == 1) Reiser4Volume.SealNode41(node);
+    return node;
+  }
 
-    BinaryPrimitives.WriteUInt16LittleEndian(leaf, 0);                       // node40
-    BinaryPrimitives.WriteUInt16LittleEndian(leaf[2..], (ushort)bodies.Count);
-    BinaryPrimitives.WriteUInt16LittleEndian(leaf[4..],
-      (ushort)(blockSize - bodies.Count * ItemHeaderBytes - at));
-    BinaryPrimitives.WriteUInt16LittleEndian(leaf[6..], (ushort)at);
-    BinaryPrimitives.WriteUInt32LittleEndian(leaf[8..], unchecked((uint)NodeMagic));
-    BinaryPrimitives.WriteUInt32LittleEndian(leaf[12..], mkfsId);
-    BinaryPrimitives.WriteUInt64LittleEndian(leaf[16..], 0);                 // flush id
-    BinaryPrimitives.WriteUInt16LittleEndian(leaf[24..], 0);                 // flags
-    leaf[26] = 1;                                                            // level: a leaf
-    leaf[27] = 0;
+  /// <summary>
+  /// Every block-allocator bitmap. Bitmap <c>i</c> covers blocks <c>[i × BlocksPerBitmap, (i+1) ×
+  /// BlocksPerBitmap)</c>; the first lives at block 18 and the rest at the stride boundaries. Blocks
+  /// below <paramref name="used" />, every bitmap block and everything past the end of the volume
+  /// are marked allocated.
+  /// </summary>
+  internal static List<(ulong Block, byte[] Bytes)> BuildBitmaps(ulong blocks, ulong used) {
+    var result = new List<(ulong Block, byte[] Bytes)>();
+    var count = (blocks + BlocksPerBitmap - 1) / BlocksPerBitmap;
+    for (var i = 0UL; i < count; ++i) {
+      var block = i == 0 ? 18UL : i * BlocksPerBitmap;
+      var buffer = new byte[Reiser4Volume.BlockSize];
+      var baseBlock = i * BlocksPerBitmap;
+      for (var bit = 0UL; bit < BlocksPerBitmap; ++bit) {
+        var target = baseBlock + bit;
+        if (target >= used && target < blocks && !IsBitmapBlock(target)) continue;
+        buffer[4 + (int)(bit >> 3)] |= (byte)(1 << (int)(bit & 7));
+      }
+      BinaryPrimitives.WriteUInt32LittleEndian(buffer, Adler32.Compute(buffer.AsSpan(4)));
+      result.Add((block, buffer));
+    }
+    return result;
   }
 }

@@ -5,9 +5,8 @@ using Compression.Core.Dictionary.Arj;
 namespace FileFormat.Arj;
 
 /// <summary>
-/// Reads entries from an ARJ archive stream.
-/// Supports extraction of stored entries (methods 0 and 4).
-/// Compressed methods (1–3) are detected but extraction is not supported.
+/// Reads entries from an ARJ archive stream and extracts every ARJ method: 0 (stored),
+/// 1-3 (LZ77 + Huffman) and 4 ("fastest", LZ77 with fixed prefix codes).
 /// </summary>
 public sealed class ArjReader : IDisposable {
   private readonly Stream _stream;
@@ -61,7 +60,7 @@ public sealed class ArjReader : IDisposable {
   /// Thrown when <paramref name="entry"/> is <see langword="null"/>.
   /// </exception>
   /// <exception cref="NotSupportedException">
-  /// Thrown when the entry uses a compressed method (1–3) that is not supported.
+  /// Thrown when the entry's method is not one ARJ defines (0-4).
   /// </exception>
   /// <exception cref="InvalidDataException">
   /// Thrown when the CRC-32 of the extracted data does not match the stored value.
@@ -73,7 +72,7 @@ public sealed class ArjReader : IDisposable {
 
     var rawData = new byte[entry.CompressedSize];
     if (entry.CompressedSize > 0)
-      ReadExact(this._stream, rawData);
+      this._stream.ReadExactly(rawData);
 
     // Degarble if the entry is encrypted
     var isGarbled = (entry.Flags & ArjConstants.FlagGarbled) != 0;
@@ -87,8 +86,10 @@ public sealed class ArjReader : IDisposable {
     byte[] data;
     switch (entry.Method) {
       case ArjConstants.MethodStore:
-      case ArjConstants.MethodStoreFast:
         data = rawData;
+        break;
+      case ArjConstants.MethodFastest:
+        data = ArjFastestDecoder.Decode(rawData, checked((int)entry.OriginalSize));
         break;
       case ArjConstants.MethodCompressed1:
       case ArjConstants.MethodCompressed2:
@@ -122,8 +123,10 @@ public sealed class ArjReader : IDisposable {
     if (mainHeader == null)
       throw new InvalidDataException("Stream does not contain a valid ARJ archive header.");
 
-    // Position past the main archive header's data block (always zero length).
-    this._stream.Position = mainHeader.DataOffset + mainHeader.CompressedSize;
+    // The main header has no data block. Its bytes 12..15 are not a size but the archive's
+    // modification time (ARJ 2.x and later), so skipping "CompressedSize" bytes would leap past
+    // every member of a real archive.
+    this._stream.Position = mainHeader.DataOffset;
 
     // Read file headers until the end-of-archive marker.
     while (true) {
@@ -177,7 +180,7 @@ public sealed class ArjReader : IDisposable {
 
     // Read the header body (basicHeaderSize bytes).
     var headerBytes = new byte[basicHeaderSize];
-    ReadExact(this._stream, headerBytes);
+    this._stream.ReadExactly(headerBytes);
 
     // --- CRC-32 of the header body (4 bytes, LE) ---
     using var binReader = new BinaryReader(this._stream, Encoding.UTF8, leaveOpen: true);
@@ -295,16 +298,6 @@ public sealed class ArjReader : IDisposable {
 
   private static ushort ReadUInt16Le(ReadOnlySpan<byte> data, int offset) =>
     (ushort)(data[offset] | (data[offset + 1] << 8));
-
-  private static void ReadExact(Stream stream, byte[] buffer) {
-    var total = 0;
-    while (total < buffer.Length) {
-      var read = stream.Read(buffer, total, buffer.Length - total);
-      if (read == 0)
-        throw new EndOfStreamException("Unexpected end of ARJ archive stream.");
-      total += read;
-    }
-  }
 
   // -------------------------------------------------------------------------
   // IDisposable

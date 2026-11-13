@@ -6,8 +6,13 @@ using static Compression.Registry.FormatHelpers;
 namespace FileSystem.Ufs;
 
 /// <summary>
-/// R/W descriptor for UFS1 (Berkeley Fast File System) images at the
-/// byte-exact <c>newfs -O1</c> layout.
+/// Descriptor for the Berkeley Fast File System: UFS1 and UFS2 in either byte
+/// order are listed and extracted. Little-endian volumes of both versions are
+/// created (UFS1 at the <c>newfs -O1</c> layout; UFS2 formatted as <c>newfs -O2</c>
+/// lays it out, then filled by the in-place editor) and edited in place: files and
+/// folders are added and removed, the volume is defragmented and wiped, and blocks
+/// are moved. Both byte orders are created and edited (option <c>ByteOrder</c>; NetBSD's
+/// <c>newfs -B be</c> and <c>FFS_EI</c> kernels use big-endian volumes).
 ///
 /// References:
 /// <list type="bullet">
@@ -21,10 +26,14 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
                                           IArchiveModifiable, IArchiveDefragmentable, IFilesystemExtentMap, IFilesystemBlockMover, IWipeEmpty,
                                           IFormatOptionsSchema, ILayoutOptimizable {
 
-  /// <summary>UFS creation knob: the volume label written to the superblock
-  /// <c>fs_volname</c> field (the <c>tunefs -L</c> / <c>dumpfs</c> "volume name").
-  /// Block/fragment geometry stays at the byte-exact <c>newfs -O1</c> layout.</summary>
+  /// <summary>UFS creation knobs: the version (UFS1 at the <c>newfs -O1</c> layout, or
+  /// UFS2 at the <c>newfs -O2</c> one) and the volume label written to the superblock's
+  /// <c>fs_volname</c> (the <c>tunefs -L</c> / <c>dumpfs</c> "volume name").</summary>
   public IReadOnlyList<FormatOptionDescriptor> OptionsSchema { get; } = [
+    new FormatOptionDescriptor("Version", "Version", FormatOptionKind.Enum, "UFS1", ["UFS1", "UFS2"],
+      "UFS1 (8 KiB blocks, 32-bit pointers) or UFS2 (16 KiB blocks, 64-bit pointers and times)."),
+    new FormatOptionDescriptor("ByteOrder", "Byte order", FormatOptionKind.Enum, "LittleEndian", ["LittleEndian", "BigEndian"],
+      "The order of every multi-byte field: little-endian (x86, arm64 hosts) or big-endian (as NetBSD's newfs -B be writes)."),
     FilesystemSchemaPresets.VolumeLabel(maxChars: 31),
   ];
 
@@ -36,8 +45,28 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// <see cref="DefragBlockKind.Used"/>. Indirect blocks are not followed
   /// (single-CG profile our writer emits doesn't use them).
   /// </summary>
-  public IEnumerable<DefragBlockInfo> EnumerateExtents(Stream image)
-    => UfsExtentMap.Enumerate(image);
+  public IEnumerable<DefragBlockInfo> EnumerateExtents(Stream image) {
+    ArgumentNullException.ThrowIfNull(image);
+    var probe = UfsReader.Probe(image);
+    image.Position = 0;
+    return probe is { Version: 2 } or { BigEndian: true } ? UfsModifier.Extents(image) : UfsExtentMap.Enumerate(image);
+  }
+
+  /// <summary>
+  /// Refuses an edit the in-place paths cannot make — a little-endian UFS1 superblock
+  /// away from <c>SBLOCK_UFS1</c> — with the image left byte-identical, and returns
+  /// <see langword="true"/> when the volume goes through <see cref="UfsModifier"/>'s
+  /// version- and byte-order-independent editor (UFS2, and big-endian UFS1), or
+  /// <see langword="false"/> for the little-endian UFS1 paths.
+  /// </summary>
+  internal static bool RequireEditable(Stream image) {
+    ArgumentNullException.ThrowIfNull(image);
+    var probe = UfsReader.Probe(image) ?? throw new InvalidDataException("UFS: no UFS1 or UFS2 superblock found.");
+    image.Position = 0;
+    if (probe.Version == 1 && !probe.BigEndian && probe.Offset != UfsWriter.SuperblockOffset)
+      throw new NotSupportedException($"UFS: a UFS1 superblock at {probe.Offset} is read-only; only SBLOCK_UFS1 volumes are edited.");
+    return probe.Version == 2 || probe.BigEndian;
+  }
 
   /// <summary>
   /// Zeros all unused space in a UFS1 image: every block not claimed by the
@@ -54,7 +83,8 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// never match a file-size key — they (and all metadata) are preserved.</para>
   /// </summary>
   public long WipeUnusedSpace(Stream image, bool wipeClusterTips = true, bool wipeDeletedEntries = true) {
-    ArgumentNullException.ThrowIfNull(image);
+    // UFS2 and big-endian: the free maps say what is free; tips and dead directory records go too.
+    if (RequireEditable(image)) return UfsModifier.Wipe(image, wipeClusterTips, wipeDeletedEntries);
     image.Position = 0;
     var imageSize = image.Length;
 
@@ -90,7 +120,7 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// Gets the accepted inputs description.
   /// </summary>
   public string AcceptedInputsDescription =>
-    "UFS1 filesystem image; multiple cylinder groups, nested directories, " +
+    "UFS1 filesystem image (created little-endian); multiple cylinder groups, nested directories, " +
     "direct- plus single-indirect-block files (up to ~16 MB each).";
   /// <summary>
   /// Performs the can accept operation.
@@ -135,7 +165,14 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// Gets the magic signatures.
   /// </summary>
   public IReadOnlyList<MagicSignature> MagicSignatures =>
-    [new([0x54, 0x19, 0x01, 0x00], Offset: 8192 + 1372, Confidence: 0.90)];
+    [
+      new([0x54, 0x19, 0x01, 0x00], Offset: 8192 + 1372, Confidence: 0.90),   // UFS1, little-endian
+      new([0x00, 0x01, 0x19, 0x54], Offset: 8192 + 1372, Confidence: 0.90),   // UFS1, big-endian
+      new([0x19, 0x01, 0x54, 0x19], Offset: 65536 + 1372, Confidence: 0.90),  // UFS2 at SBLOCK_UFS2, little-endian
+      new([0x19, 0x54, 0x01, 0x19], Offset: 65536 + 1372, Confidence: 0.90),  // UFS2 at SBLOCK_UFS2, big-endian
+      new([0x19, 0x01, 0x54, 0x19], Offset: 8192 + 1372, Confidence: 0.90),   // UFS2 at SBLOCK_UFS1 (makefs), little-endian
+      new([0x19, 0x54, 0x01, 0x19], Offset: 8192 + 1372, Confidence: 0.90),   // UFS2 at SBLOCK_UFS1 (makefs), big-endian
+    ];
   /// <summary>
   /// Gets the methods.
   /// </summary>
@@ -151,7 +188,7 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// <summary>
   /// Gets the description.
   /// </summary>
-  public string Description => "Unix File System (UFS1) image";
+  public string Description => "Unix File System (UFS1/UFS2) image";
 
   /// <summary>
   /// Lists the entries in the supplied container.
@@ -213,7 +250,12 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// Performs the create operation.
   /// </summary>
   public void Create(Stream output, IReadOnlyList<ArchiveInputInfo> inputs, FormatCreateOptions options) {
-    var w = new UfsWriter { VolumeLabel = options?.GetOption("VolumeLabel", "") ?? "" };
+    if (IsUfs2(options)) {
+      CreateUfs2(output, inputs.Where(i => !i.IsDirectory).Select(i => (i.ArchiveName, i.ReadContent())).ToList(),
+        inputs.Where(i => i.IsDirectory).Select(i => i.ArchiveName).ToList(), options);
+      return;
+    }
+    var w = new UfsWriter { VolumeLabel = options?.GetOption("VolumeLabel", "") ?? "", BigEndian = IsBigEndian(options) };
     foreach (var i in inputs) {
       if (i.IsDirectory) continue;
       var info = i;
@@ -244,12 +286,16 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     ArgumentNullException.ThrowIfNull(inputs);
 
     var inputList = inputs.ToList();
+    if (IsUfs2(options)) {
+      ((IArchiveCreatable)this).CreateFromStreams(output, inputList, options);
+      return;
+    }
     if (!output.CanSeek) {
       ((IArchiveCreatable)this).CreateFromStreams(output, inputList, options);
       return;
     }
 
-    var w = new UfsWriter { VolumeLabel = options?.GetOption("VolumeLabel", "") ?? "" };
+    var w = new UfsWriter { VolumeLabel = options?.GetOption("VolumeLabel", "") ?? "", BigEndian = IsBigEndian(options) };
     foreach (var input in inputList) {
       if (input.IsDirectory) continue;
       w.AddStreamingFile(input.Name, input.Size, input.OpenStream);
@@ -264,6 +310,15 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// the root dir block, and the file's data blocks are read or written.
   /// </summary>
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
+    if (RequireEditable(archive)) {
+      // The UFS2 editor pages the volume fragment by fragment, so size does not matter.
+      foreach (var dir in inputs.Where(i => i.IsDirectory)) UfsModifier.AddDirectory(archive, dir.ArchiveName);
+      foreach (var (name, data) in FilesOnly(inputs)) {
+        UfsModifier.RemoveFile(archive, name, wipeData: true);
+        UfsModifier.AddFile(archive, name, data);
+      }
+      return;
+    }
     // The in-place modifier walks the volume in memory, which a volume past two
     // gigabytes does not fit in — and where it can still edit, it has no room
     // to grow a full volume. Above that the edit unpacks and relays it out.
@@ -284,6 +339,10 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// wiped during removal so no forensic trace remains.
   /// </summary>
   public void Remove(Stream archive, string[] entryNames) {
+    if (RequireEditable(archive)) {
+      foreach (var name in entryNames) UfsModifier.RemoveFile(archive, name, wipeData: true);
+      return;
+    }
     // See Add: past two gigabytes the volume cannot be walked in memory.
     if (ModifyRebuilder.NeedsLargeVolumePath(archive)) {
       ModifyRebuilder.RemoveLargeVolume(archive, entryNames, this, this);
@@ -298,6 +357,10 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
 
   /// <inheritdoc />
   public void MoveExtent(Stream image, long srcOffset, long dstOffset, long length, bool zeroSource = false) {
+    if (RequireEditable(image)) {
+      UfsModifier.MoveExtent(image, srcOffset, dstOffset, length, zeroSource);
+      return;
+    }
     var mover = new UfsBlockMover();
     mover.Init(image);
     mover.MoveExtent(image, srcOffset, dstOffset, length, zeroSource);
@@ -305,6 +368,10 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
 
   /// <inheritdoc />
   public void UpdateAllocationAfterMove(Stream image, string fileName, long oldOffset, long newOffset, long length) {
+    if (RequireEditable(image)) {
+      UfsModifier.Repoint(image, fileName, oldOffset, newOffset, length);
+      return;
+    }
     var mover = new UfsBlockMover();
     mover.Init(image);
     mover.UpdateAllocationAfterMove(image, fileName, oldOffset, newOffset, length);
@@ -323,6 +390,10 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// </summary>
   public void Defragment(Stream archive, DefragOptions options) {
     ArgumentNullException.ThrowIfNull(options);
+    if (RequireEditable(archive)) {
+      DefragmentInPlace(archive, options);
+      return;
+    }
 
     if (options.Mode is DefragMode.ConsolidateAtStart or DefragMode.ConsolidateAtEnd or DefragMode.FillHolesLazy or DefragMode.CarveHole) {
       try {
@@ -411,6 +482,25 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     }
   }
 
+  /// <summary>
+  /// UFS2 and big-endian volumes are defragmented in place, file by file, into single
+  /// runs of free blocks: packing towards the start (which also leaves every file
+  /// reading forwards) or towards the end. Filling holes lazily and carving a hole are
+  /// refused.
+  /// </summary>
+  private static void DefragmentInPlace(Stream archive, DefragOptions options) {
+    var atEnd = options.Mode switch {
+      DefragMode.ConsolidateAtStart or DefragMode.AscendingOrder => false,
+      DefragMode.ConsolidateAtEnd => true,
+      _ => throw new NotSupportedException($"UFS: {options.Mode} is not offered for UFS2 or big-endian volumes; they pack towards the start or the end."),
+    };
+    var moved = UfsModifier.Defragment(archive, atEnd);
+    options.OnProgress?.Invoke(new DefragProgressEvent(
+      Phase: "complete", Fraction: 1, CurrentReadOffset: -1, CurrentWriteOffset: -1,
+      ImageSize: archive.Length, BlockMap: UfsModifier.Extents(archive),
+      Status: moved == 0 ? "Already defragmented" : $"Defragmentation complete ({moved} files moved)"));
+  }
+
   private static IEnumerable<(string Name, byte[] Data)> ReadRebuildEntries(Stream stream) {
     var r = new UfsReader(stream);
     return r.Entries.Where(e => !e.IsDirectory).Select(e => (e.Name, r.Extract(e)));
@@ -422,4 +512,29 @@ public sealed class UfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     return end < 0 ? message : message[..end].TrimEnd('\r');
   }
 
+
+  private static bool IsBigEndian(FormatCreateOptions? options)
+    => string.Equals(options?.GetOption("ByteOrder", "LittleEndian") ?? "LittleEndian", "BigEndian", StringComparison.OrdinalIgnoreCase);
+
+  private static bool IsUfs2(FormatCreateOptions? options)
+    => string.Equals(options?.GetOption("Version", "UFS1") ?? "UFS1", "UFS2", StringComparison.OrdinalIgnoreCase);
+
+  /// <summary>
+  /// Formats a UFS2 volume sized to the inputs and fills it through the in-place
+  /// editor, so a created volume and an edited one follow the same allocation rules.
+  /// </summary>
+  private static void CreateUfs2(Stream output, IReadOnlyList<(string Name, byte[] Data)> files, IReadOnlyList<string> directories, FormatCreateOptions? options) {
+    const int block = Ufs2Formatter.BlockSize;
+    long payload = files.Sum(f => (f.Data.LongLength + block - 1) / block * block + 2L * block);
+    payload += (files.Count + directories.Count + 16) * 2048L;
+    var size = Math.Max(Ufs2Formatter.MinimumBytes, (payload * 5 / 4 + (4L << 20) + (1L << 20) - 1) >> 20 << 20);
+    var target = output.CanSeek && output.CanRead ? output : new MemoryStream();
+    Ufs2Formatter.Format(target, size, options?.GetOption("VolumeLabel", "") ?? "", bigEndian: IsBigEndian(options));
+    foreach (var dir in directories) UfsModifier.AddDirectory(target, dir);
+    foreach (var (name, data) in files) UfsModifier.AddFile(target, name, data);
+    if (!ReferenceEquals(target, output)) {
+      target.Position = 0;
+      target.CopyTo(output);
+    }
+  }
 }

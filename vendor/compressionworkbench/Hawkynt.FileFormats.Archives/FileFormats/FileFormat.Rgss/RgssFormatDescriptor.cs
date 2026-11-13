@@ -26,7 +26,7 @@ public sealed class RgssFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
     RebuildVerb.EditViaRebuild(archive, this, this, tmpDir => {
       DropSyntheticMetadata(tmpDir);
-      RebuildStaging.AddEntries(tmpDir, inputs);
+      RebuildVerb.StageInputs(tmpDir, inputs);
     });
   }
 
@@ -39,7 +39,7 @@ public sealed class RgssFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     var skip = new HashSet<string>(entryNames ?? [], StringComparer.OrdinalIgnoreCase);
     RebuildVerb.EditViaRebuild(archive, this, this, tmpDir => {
       DropSyntheticMetadata(tmpDir);
-      RebuildStaging.RemoveEntries(tmpDir, skip);
+      RebuildVerb.DeleteNamedEntries(tmpDir, skip);
     });
   }
 

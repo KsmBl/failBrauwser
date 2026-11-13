@@ -1,361 +1,380 @@
+// Header parsing follows acefile (https://github.com/droe/acefile, BSD-2-Clause, Copyright (c)
+// 2017-2026 Daniel Roethlisberger and contributors). See THIRD-PARTY-NOTICE.acefile.txt.
+
+using System.Buffers.Binary;
 using System.Text;
-using Compression.Core.Checksums;
-using Compression.Core.Crypto;
 using Compression.Core.Dictionary.Ace;
-using CoreAceConstants = Compression.Core.Dictionary.Ace.AceConstants;
 
 namespace FileFormat.Ace;
 
 /// <summary>
-/// Reads entries from an ACE archive.
+/// Reads ACE 1.0 / 2.0 archives: main header (found within the first 512 KiB, so SFX stubs are
+/// skipped), file headers, stored / LZ77 / blocked members, Blowfish-encrypted members and comments.
+/// A multi-volume set is read from its volumes in order (<c>.ace</c>, <c>.c00</c>, <c>.c01</c>, …):
+/// a member split across volumes is the concatenation of its parts, and its CRC is the one in the
+/// last part's header.
 /// </summary>
 public sealed class AceReader : IDisposable {
-  private readonly Stream _stream;
-  private readonly bool _leaveOpen;
+  private const int SearchLimit = 512 * 1024;
+
+  private readonly IReadOnlyList<Stream> _volumes;
+  private readonly int _ownedFrom;
   private readonly string? _password;
   private readonly List<AceEntry> _entries = [];
-  private AceDecoder? _solidDecoder;
-  private bool _disposed;
+  private AceDecompressor _decompressor = new();
+  private int _nextIndex;
 
-  /// <summary>Gets the entries in the archive.</summary>
   public IReadOnlyList<AceEntry> Entries => this._entries;
 
-  /// <summary>Gets the archive comment, if present.</summary>
   public string? Comment { get; private set; }
 
-  /// <summary>Gets the ACE version.</summary>
-  public byte Version { get; private set; }
+  public byte ExtractVersion { get; private set; }
 
-  /// <summary>Gets whether this is a solid archive.</summary>
+  public byte CreatorVersion { get; private set; }
+
   public bool IsSolid { get; private set; }
 
-  /// <summary>Gets whether this archive has a recovery record.</summary>
+  public bool IsMultiVolume { get; private set; }
+
+  /// <summary>The volume number recorded in the first volume read (0 for the <c>.ace</c> volume of a set).</summary>
+  public int FirstVolumeNumber { get; private set; }
+
+  /// <summary>How many volumes were read.</summary>
+  public int VolumeCount => this._volumes.Count;
+
+  public bool IsLocked { get; private set; }
+
   public bool HasRecoveryRecord { get; private set; }
 
-  private long _recoveryDataOffset;
-  private int _recoveryDataSize;
-  private int _recoverySectorCount;
+  /// <summary>Offset of the main header (non-zero for self-extracting archives).</summary>
+  public long ArchiveOffset { get; private set; }
 
-  /// <summary>
-  /// Initializes a new <see cref="AceReader"/> from a stream.
-  /// </summary>
-  /// <param name="stream">A seekable stream containing the ACE archive.</param>
-  /// <param name="leaveOpen">Whether to leave the stream open on dispose.</param>
-  /// <param name="password">Optional password for decrypting encrypted entries.</param>
-  public AceReader(Stream stream, bool leaveOpen = false, string? password = null) {
-    this._stream = stream ?? throw new ArgumentNullException(nameof(stream));
-    this._leaveOpen = leaveOpen;
+  public AceReader(Stream stream, bool leaveOpen = false, string? password = null)
+    : this([stream ?? throw new ArgumentNullException(nameof(stream))], leaveOpen, password) {
+  }
+
+  /// <summary>Reads the volumes of a multi-volume set, in order; a single stream is an ordinary archive.</summary>
+  /// <param name="volumes">The volumes, first to last; later volumes that do not continue the set are an error.</param>
+  /// <param name="leaveOpen"><see langword="true"/> to leave the streams open on dispose.</param>
+  /// <param name="password">The password for encrypted members, or null.</param>
+  public AceReader(IReadOnlyList<Stream> volumes, bool leaveOpen = false, string? password = null)
+    : this(volumes, password, ownedFrom: leaveOpen ? int.MaxValue : 0) {
+  }
+
+  /// <summary>Reads <paramref name="volumes"/>; the streams from index <paramref name="ownedFrom"/> on are disposed with the reader.</summary>
+  internal AceReader(IReadOnlyList<Stream> volumes, string? password, int ownedFrom) {
+    ArgumentNullException.ThrowIfNull(volumes);
+    if (volumes.Count == 0)
+      throw new ArgumentException("No ACE volume given.", nameof(volumes));
+    this._volumes = volumes;
+    this._ownedFrom = ownedFrom;
     this._password = password;
-    ReadArchive();
+    try {
+      this.ReadArchive();
+    } catch {
+      this.Dispose();
+      throw;
+    }
   }
 
-  /// <summary>
-  /// Extracts the data for an entry.
-  /// </summary>
-  /// <param name="entry">The entry to extract.</param>
-  /// <returns>The decompressed data.</returns>
-  public byte[] ExtractEntry(AceEntry entry) {
-    if (entry.IsEncrypted && this._password == null)
-      throw new InvalidOperationException("Entry is encrypted but no password was provided.");
-
-    this._stream.Position = entry.DataOffset;
-    var compressed = new byte[entry.CompressedSize];
-    var totalRead = 0;
-    while (totalRead < compressed.Length) {
-      var read = this._stream.Read(compressed, totalRead, compressed.Length - totalRead);
-      if (read == 0) throw new EndOfStreamException("Unexpected end of ACE data.");
-      totalRead += read;
-    }
-
-    // Decrypt if encrypted
-    if (entry.IsEncrypted) {
-      var key = AceWriter.DeriveKey(this._password!);
-      var bf = new Blowfish(key);
-      var iv = new byte[8];
-      compressed = bf.DecryptCbc(compressed, iv);
-    }
-
-    byte[] data;
-    switch (entry.CompressionType) {
-      case CoreAceConstants.CompStore:
-        data = entry.IsEncrypted ? compressed[..(int)entry.OriginalSize] : compressed;
-        // Feed stored data into solid decoder's window if in solid mode
-        if (this.IsSolid && this._solidDecoder != null) {
-          // Solid store: decoder window must still track the bytes
-          var storeDecoder = GetOrCreateSolidDecoder(entry);
-          // We don't decompress, but we need to advance the window
-        }
-        break;
-      case CoreAceConstants.CompAce10:
-      case CoreAceConstants.CompAce20: {
-        var decoder = GetOrCreateSolidDecoder(entry);
-        data = decoder.Decode(compressed, (int)entry.OriginalSize, entry.CompressionType);
-        break;
-      }
-      default:
-        throw new NotSupportedException($"Unsupported ACE compression type: {entry.CompressionType}");
-    }
-
-    // Verify CRC-32
-    var crc = Crc32.Compute(data);
-    if (crc != entry.Crc32)
-      throw new InvalidDataException(
-        $"CRC-32 mismatch for '{entry.FileName}': expected 0x{entry.Crc32:X8}, computed 0x{crc:X8}.");
-
-    return data;
+  public void Dispose() {
+    for (var i = this._ownedFrom; i < this._volumes.Count; ++i)
+      this._volumes[i].Dispose();
   }
 
-  private AceDecoder GetOrCreateSolidDecoder(AceEntry entry) {
-    if (this.IsSolid && entry.IsSolid && this._solidDecoder != null)
-      return this._solidDecoder;
+  private static string DecodeName(ReadOnlySpan<byte> raw) {
+    var name = AceConstants.Oem.GetString(raw).Replace('\\', '/');
+    return name.TrimStart('/');
+  }
 
-    // Create a fresh decoder (first file in solid chain, or non-solid archive)
-    var decoder = new AceDecoder(entry.DictionaryBits);
-    if (this.IsSolid)
-      this._solidDecoder = decoder;
-    return decoder;
+  private static DateTime FromDos(uint dos) {
+    try {
+      return new DateTime((int)((dos >> 25) & 0x7F) + 1980, (int)((dos >> 21) & 0x0F), (int)((dos >> 16) & 0x1F),
+        (int)((dos >> 11) & 0x1F), (int)((dos >> 5) & 0x3F), (int)(dos & 0x1F) * 2);
+    } catch (ArgumentOutOfRangeException) {
+      return new DateTime(1980, 1, 1);
+    }
+  }
+
+  private static long FindMainHeader(Stream stream) {
+    var length = stream.Length;
+    var scan = (int)Math.Min(length, SearchLimit + 14);
+    var buf = new byte[scan];
+    stream.Position = 0;
+    stream.ReadExactly(buf);
+    var magic = Encoding.ASCII.GetBytes(AceConstants.Magic);
+    for (var i = 0; i + 14 <= scan; ++i) {
+      if (!buf.AsSpan(i + 7, 7).SequenceEqual(magic))
+        continue;
+      var size = BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(i + 2));
+      if (size < 26 || i + 4 + size > length)
+        continue;
+      var header = new byte[size];
+      stream.Position = i + 4;
+      stream.ReadExactly(header);
+      if (AceConstants.AceCrc16(header) == BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(i)) && header[0] == AceConstants.HeaderTypeMain)
+        return i;
+    }
+    throw new InvalidDataException("No ACE main header found.");
+  }
+
+  /// <summary>Reads just the main header of <paramref name="stream"/>: its volume number and whether it belongs to a multi-volume set.</summary>
+  internal static bool TryReadVolumeInfo(Stream stream, out int volumeNumber, out bool multiVolume) {
+    volumeNumber = 0;
+    multiVolume = false;
+    try {
+      stream.Position = FindMainHeader(stream);
+      var main = ReadHeader(stream);
+      if (main == null || main.Length < 14)
+        return false;
+      volumeNumber = main[13];
+      multiVolume = (BinaryPrimitives.ReadUInt16LittleEndian(main.AsSpan(1)) & AceConstants.FlagMultiVolume) != 0;
+      return true;
+    } catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException) {
+      return false;
+    }
+  }
+
+  private static byte[]? ReadHeader(Stream stream) {
+    Span<byte> head = stackalloc byte[4];
+    if (stream.ReadAtLeast(head, 4, throwOnEndOfStream: false) < 4)
+      return null;
+    var crc = BinaryPrimitives.ReadUInt16LittleEndian(head);
+    var size = BinaryPrimitives.ReadUInt16LittleEndian(head[2..]);
+    var buf = new byte[size];
+    if (stream.ReadAtLeast(buf, size, throwOnEndOfStream: false) < size)
+      throw new InvalidDataException("Truncated ACE header.");
+    if (AceConstants.AceCrc16(buf) != crc)
+      throw new InvalidDataException("ACE header CRC mismatch.");
+    if (size < 3)
+      throw new InvalidDataException("ACE header too short.");
+    return buf;
+  }
+
+  /// <summary>One file header as read, before the parts of a split member are joined.</summary>
+  private sealed record FilePart(string Name, ushort Flags, long PackSize, long OrigSize, uint DateTime, uint Attributes,
+    uint Crc32, byte CompType, byte Quality, ushort Parameters, string? Comment, int Volume, long DataOffset) {
+    public bool ContinuesFromPrevious => (this.Flags & AceConstants.FileFlagContinuedFromPrevious) != 0;
+    public bool ContinuesInNext => (this.Flags & AceConstants.FileFlagContinuedInNext) != 0;
   }
 
   private void ReadArchive() {
-    var reader = new BinaryReader(this._stream, Encoding.ASCII, leaveOpen: true);
+    var parts = new List<FilePart>();
+    for (var v = 0; v < this._volumes.Count; ++v) {
+      var stream = this._volumes[v];
+      var offset = FindMainHeader(stream);
+      stream.Position = offset;
+      var main = ReadHeader(stream) ?? throw new InvalidDataException("No ACE main header.");
+      var flags = BinaryPrimitives.ReadUInt16LittleEndian(main.AsSpan(1));
+      if ((flags & AceConstants.FlagAddSize) != 0)
+        throw new InvalidDataException("ACE main header carries an add-size field.");
+      var volumeNumber = main[13];
+      if (v == 0)
+        this.ReadMainHeader(main, flags, offset);
+      else if ((flags & AceConstants.FlagMultiVolume) == 0 || volumeNumber != this.FirstVolumeNumber + v)
+        throw new InvalidDataException($"ACE volume {v} does not continue the set (volume number {volumeNumber}).");
+      ReadFileHeaders(stream, v, parts);
+    }
+    this.JoinParts(parts);
+  }
 
-    // Read archive header
-    ReadArchiveHeader(reader);
+  private void ReadMainHeader(byte[] main, ushort flags, long offset) {
+    this.ArchiveOffset = offset;
+    this.ExtractVersion = main[10];
+    this.CreatorVersion = main[11];
+    this.FirstVolumeNumber = main[13];
+    this.IsSolid = (flags & AceConstants.FlagSolid) != 0;
+    this.IsMultiVolume = (flags & AceConstants.FlagMultiVolume) != 0;
+    this.IsLocked = (flags & AceConstants.FlagLocked) != 0;
+    this.HasRecoveryRecord = (flags & AceConstants.FlagRecovery) != 0;
+    var i = 26;
+    if (i + 1 <= main.Length) {
+      // The advert length byte is present whether or not the advert flag is set.
+      i += 1 + main[i];
+      if ((flags & AceConstants.FlagComment) != 0 && i + 2 <= main.Length) {
+        var size = BinaryPrimitives.ReadUInt16LittleEndian(main.AsSpan(i));
+        i += 2;
+        if (i + size > main.Length)
+          throw new InvalidDataException("Truncated ACE main header comment.");
+        this.Comment = AceConstants.Oem.GetString(AceDecompressor.DecompressComment(main.AsSpan(i, size)));
+      }
+    }
+  }
 
-    // Read file headers
-    while (this._stream.Position < this._stream.Length) {
-      var header = ReadBlockHeader(reader);
+  private static void ReadFileHeaders(Stream stream, int volume, List<FilePart> parts) {
+    while (true) {
+      var header = ReadHeader(stream);
       if (header == null)
         break;
-
-      if (header.Type == AceConstants.HeaderTypeFile) {
-        var entry = ReadFileEntry(reader, header);
-        this._entries.Add(entry);
-
-        // Skip compressed data
-        this._stream.Position = entry.DataOffset + entry.CompressedSize;
+      var type = header[0];
+      var hflags = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(1));
+      var pos = 3;
+      if (type is AceConstants.HeaderTypeFile32 or AceConstants.HeaderTypeFile64) {
+        if ((hflags & AceConstants.FlagAddSize) == 0)
+          throw new InvalidDataException("ACE file header without add-size field.");
+        long packSize, origSize;
+        if ((hflags & AceConstants.Flag64Bit) != 0) {
+          if (type != AceConstants.HeaderTypeFile64 || header.Length < pos + 16)
+            throw new InvalidDataException("Malformed 64-bit ACE file header.");
+          packSize = (long)BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(pos));
+          origSize = (long)BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(pos + 8));
+          pos += 16;
+        } else {
+          if (type != AceConstants.HeaderTypeFile32 || header.Length < pos + 8)
+            throw new InvalidDataException("Malformed ACE file header.");
+          packSize = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(pos));
+          origSize = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(pos + 4));
+          pos += 8;
+        }
+        if (header.Length < pos + 20)
+          throw new InvalidDataException("Truncated ACE file header.");
+        var dateTime = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(pos));
+        var attributes = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(pos + 4));
+        var crc32 = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(pos + 8));
+        var compType = header[pos + 12];
+        var quality = header[pos + 13];
+        var parameters = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(pos + 14));
+        var nameSize = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(pos + 18));
+        pos += 20;
+        if (header.Length < pos + nameSize)
+          throw new InvalidDataException("Truncated ACE file name.");
+        var name = DecodeName(header.AsSpan(pos, nameSize));
+        pos += nameSize;
+        string? comment = null;
+        if ((hflags & AceConstants.FlagComment) != 0 && header.Length >= pos + 2) {
+          var size = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(pos));
+          pos += 2;
+          if (header.Length < pos + size)
+            throw new InvalidDataException("Truncated ACE file comment.");
+          comment = AceConstants.Oem.GetString(AceDecompressor.DecompressComment(header.AsSpan(pos, size)));
+        }
+        var dataOffset = stream.Position;
+        if (packSize < 0 || dataOffset + packSize > stream.Length)
+          throw new InvalidDataException($"ACE member '{name}' overruns the archive.");
+        parts.Add(new(name, hflags, packSize, origSize, dateTime, attributes, crc32, compType, quality, parameters, comment, volume, dataOffset));
+        stream.Position = dataOffset + packSize;
+      } else {
+        // recovery records and unknown headers: skip their add-size payload
+        long addSize = 0;
+        if ((hflags & AceConstants.FlagAddSize) != 0) {
+          if ((hflags & AceConstants.Flag64Bit) != 0 && header.Length >= pos + 8)
+            addSize = (long)BinaryPrimitives.ReadUInt64LittleEndian(header.AsSpan(pos));
+          else if (header.Length >= pos + 4)
+            addSize = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(pos));
+        }
+        if (addSize < 0 || stream.Position + addSize > stream.Length)
+          throw new InvalidDataException("ACE block overruns the archive.");
+        stream.Position += addSize;
       }
-      else if (header.Type == AceConstants.HeaderTypeRecovery) {
-        ReadRecoveryBlock(reader, header);
-      }
-      else {
-        // Skip unknown header types
-        if (header.DataSize > 0)
-          this._stream.Position += header.DataSize;
-      }
     }
-  }
-
-  private void ReadArchiveHeader(BinaryReader reader) {
-    // ACE archive header:
-    // offset 0: 2 bytes CRC-16 of header (from byte 4 onwards)
-    // offset 2: 2 bytes header size (from byte 4 to end of header)
-    // offset 4: 1 byte header type (0 = archive)
-    // offset 5: 2 bytes flags
-    // offset 7: 7 bytes magic "**ACE**"
-    // offset 14: 1 byte version (extract)
-    // offset 15: 1 byte version (create)
-    // offset 16: 1 byte host OS
-    // offset 17: 1 byte volume number
-    // offset 18: 4 bytes timestamp
-    // offset 22: rest depends on flags
-
-    var headerCrc = reader.ReadUInt16();
-    var headerSize = reader.ReadUInt16();
-
-    var headerStart = this._stream.Position;
-    var headerType = reader.ReadByte();
-    if (headerType != AceConstants.HeaderTypeArchive)
-      throw new InvalidDataException($"Expected ACE archive header (type 0), got type {headerType}.");
-
-    var flags = reader.ReadUInt16();
-    this.IsSolid = (flags & AceConstants.FlagSolid) != 0;
-    this.HasRecoveryRecord = (flags & AceConstants.FlagRecovery) != 0;
-
-    var magic = reader.ReadBytes(7);
-    if (Encoding.ASCII.GetString(magic) != AceConstants.Magic)
-      throw new InvalidDataException("Invalid ACE magic signature.");
-
-    this.Version = reader.ReadByte(); // extract version
-    reader.ReadByte(); // create version
-    reader.ReadByte(); // host OS
-    reader.ReadByte(); // volume number
-    reader.ReadUInt32(); // timestamp
-
-    // Skip reserved bytes (8 bytes)
-    reader.ReadBytes(8);
-
-    // AV string size
-    if ((flags & AceConstants.FlagAvString) != 0) {
-      var avSize = reader.ReadByte();
-      reader.ReadBytes(avSize);
-    }
-
-    // Comment
-    var commentSize = reader.ReadUInt16();
-    if (commentSize > 0) {
-      var commentBytes = reader.ReadBytes(commentSize);
-      this.Comment = Encoding.ASCII.GetString(commentBytes);
-    }
-
-    // Ensure we're past the header
-    this._stream.Position = headerStart + headerSize;
-  }
-
-  private BlockHeader? ReadBlockHeader(BinaryReader reader) {
-    if (this._stream.Position + 4 > this._stream.Length)
-      return null;
-
-    var headerCrc = reader.ReadUInt16();
-    var headerSize = reader.ReadUInt16();
-    if (headerSize == 0)
-      return null;
-
-    var headerStart = this._stream.Position;
-    var headerType = reader.ReadByte();
-    var flags = reader.ReadUInt16();
-
-    long dataSize = 0;
-    if (headerType == AceConstants.HeaderTypeFile) {
-      // File headers have a data size field
-    }
-
-    return new BlockHeader {
-      Crc = headerCrc,
-      Size = headerSize,
-      Type = headerType,
-      Flags = flags,
-      HeaderStart = headerStart,
-      DataSize = dataSize
-    };
-  }
-
-  private AceEntry ReadFileEntry(BinaryReader reader, BlockHeader header) {
-    var packSize = reader.ReadUInt32();
-    var origSize = reader.ReadUInt32();
-    var timestamp = reader.ReadUInt32();
-    var attributes = reader.ReadUInt32();
-    var crc32 = reader.ReadUInt32();
-
-    // TECH_INFO
-    var compType = reader.ReadByte();
-    var quality = reader.ReadByte();
-    var techParams = reader.ReadUInt16();
-
-    var dictBits = (techParams & 0x0F) + CoreAceConstants.MinDictBits;
-    if (dictBits > CoreAceConstants.MaxDictBits)
-      dictBits = CoreAceConstants.DefaultDictBits;
-
-    var fileNameLen = reader.ReadUInt16();
-    var nameBytes = reader.ReadBytes(fileNameLen);
-    var fileName = Encoding.ASCII.GetString(nameBytes);
-
-    // Skip any remaining header bytes
-    var currentPos = this._stream.Position;
-    var expectedEnd = header.HeaderStart + header.Size;
-    if (currentPos < expectedEnd)
-      this._stream.Position = expectedEnd;
-
-    var entry = new AceEntry {
-      FileName = fileName,
-      CompressedSize = packSize,
-      OriginalSize = origSize,
-      Crc32 = crc32,
-      CompressionType = compType,
-      Quality = quality,
-      DictionaryBits = dictBits,
-      Attributes = attributes,
-      Flags = header.Flags,
-      LastModified = DateTimeFromDos(timestamp),
-      DataOffset = this._stream.Position
-    };
-
-    return entry;
-  }
-
-  private void ReadRecoveryBlock(BinaryReader reader, BlockHeader header) {
-    // Recovery block body: recoveryDataSize (uint32) + sectorCount (uint32)
-    this._recoveryDataSize = (int)reader.ReadUInt32();
-    this._recoverySectorCount = (int)reader.ReadUInt32();
-
-    // Skip remaining header bytes
-    var headerEnd = header.HeaderStart + header.Size;
-    if (this._stream.Position < headerEnd)
-      this._stream.Position = headerEnd;
-
-    this._recoveryDataOffset = this._stream.Position;
-    this._stream.Position += this._recoveryDataSize;
   }
 
   /// <summary>
-  /// Verifies the recovery record against the archive's file data.
-  /// Returns <see langword="true"/> if the parity matches.
+  /// Joins the parts of members split across volumes. A part continuing from a volume that was not
+  /// given (the set was opened at a later volume) is skipped; a member whose next volume is missing
+  /// is listed as incomplete.
   /// </summary>
-  public bool VerifyRecoveryRecord() {
-    if (!this.HasRecoveryRecord || this._recoveryDataSize == 0)
-      return false;
-
-    // Read stored parity
-    this._stream.Position = this._recoveryDataOffset;
-    var storedParity = new byte[this._recoveryDataSize];
-    var totalRead = 0;
-    while (totalRead < storedParity.Length) {
-      var read = this._stream.Read(storedParity, totalRead, storedParity.Length - totalRead);
-      if (read == 0) break;
-      totalRead += read;
-    }
-
-    // Recompute parity from file compressed data
-    var computedParity = new byte[this._recoveryDataSize];
-    foreach (var entry in this._entries) {
-      this._stream.Position = entry.DataOffset;
-      var compressed = new byte[entry.CompressedSize];
-      var r = 0;
-      while (r < compressed.Length) {
-        var n = this._stream.Read(compressed, r, compressed.Length - r);
-        if (n == 0) break;
-        r += n;
+  private void JoinParts(List<FilePart> parts) {
+    var pending = new List<FilePart>();
+    foreach (var part in parts) {
+      if (pending.Count == 0) {
+        if (part.ContinuesFromPrevious) {
+          if (this._entries.Count > 0)
+            throw new InvalidDataException($"ACE member '{part.Name}' continues a member that did not end in the previous volume.");
+          continue;
+        }
+      } else {
+        if (!part.ContinuesFromPrevious)
+          throw new InvalidDataException($"ACE member '{pending[0].Name}' is not continued in the next volume.");
+        if (part.Name != pending[0].Name)
+          throw new InvalidDataException($"ACE volume continues '{part.Name}' where '{pending[0].Name}' was split.");
       }
-
-      for (var i = 0; i < compressed.Length && i < computedParity.Length; ++i)
-        computedParity[i] ^= compressed[i];
+      pending.Add(part);
+      if (!part.ContinuesInNext)
+        this.AddEntry(pending, complete: true);
     }
-
-    return storedParity.AsSpan().SequenceEqual(computedParity);
+    if (pending.Count > 0)
+      this.AddEntry(pending, complete: false);
   }
 
-  private static DateTime DateTimeFromDos(uint timestamp) {
-    var time = (int)(timestamp & 0xFFFF);
-    var date = (int)(timestamp >> 16);
-    try {
-      return new DateTime(
-        ((date >> 9) & 0x7F) + 1980,
-        Math.Max((date >> 5) & 0x0F, 1),
-        Math.Max(date & 0x1F, 1),
-        (time >> 11) & 0x1F,
-        (time >> 5) & 0x3F,
-        (time & 0x1F) * 2);
-    }
-    catch {
-      return DateTime.MinValue;
-    }
+  private void AddEntry(List<FilePart> pending, bool complete) {
+    var first = pending[0];
+    this._entries.Add(new AceEntry {
+      Index = this._entries.Count,
+      FileName = first.Name.Length > 0 ? first.Name : $"file{this._entries.Count:D4}",
+      CompressedSize = pending.Sum(p => p.PackSize),
+      OriginalSize = first.OrigSize,
+      Crc32 = pending[^1].Crc32,
+      CompressionType = first.CompType,
+      Quality = first.Quality,
+      DictionaryBits = (first.Parameters & 15) + 10,
+      LastModified = FromDos(first.DateTime),
+      Attributes = first.Attributes,
+      Flags = first.Flags,
+      Comment = first.Comment,
+      DataOffset = first.DataOffset,
+      IsComplete = complete,
+      Segments = pending.Select(p => (p.Volume, p.DataOffset, p.PackSize)).ToArray(),
+    });
+    pending.Clear();
   }
 
-  private sealed class BlockHeader {
-    public ushort Crc;
-    public ushort Size;
-    public byte Type;
-    public ushort Flags;
-    public long HeaderStart;
-    public long DataSize;
+  /// <summary>Returns a member's decompressed bytes, verifying its CRC.</summary>
+  public byte[] ExtractEntry(AceEntry entry) {
+    ArgumentNullException.ThrowIfNull(entry);
+    if (!entry.IsComplete)
+      throw new InvalidDataException($"ACE member '{entry.FileName}' continues in a volume that was not found.");
+    // Solid members depend on everything decoded before them: restart from the first member when
+    // asked to go back, and decode (and verify) the members in between.
+    if (this.IsSolid && entry.Index != this._nextIndex) {
+      if (entry.Index < this._nextIndex) {
+        this._decompressor = new AceDecompressor();
+        this._nextIndex = 0;
+      }
+      while (this._nextIndex < entry.Index)
+        this.Decode(this._entries[this._nextIndex]);
+    }
+    return this.Decode(entry);
   }
 
-  /// <inheritdoc />
-  public void Dispose() {
-    if (!this._disposed) {
-      this._disposed = true;
-      if (!this._leaveOpen)
-        this._stream.Dispose();
+  private byte[] ReadPacked(AceEntry entry) {
+    var packed = new byte[entry.CompressedSize];
+    var at = 0;
+    foreach (var (volume, offset, length) in entry.Segments) {
+      var stream = this._volumes[volume];
+      stream.Position = offset;
+      stream.ReadExactly(packed.AsSpan(at, (int)length));
+      at += (int)length;
     }
+    return packed;
+  }
+
+  private byte[] Decode(AceEntry entry) {
+    byte[] data;
+    if (entry.IsDirectory || entry.OriginalSize == 0)
+      data = [];
+    else {
+      if (!entry.IsComplete)
+        throw new InvalidDataException($"ACE member '{entry.FileName}' continues in a volume that was not found.");
+      var packed = this.ReadPacked(entry);
+      if (entry.IsEncrypted) {
+        if (string.IsNullOrEmpty(this._password))
+          throw new InvalidOperationException($"ACE member '{entry.FileName}' is encrypted; a password is required.");
+        if (packed.Length % 8 != 0)
+          throw new InvalidDataException("Encrypted ACE member is not a whole number of cipher blocks.");
+        new AceBlowfish(this._password).Decrypt(packed);
+      }
+      try {
+        data = this._decompressor.Decompress(packed, entry.OriginalSize, entry.CompressionType, entry.DictionaryBits);
+      } catch (InvalidDataException) when (entry.IsEncrypted) {
+        throw new InvalidDataException($"ACE member '{entry.FileName}': wrong password or corrupt data.");
+      }
+      if (AceConstants.AceCrc32(data) != entry.Crc32)
+        throw new InvalidDataException(entry.IsEncrypted
+          ? $"ACE member '{entry.FileName}': wrong password or corrupt data."
+          : $"ACE member '{entry.FileName}': CRC mismatch.");
+    }
+    this._nextIndex = entry.Index + 1;
+    return data;
   }
 }

@@ -1,4 +1,25 @@
 <Project>
+
+  <!--
+    SfxSlim builds a reduced flavour of the library for the self-extracting stubs. It must never
+    share bin/obj with the ordinary build: both produce Compression.Lib.dll, and the slim one
+    silently replacing the full one leaves every other project in the same run linked against a
+    library missing half its formats. Redirecting here (rather than in a csproj) catches the whole
+    project graph, and is early enough for the intermediate path to take effect.
+  -->
+  <PropertyGroup Condition="'$(SfxSlim)' == 'true'">
+    <BaseOutputPath>bin\slim\</BaseOutputPath>
+    <BaseIntermediateOutputPath>obj\slim\</BaseIntermediateOutputPath>
+    <!-- Moving the intermediate path stops obj\ itself from being the excluded directory, so the
+         ordinary build's generated AssemblyInfo would otherwise be swept up by the default glob
+         and every assembly attribute would be declared twice. Excluding the whole tree rather than
+         named configurations, because a RuntimeIdentifier or Platform adds another path segment
+         (obj\Release vs objd\Release) and an enumerated list silently stops matching. The
+         generated AssemblyInfo the slim build does need is added explicitly by the SDK, not by
+         this glob. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;bin\**</DefaultItemExcludes>
+  </PropertyGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <LangVersion>14</LangVersion>
@@ -10,6 +31,7 @@
          missing/duplicate param tags) stay warnings — a broken doc link is a
          documentation nit, not something that should ever fail a build. -->
     <WarningsNotAsErrors>CS1570;CS1571;CS1572;CS1573;CS1574;CS1580;CS1581;CS1584;CS1587;CS1591</WarningsNotAsErrors>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Version>1.0.0</Version>
     <Authors>Hawkynt</Authors>
     <!-- Must match the file on disk exactly. Every packable project here overrides this anyway, so
@@ -24,15 +46,6 @@
     <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-  </PropertyGroup>
-
-  <!-- Host runtime identifier (linux-<arch>, or osx-<arch> on macOS). The executable projects
-       default their <RuntimeIdentifier> to it so a plain `dotnet build` produces a native apphost
-       for the machine it runs on. -->
-  <PropertyGroup>
-    <_HostRidOs Condition="$([MSBuild]::IsOSPlatform('OSX'))">osx</_HostRidOs>
-    <_HostRidOs Condition="'$(_HostRidOs)' == ''">linux</_HostRidOs>
-    <HostRuntimeIdentifier>$(_HostRidOs)-$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())</HostRuntimeIdentifier>
   </PropertyGroup>
 
   <!-- The AMR codecs and containers needed a hand-placed reference here so they took part in

@@ -45,6 +45,11 @@ public static partial class FormatRegistration {
         => InPlaceConverter.TryConvert(stream, srcId, dstId)
            is InPlaceConversionResult.Succeeded or InPlaceConversionResult.NoOp;
 
+      // ZIP method 97 (WinZip WavPack): the stored stream is a wrapped WavPack image of
+      // the original WAV file; the codec lives in the audio package.
+      FileFormat.Zip.ZipMethodCodecs.Register(97,
+        (compressed, _) => Codec.WavPack.WavPackWrapper.Unpack(compressed));
+
       PartitionEditor.InPlaceFilesystemResizer = (stream, fsId, newSize, isShrink) => {
         if (!FilesystemResizer.IsSupported(fsId)) return false;
         if (isShrink) FilesystemResizer.Shrink(stream, fsId, newSize);
@@ -90,5 +95,8 @@ public static partial class FormatRegistration {
     FormatRegistry.Register(new CompoundTarDescriptor("TarLz4", "tar.lz4", "Lz4", ".tar.lz4", [".tar.lz4"]));
     FormatRegistry.Register(new CompoundTarDescriptor("TarLzip", "tar.lz", "Lzip", ".tar.lz", [".tar.lz", ".tlz"]));
     FormatRegistry.Register(new CompoundTarDescriptor("TarBr", "tar.br", "Brotli", ".tar.br", [".tar.br", ".tbr"]));
+    FormatRegistry.Register(new CompoundTarDescriptor("TarZ", "tar.Z", "Compress", ".tar.Z", [".tar.z"]));
+    FormatRegistry.Register(new CompoundTarDescriptor("TarLzma", "tar.lzma", "Lzma", ".tar.lzma", [".tar.lzma"]));
+    FormatRegistry.Register(new CompoundTarDescriptor("TarLzo", "tar.lzo", "Lzop", ".tar.lzo", [".tar.lzo"]));
   }
 }

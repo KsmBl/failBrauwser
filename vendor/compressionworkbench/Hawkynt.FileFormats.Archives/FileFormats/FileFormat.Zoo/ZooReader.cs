@@ -34,11 +34,12 @@ public sealed class ZooReader : IDisposable {
 
     this._stream.Position = entry.DataOffset;
     var compressed = new byte[entry.CompressedSize];
-    ReadFully(this._stream, compressed);
+    this._stream.ReadExactly(compressed);
 
     byte[] data = entry.CompressionMethod switch {
       ZooCompressionMethod.Store => compressed,
       ZooCompressionMethod.Lzw => DecompressLzw(compressed, entry.OriginalSize),
+      ZooCompressionMethod.Lzh => ZooLzhCodec.Decode(compressed, entry.OriginalSize),
       _ => throw new NotSupportedException($"Unsupported Zoo compression method: {(byte)entry.CompressionMethod}."),
     };
 
@@ -65,7 +66,7 @@ public sealed class ZooReader : IDisposable {
 
     this._stream.Position = 20;
     Span<byte> core = stackalloc byte[14];
-    ReadFully(this._stream, core);
+    this._stream.ReadExactly(core);
     var magic = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(core);
     if (magic != ZooConstants.Magic)
       throw new InvalidDataException($"Invalid Zoo magic: 0x{magic:X8}.");
@@ -84,6 +85,10 @@ public sealed class ZooReader : IDisposable {
 
       var parsed = ZooDirectoryCodec.ReadHeader(this._stream, nextOffset);
       var entry = parsed.Entry;
+      // Zoo's end-of-directory entry: link 0, no name, no data. (Archives that end on a real member
+      // whose link is 0 still list that member.)
+      if (parsed.NextOffset == 0 && entry.DataOffset == 0 && string.IsNullOrEmpty(entry.EffectiveName))
+        break;
       if (entry.DataOffset < 0 || entry.DataOffset > this._stream.Length - entry.CompressedSize)
         throw new InvalidDataException($"Zoo member '{entry.EffectiveName}' points outside the archive.");
 
@@ -108,17 +113,4 @@ public sealed class ZooReader : IDisposable {
       bitOrder: BitOrder.LsbFirst);
     return decoder.Decode((int)originalSize);
   }
-
-  private static void ReadFully(Stream stream, Span<byte> buffer) {
-    var offset = 0;
-    while (offset < buffer.Length) {
-      var read = stream.Read(buffer[offset..]);
-      if (read == 0)
-        throw new EndOfStreamException("Unexpected end of Zoo archive data.");
-      offset += read;
-    }
-  }
-
-  private static void ReadFully(Stream stream, byte[] buffer)
-    => ReadFully(stream, buffer.AsSpan());
 }

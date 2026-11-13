@@ -1,45 +1,52 @@
 namespace FileFormat.Ace;
 
-/// <summary>
-/// Represents a file entry in an ACE archive.
-/// </summary>
+/// <summary>One member of an ACE archive, as its file header describes it.</summary>
 public sealed class AceEntry {
-  /// <summary>Gets or sets the file name.</summary>
-  public string FileName { get; set; } = "";
+  /// <summary>Member path with '/' separators (ACE stores '\').</summary>
+  public string FileName { get; init; } = "";
 
-  /// <summary>Gets or sets the compressed size in bytes.</summary>
-  public long CompressedSize { get; set; }
+  public long CompressedSize { get; init; }
 
-  /// <summary>Gets or sets the original (uncompressed) size in bytes.</summary>
-  public long OriginalSize { get; set; }
+  public long OriginalSize { get; init; }
 
-  /// <summary>Gets or sets the CRC-32 of the original data.</summary>
-  public uint Crc32 { get; set; }
+  /// <summary>ACE CRC-32 (not inverted) of the uncompressed data.</summary>
+  public uint Crc32 { get; init; }
 
-  /// <summary>Gets or sets the compression type (0=store, 1=ACE 1.0, 2=ACE 2.0).</summary>
-  public int CompressionType { get; set; }
+  /// <summary>0 stored, 1 ACE 1.0 LZ77, 2 ACE 2.0 blocked.</summary>
+  public int CompressionType { get; init; }
 
-  /// <summary>Gets or sets the compression quality/level.</summary>
-  public int Quality { get; set; }
+  public int Quality { get; init; }
 
-  /// <summary>Gets or sets the dictionary bits (10-22).</summary>
-  public int DictionaryBits { get; set; }
+  public int DictionaryBits { get; init; }
 
-  /// <summary>Gets or sets the last modification time.</summary>
-  public DateTime LastModified { get; set; }
+  public DateTime LastModified { get; init; }
 
-  /// <summary>Gets or sets the file attributes.</summary>
-  public uint Attributes { get; set; }
+  public uint Attributes { get; init; }
 
-  /// <summary>Gets or sets the file header flags.</summary>
-  public ushort Flags { get; set; }
+  public ushort Flags { get; init; }
 
-  /// <summary>Gets whether the file is encrypted.</summary>
-  public bool IsEncrypted => (this.Flags & AceConstants.FileFlagEncrypted) != 0;
+  public string? Comment { get; init; }
 
-  /// <summary>Gets whether this entry is part of a solid block.</summary>
+  public bool IsDirectory => (this.Attributes & AceConstants.AttributeDirectory) != 0;
+
+  public bool IsEncrypted => (this.Flags & AceConstants.FileFlagPassword) != 0;
+
   public bool IsSolid => (this.Flags & AceConstants.FileFlagSolid) != 0;
 
-  /// <summary>Gets or sets the offset of compressed data in the stream.</summary>
-  internal long DataOffset { get; set; }
+  /// <summary>Whether the member is split across volumes of a multi-volume set.</summary>
+  public bool IsContinued => (this.Flags & (AceConstants.FileFlagContinuedFromPrevious | AceConstants.FileFlagContinuedInNext)) != 0;
+
+  /// <summary>Whether every volume the member spans was found; an incomplete member is listed but not extracted.</summary>
+  public bool IsComplete { get; init; } = true;
+
+  /// <summary>Number of volumes the member's data spans (1 for an ordinary member).</summary>
+  public int VolumeCount => this.Segments.Count;
+
+  internal int Index { get; init; }
+
+  /// <summary>Offset of the member's data in the volume it starts in.</summary>
+  internal long DataOffset { get; init; }
+
+  /// <summary>Where the member's packed bytes lie: volume number, offset and length, in order.</summary>
+  internal IReadOnlyList<(int Volume, long Offset, long Length)> Segments { get; init; } = [];
 }

@@ -14,16 +14,31 @@ failBrauwser builds on its own:
 | `Compression.Core` | compression primitives and shared containers (ZIP, …) |
 | `Compression.Registry`, `Compression.Registry.Generator` | format contracts and their source-generated registration |
 | `Hawkynt.FileFormats.Archives`, `.FileSystems`, `.Audio` | the formats themselves |
+| `FileFormats/FileFormat.Ani`, `FileFormats/FileFormat.Ico` | Windows cursors and icons (read through `Hawkynt.FileFormats.Images`) |
 | `Hawkynt.Algorithms.Checksums`, `.Hashing` | checksums and hashes |
 
-Upstream: https://github.com/Hawkynt/CompressionWorkbench, based on commit `8a4df931`
-("README rewritten for the Linux GTK desktop app").
+Upstream: https://github.com/Hawkynt/CompressionWorkbench, commit `b9c490df` of 2026-11-13
+("Integrate multi-device ZFS edits and StuffIt 5 encryption"). Until then failBrauwser carried
+a copy of upstream `17200a6d` (2026-09-28) with the changes listed below; that copy was merged
+into the new one, and where both had changed a file, upstream's version was taken.
 
 License: LGPL-3.0-or-later (`LICENSE` here); third-party notices in
 `THIRD-PARTY-NOTICES.md`. The NuGet package `Hawkynt.FileFormats.Images` (also by Hawkynt)
 is fetched at build time.
 
 ## Changes made for failBrauwser
+
+Still local (candidates for upstream pull requests):
+
+- (fix) removing entries through a rebuild matches names exactly in case
+  (`RebuildVerb.DeleteNamedEntries`): on Linux `A.txt` and `a.txt` are two entries, and
+  removing one removed both
+- (fix) NTFS, FAT and ext remove each entry once when a folder and entries inside it are both
+  named; the second removal failed with "not found"
+- `Compression.Registry/RebuildStaging.cs`, failBrauwser's former rebuild staging, kept for the
+  helper's tests (`RebuildStaging.Normalize`)
+
+Earlier changes, all taken over upstream by 2026-11-13 (in its own words and code):
 
 - `39965dfa` (test) rebuild edit semantics: exact names, folders, case, times
 - `950b150e` (fix) tar keeps times and executable bits, lists times as UTC

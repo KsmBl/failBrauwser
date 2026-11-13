@@ -1,7 +1,7 @@
 #pragma warning disable CS1591
 using System.Buffers.Binary;
 using System.Text;
-using Compression.Registry.Cvf;
+using Compression.Core.FileSystems.Cvf;
 
 namespace FileSystem.DriveSpace3;
 
@@ -12,9 +12,7 @@ namespace FileSystem.DriveSpace3;
 /// driver), which detects this writer's output as "drivespace 3 CVF", mounts it,
 /// lists the inner directory and reads every file back byte-exact.
 /// <para>
-/// Unlike <see cref="DriveSpace3Writer"/> (the older self-round-trip
-/// <c>MS_DSP3</c>/offset-36 layout — which the real driver <i>rejects</i>),
-/// DriveSpace 3 is in fact a member of the DOS <c>MSDBL6.0</c> CVF family: the
+/// DriveSpace 3 is a member of the DOS <c>MSDBL6.0</c> CVF family: the
 /// same container as <see cref="FileSystem.DoubleSpace.GenuineCvfWriter"/>, but
 /// distinguished by <c>64</c> sectors per cluster (32&#160;KB clusters,
 /// boot byte&#160;13), a <c>version_flag = 3</c> (boot byte&#160;51) and a
@@ -53,10 +51,12 @@ public sealed class GenuineDvr3Writer {
   /// Default (before 1980) leaves the FAT date/time fields zero.</summary>
   public DateTime Timestamp { get; init; }
 
-  /// <summary>Per-cluster compression codec. <see cref="Compression.Registry.Cvf.CvfLzMethod.Stored"/>
-  /// (default) emits uncompressed clusters; DS/JM emit genuine DriveSpace 3 compressed clusters.</summary>
-  public Compression.Registry.Cvf.CvfLzMethod CompressionMethod { get; init; }
-    = Compression.Registry.Cvf.CvfLzMethod.Stored;
+  /// <summary>Per-cluster compression codec: <see cref="Compression.Core.FileSystems.Cvf.CvfLzMethod.Stored"/>
+  /// (default), JM (JM-0-0, DriveSpace 3 <i>Normal</i>), SQ (SQ-0-0, <i>Ultra</i>) or Auto (per cluster the
+  /// smaller of JM and SQ) — the codecs the real DriveSpace 3 driver writes. Anything else is refused by
+  /// <see cref="Build"/>.</summary>
+  public Compression.Core.FileSystems.Cvf.CvfLzMethod CompressionMethod { get; init; }
+    = Compression.Core.FileSystems.Cvf.CvfLzMethod.Stored;
 
   /// <summary>Codec effort (search depth). Higher = better ratio, slower.</summary>
   public int CompressionLevel { get; init; } = 1;
@@ -65,6 +65,8 @@ public sealed class GenuineDvr3Writer {
   /// (as long as it still fits the cluster's sector budget); otherwise the
   /// smaller of compressed/stored is chosen per cluster (auto-best).</summary>
   public bool ForceCompress { get; init; }
+
+  private static byte[] Smaller(byte[] a, byte[] b) => b.Length < a.Length ? b : a;
 
   /// <summary>Adds a file to the root directory of the compressed volume.</summary>
   public void AddFile(string name, byte[] data) {
@@ -115,12 +117,17 @@ public sealed class GenuineDvr3Writer {
     this._rootLog = Resv + NumFats * this._fatSize;
     this._firstData = this._rootLog + RootSecs;
 
-    // 2. Compress each cluster (auto-best), assigning packed physical sectors.
+    // 2. Compress each cluster, assigning packed physical sectors. Only DriveSpace 3's own codecs
+    // are written: JM and SQ (DS belongs to DoubleSpace volumes).
+    if (this.CompressionMethod is not (CvfLzMethod.Stored or CvfLzMethod.Jm or CvfLzMethod.Sq or CvfLzMethod.Auto))
+      throw new NotSupportedException($"DriveSpace 3 writes stored, JM or SQ clusters; {this.CompressionMethod} is not a DriveSpace 3 codec.");
     var physDataStart = this._innerBase + this._firstData;
     var physCursor = physDataStart;
     var layout = new List<ClusterPlan>();
     foreach (var (cl, full) in clusterFull) {
-      var comp = CvfLzCodec.Encode(full, this.CompressionMethod, this.CompressionLevel);
+      var comp = this.CompressionMethod == CvfLzMethod.Auto
+        ? Smaller(CvfLzCodec.Encode(full, CvfLzMethod.Jm, this.CompressionLevel)!, CvfLzCodec.Encode(full, CvfLzMethod.Sq, this.CompressionLevel)!)
+        : CvfLzCodec.Encode(full, this.CompressionMethod, this.CompressionLevel);
       var ksize = comp is null ? Spc : (comp.Length + Ss - 1) / Ss;
       if (comp is not null && ksize <= Spc && (ksize < Spc || this.ForceCompress)) {
         layout.Add(new ClusterPlan(cl, comp, ksize, true, physCursor));

@@ -1,6 +1,7 @@
 #pragma warning disable CS1591
 using System.Buffers.Binary;
-using System.IO.Compression;
+using Compression.Core.Deflate;
+using Compression.Core.Streams;
 
 namespace FileFormat.Qcow2;
 
@@ -21,10 +22,18 @@ internal readonly record struct Qcow2Header(
   ulong CompatibleFeatures,
   ulong AutoclearFeatures,
   uint RefcountOrder,
-  uint HeaderLength
+  uint HeaderLength,
+  byte CompressionType = 0,
+  string? BackingFormat = null,
+  long FdeOffset = 0,
+  long FdeLength = 0
 ) {
   public int ClusterSize => 1 << this.ClusterBits;
-  public int L2Entries => this.ClusterSize / sizeof(ulong);
+  /// <summary>Whether L2 entries carry a 64-bit subcluster bitmap (128-bit entries).</summary>
+  public bool ExtendedL2 => (this.IncompatibleFeatures & Qcow2Structures.IncompatibleExtendedL2) != 0;
+  public int L2EntrySize => this.ExtendedL2 ? 16 : 8;
+  public int L2Entries => this.ClusterSize / this.L2EntrySize;
+  public bool HasBackingFile => this.BackingFileOffset != 0 && this.BackingFileSize != 0;
   public int RefcountBits => 1 << checked((int)this.RefcountOrder);
   public int RefcountEntriesPerBlock => checked(this.ClusterSize * 8 / this.RefcountBits);
 }
@@ -39,6 +48,31 @@ internal static class Qcow2Structures {
   internal const ulong RefcountBlockOffsetMask = 0xFFFF_FFFF_FFFF_FE00UL;
   internal const ulong L1ReservedMask = 0x7F00_0000_0000_01FFUL;
   internal const ulong StandardL2ReservedMask = 0x3F00_0000_0000_01FEUL;
+
+  // Incompatible feature bits (qcow2.txt, "incompatible_features").
+  internal const ulong IncompatibleDirty = 1UL << 0;
+  internal const ulong IncompatibleCorrupt = 1UL << 1;
+  internal const ulong IncompatibleExternalData = 1UL << 2;
+  internal const ulong IncompatibleCompressionType = 1UL << 3;
+  internal const ulong IncompatibleExtendedL2 = 1UL << 4;
+  private const ulong KnownIncompatible = IncompatibleDirty | IncompatibleCorrupt | IncompatibleExternalData
+                                          | IncompatibleCompressionType | IncompatibleExtendedL2;
+
+  internal const byte CompressionZlib = 0;
+  internal const byte CompressionZstd = 1;
+
+  // Header extension types.
+  private const uint ExtensionEnd = 0;
+  private const uint ExtensionBackingFormat = 0xE2792ACA;
+  private const uint ExtensionFullDiskEncryption = 0x0537BE77;
+
+  // crypt_method values (qcow2.txt).
+  internal const uint CryptNone = 0;
+  internal const uint CryptAes = 1;
+  internal const uint CryptLuks = 2;
+
+  /// <summary>Number of subclusters per cluster when extended L2 entries are enabled.</summary>
+  internal const int Subclusters = 32;
 
   internal static Qcow2Header ReadHeader(Stream stream) {
     ArgumentNullException.ThrowIfNull(stream);
@@ -114,6 +148,41 @@ internal static class Qcow2Structures {
     if (refcountTableClustersRaw > 0 && (refcountTableOffset == 0 || (refcountTableOffset & (clusterSize - 1)) != 0))
       throw new InvalidDataException("QCOW2: refcount table is not cluster aligned.");
 
+    // compression_type (v3, header_length > 104) and the header extensions behind the header.
+    byte compressionType = 0;
+    string? backingFormat = null;
+    long fdeOffset = 0, fdeLength = 0;
+    var extensionsStart = version == 3 ? headerLength : 72U;
+    var headerAreaEnd = Math.Min(clusterSize, stream.Length);
+    if (version == 3 && headerLength > 104 && headerLength <= headerAreaEnd) {
+      stream.Position = 104;
+      compressionType = (byte)stream.ReadByte();
+    }
+    if (extensionsStart + 8 <= headerAreaEnd) {
+      var area = new byte[headerAreaEnd - extensionsStart];
+      stream.Position = extensionsStart;
+      stream.ReadExactly(area);
+      for (var at = 0; at + 8 <= area.Length;) {
+        var type = BinaryPrimitives.ReadUInt32BigEndian(area.AsSpan(at));
+        var length = BinaryPrimitives.ReadUInt32BigEndian(area.AsSpan(at + 4));
+        if (type == ExtensionEnd)
+          break;
+        if (length > area.Length - at - 8)
+          throw new InvalidDataException("QCOW2: header extension runs past the first cluster.");
+        if (type == ExtensionBackingFormat)
+          backingFormat = System.Text.Encoding.ASCII.GetString(area, at + 8, (int)length);
+        else if (type == ExtensionFullDiskEncryption && length >= 16) {
+          var offset = BinaryPrimitives.ReadUInt64BigEndian(area.AsSpan(at + 8));
+          var size = BinaryPrimitives.ReadUInt64BigEndian(area.AsSpan(at + 16));
+          if (offset > long.MaxValue || size > int.MaxValue)
+            throw new InvalidDataException("QCOW2: the encryption header pointer is out of range.");
+          fdeOffset = (long)offset;
+          fdeLength = (long)size;
+        }
+        at += 8 + (int)((length + 7) & ~7U);
+      }
+    }
+
     return new Qcow2Header(
       version,
       backingFileOffset,
@@ -131,17 +200,45 @@ internal static class Qcow2Structures {
       compatibleFeatures,
       autoclearFeatures,
       refcountOrder,
-      headerLength);
+      headerLength,
+      compressionType,
+      backingFormat,
+      fdeOffset,
+      fdeLength);
   }
 
+  /// <summary>
+  /// Refuses what the reader cannot decode: unknown encryption methods, an external data file,
+  /// unknown incompatible features and unknown compression types. AES and LUKS images are read
+  /// with a password (<see cref="Qcow2Encryption"/>). Dirty and corrupt images are read
+  /// (QEMU reads them too; neither bit changes what the guest clusters contain), zstd clusters
+  /// and extended L2 entries are decoded, and backing files are followed by <see cref="Qcow2Stream"/>.
+  /// </summary>
   internal static void ValidateReadableProfile(in Qcow2Header header) {
-    if (header.BackingFileOffset != 0 || header.BackingFileSize != 0)
-      throw new NotSupportedException("QCOW2: backing files require an external path resolver and are not supported by the stream reader.");
-    if (header.CryptMethod != 0)
-      throw new NotSupportedException("QCOW2: encrypted images are not supported.");
-    if (header.IncompatibleFeatures != 0)
-      throw new NotSupportedException($"QCOW2: unsupported incompatible feature mask 0x{header.IncompatibleFeatures:X16}.");
+    if (header.CryptMethod is not (CryptNone or CryptAes or CryptLuks))
+      throw new NotSupportedException($"QCOW2: encryption method {header.CryptMethod} is not supported.");
+    if (header.CryptMethod == CryptLuks && header.FdeLength < Compression.Core.Crypto.Luks1Header.HeaderSize)
+      throw new InvalidDataException("QCOW2: a LUKS-encrypted image without its encryption header pointer.");
+    var unknown = header.IncompatibleFeatures & ~KnownIncompatible;
+    if (unknown != 0)
+      throw new NotSupportedException($"QCOW2: unsupported incompatible feature mask 0x{unknown:X16}.");
+    if ((header.IncompatibleFeatures & IncompatibleExternalData) != 0)
+      throw new NotSupportedException("QCOW2: guest data in an external data file is not supported.");
+    var declared = (header.IncompatibleFeatures & IncompatibleCompressionType) != 0;
+    if (!declared && header.CompressionType != CompressionZlib)
+      throw new InvalidDataException("QCOW2: a compression type other than zlib needs the compression-type feature bit.");
+    if (header.CompressionType is not (CompressionZlib or CompressionZstd))
+      throw new NotSupportedException($"QCOW2: compression type {header.CompressionType} is not supported.");
+    if (header.ExtendedL2 && header.ClusterBits < 14)
+      throw new InvalidDataException("QCOW2: extended L2 entries need clusters of at least 16 KiB.");
   }
+
+  /// <summary>
+  /// A self-contained image without encryption or incompatible features: the only kind a
+  /// rebuild or an in-place write may touch without changing what the image means.
+  /// </summary>
+  internal static bool IsSelfContainedPlain(in Qcow2Header header)
+    => !header.HasBackingFile && header.BackingFileOffset == 0 && header.CryptMethod == 0 && header.IncompatibleFeatures == 0;
 
   internal static bool IsWritableProfile(in Qcow2Header header)
     => header.BackingFileOffset == 0
@@ -218,13 +315,22 @@ internal static class Qcow2Structures {
     return (hostOffset, (int)bytesFromOffset);
   }
 
-  internal static void InflateCompressedCluster(Stream stream, ulong entry, int clusterBits, Span<byte> destination) {
+  internal static void InflateCompressedCluster(Stream stream, ulong entry, int clusterBits, Span<byte> destination)
+    => InflateCompressedCluster(stream, entry, clusterBits, CompressionZlib, destination);
+
+  /// <summary>
+  /// Decodes one compressed cluster: raw deflate (compression type 0) or a zstd frame (type 1),
+  /// read from the sector-rounded range the descriptor names; bytes after the stream are padding.
+  /// </summary>
+  internal static void InflateCompressedCluster(Stream stream, ulong entry, int clusterBits, byte compressionType, Span<byte> destination) {
     var (offset, maximumLength) = DecodeCompressedRange(entry, clusterBits, stream.Length);
     var compressed = new byte[maximumLength];
     ReadExactlyAt(stream, offset, compressed);
 
     using var source = new MemoryStream(compressed, writable: false);
-    using var inflater = new DeflateStream(source, CompressionMode.Decompress, leaveOpen: false);
+    using Stream inflater = compressionType == CompressionZstd
+      ? new FileFormat.Zstd.ZstdStream(source, CompressionStreamMode.Decompress, leaveOpen: false)
+      : new RawDeflateStream(source, CompressionStreamMode.Decompress, leaveOpen: false);
     var total = 0;
     while (total < destination.Length) {
       var read = inflater.Read(destination[total..]);

@@ -8,9 +8,10 @@ namespace FileSystem.Iso;
 public sealed record IsoBootEntry(byte Platform, byte MediaType, ushort LoadSegment, byte SystemType, ushort SectorCount, uint LoadRba);
 
 /// <summary>
-/// Boot information of an existing ISO image (added for failBrauwser, so edited images keep
-/// booting): El Torito entries, the catalog location, and whether the image is "hybrid"
-/// (bootable from a USB stick through a partition table in the system area).
+/// Boot information of an existing ISO image, so an edit can keep it booting: its El Torito
+/// entries (El Torito Bootable CD-ROM Format Specification 1.0), the catalog location, and
+/// whether the image is "hybrid" (bootable from a USB stick through a partition table in the
+/// system area).
 /// </summary>
 public static class IsoBoot {
   private const int SectorSize = 2048;

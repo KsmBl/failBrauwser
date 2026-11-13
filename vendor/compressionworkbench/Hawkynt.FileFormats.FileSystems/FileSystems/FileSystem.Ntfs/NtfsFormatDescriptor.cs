@@ -20,6 +20,9 @@ namespace FileSystem.Ntfs;
 /// </summary>
 public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IArchiveShrinkable, IArchiveModifiable, IArchiveDefragmentable, IFilesystemExtentMap, IFilesystemBlockMover, IWipeEmpty, IFormatOptionsSchema, ILayoutOptimizable {
 
+  /// <inheritdoc />
+  public DefragFeature SupportedDefragFeatures => DefragFeature.Packing | DefragFeature.CarveHole | DefragFeature.AscendingOrder | DefragFeature.MetadataZone | DefragFeature.LayoutTemplate;
+
   // The optimization adapters are keyed on this descriptor's runtime type, so the
   // registration has to have run before any instance can be looked up. Doing it from
   // the type initializer gives exactly that guarantee without a module initializer.
@@ -186,14 +189,21 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
         image.Position = 0;
         using var reader = new NtfsReader(image);
         var sizeMap = new Dictionary<string, long>(StringComparer.Ordinal);
+        var ambiguous = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in reader.Entries) {
           if (entry.IsDirectory) continue;
           // The extent map keys regular files by their leaf $FILE_NAME; the
           // reader surfaces the full path. Re-key to the leaf to line them up.
           var leaf = entry.Name.Contains('/') ? entry.Name[(entry.Name.LastIndexOf('/') + 1)..] : entry.Name;
-          if (usedExtentCount.GetValueOrDefault(leaf) == 1)
-            sizeMap[leaf] = entry.Size;
+          // Two files sharing a leaf in different folders cannot be told apart by
+          // that key: the size of a small resident one would be applied to the
+          // run of a large one and the tip wipe would cut into live data. Neither
+          // gets a tip wipe.
+          if (!sizeMap.TryAdd(leaf, entry.Size)) ambiguous.Add(leaf);
         }
+        foreach (var leaf in ambiguous) sizeMap.Remove(leaf);
+        foreach (var leaf in sizeMap.Keys.ToList())
+          if (usedExtentCount.GetValueOrDefault(leaf) != 1) sizeMap.Remove(leaf);
         fileSizeLookup = name => sizeMap.TryGetValue(name, out var s) ? s : -1;
       } catch {
         fileSizeLookup = null;
@@ -236,7 +246,7 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     // reachable for volumes that fit in one. Larger ones go straight to the rebuild
     // path below, which streams both halves.
     try {
-      if (!input.CanSeek || input.Length > MaxBufferedImageBytes)
+      if (!input.CanSeek || input.Length > Array.MaxLength)
         throw new NotSupportedException("volume too large for the in-place shrinker");
 
       input.Position = 0;
@@ -259,8 +269,13 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
       // buffering the volume failed (too long for a MemoryStream); fall through
     }
 
-    // Default behaviour: verified rebuild that never grows/corrupts, else copy-through.
-    ((IArchiveShrinkable)this).ShrinkDefault(input, output);
+    // Nothing could be trimmed in place. The volume is handed back as it is rather
+    // than rebuilt: a rebuilt volume would be smaller only by dropping the label,
+    // serial number, security descriptors, streams and timestamps of its files.
+    input.Position = 0;
+    output.Position = 0;
+    output.SetLength(0);
+    input.CopyTo(output);
   }
 
   /// <summary>
@@ -270,29 +285,21 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     => this.Defragment(archive, new DefragOptions { Mode = DefragMode.ConsolidateAtStart });
 
   /// <summary>
-  /// Mode-aware NTFS defragmentor. Supports planner-driven in-place path
-  /// (using <see cref="DefragPlanner"/> + <see cref="NtfsBlockMover"/>) and the
-  /// legacy rebuild path (using <see cref="DefragRebuilder"/>). Falls back to
-  /// rebuild when the planner path throws (e.g. data-run re-encoding changes
-  /// byte length with no slack space).
+  /// Mode-aware NTFS defragmentor: planner-driven and in place (<see cref="DefragPlanner"/>
+  /// + <see cref="NtfsBlockMover"/>) for the packing modes, a carved hole, ascending order,
+  /// a metadata placement and layout templates. Block interleave is refused before a byte moves.
   /// </summary>
+  /// <remarks>
+  /// There is no rebuild fallback. Writing the volume afresh keeps its size but drops the
+  /// label, serial number, security descriptors, alternate data streams, reparse points,
+  /// timestamps and attributes — a defragmentation that loses metadata is not one.
+  /// </remarks>
   public void Defragment(Stream archive, DefragOptions options) {
     ArgumentNullException.ThrowIfNull(options);
-    if (options.Mode is DefragMode.ConsolidateAtStart or DefragMode.ConsolidateAtEnd or DefragMode.FillHolesLazy) {
-      try {
-        DefragmentWithPlanner(archive, options);
-        return;
-      } catch (Exception planFailure) {
-        // A silent fallback looks exactly like a successful in-place
-        // defragmentation from outside, so the reason is reported.
-        options.OnProgress?.Invoke(new DefragProgressEvent(
-          "fallback", 0, -1, -1, archive.Length, null,
-          $"In-place planning declined ({planFailure.GetType().Name}: " +
-          $"{FirstLine(planFailure.Message)}); rebuilding instead"));
-        archive.Position = 0;
-      }
-    }
-    DefragmentWithRebuild(archive, options);
+    // Interleaving deals a file's clusters out one by one, and a run list with a run
+    // per cluster outgrows the file's MFT record long before the file is large.
+    DefragSupport.Require(options, this.SupportedDefragFeatures, "NTFS");
+    DefragmentWithPlanner(archive, options);
   }
 
   private void DefragmentWithPlanner(Stream archive, DefragOptions options) {
@@ -331,9 +338,11 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     // backup — so that, and not the file's length, is what bounds a layout.
     var volumeEnd = mover.VolumeEndByte > 0 ? Math.Min(mover.VolumeEndByte, archive.Length) : archive.Length;
 
-    var moves = DefragPlanner.Plan(extents, dataOrigin, volumeEnd, mover.ClusterSize,
-      options.Profile, options.Mode, metadataZone: options.MetadataZonePlacement,
-      movableMetadata: mover.RelocatableMetadata);
+    var moves = DefragPlanner.PlanOrRefuse("NTFS", () => DefragPlanner.Plan(extents, dataOrigin, volumeEnd, mover.ClusterSize,
+      options.Profile, options.Mode, interleaveStride: options.InterleaveStride,
+      holeSize: options.HoleSize, holeAt: options.HoleAt, metadataZone: options.MetadataZonePlacement,
+      layoutTemplate: options.LayoutTemplate, movableMetadata: mover.RelocatableMetadata,
+      allowMemoryStaging: false));   // the mover does not take runs held outside the volume
     if (moves.Count == 0) {
       options.OnProgress?.Invoke(new DefragProgressEvent("complete", 1, -1, -1, archive.Length, extents, "Already defragmented"));
       return;
@@ -351,35 +360,6 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     options.OnProgress?.Invoke(new DefragProgressEvent("complete", 1, -1, -1, archive.Length, postExtents, "Defragmentation complete"));
   }
 
-  /// <summary>
-  /// Rebuild fallback for when the planner refuses. The volume is laid out
-  /// straight into the stream: a byte[] tops out at two gigabytes, so building
-  /// the image in memory threw on exactly the volumes that reach this path.
-  /// </summary>
-  private void DefragmentWithRebuild(Stream archive, DefragOptions options) {
-    var totalSize = archive.Length;
-    NtfsWriter? writer = null;
-    Stream? target = null;
-    var spill = new List<string>();
-    try {
-      DefragRebuilder.RebuildStreaming(archive, options,
-        readEntries: stream => {
-          var r = new NtfsReader(stream);
-          return r.Entries.Where(e => !e.IsDirectory).Select(e => (e.Name, r.Extract(e)));
-        },
-        beginWrite: s => { writer = new NtfsWriter(); target = s; },
-        writeEntry: (name, data) => {
-          var path = Path.GetTempFileName();
-          spill.Add(path);
-          File.WriteAllBytes(path, data);
-          writer!.AddStreamingFile(name, data.LongLength, () => File.OpenRead(path));
-        },
-        finishWrite: () => writer!.BuildToStreaming(target!, totalSize));
-    } finally {
-      foreach (var path in spill)
-        try { File.Delete(path); } catch { /* scratch file already gone */ }
-    }
-  }
   /// <summary>
   /// Gets the default extension.
   /// </summary>
@@ -491,9 +471,9 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
       ? new NtfsWriter(generateShortNames: generateShortNames)
       : new NtfsWriter(label, generateShortNames);
     ApplyWriterOptions(w, specific);
-    // Folders are kept: the writer builds the directory tree from the paths.
-    foreach (var dir in DirectoriesOf(inputs))
-      w.AddDirectory(dir);
+    // Folders are kept, empty ones included: the writer builds the tree from the paths.
+    foreach (var input in inputs.Where(static i => i.IsDirectory))
+      w.AddDirectory(input.ArchiveName);
     foreach (var (name, data) in FormatHelpers.FilesOnly(inputs))
       w.AddFile(name, data);
 
@@ -555,7 +535,10 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     // streaming writer).
     ApplyWriterOptions(w, specific);
     foreach (var input in inputs) {
-      if (input.IsDirectory) { w.AddDirectory(input.Name); continue; }
+      if (input.IsDirectory) {
+        w.AddDirectory(input.Name);
+        continue;
+      }
       w.AddStreamingFile(input.Name, input.Size, input.OpenStream);
     }
     var totalSize     = ParseImageSizeBytes(specific?.GetValueOrDefault("ImageSize"));
@@ -609,174 +592,106 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
   public void Extract(Stream stream, string outputDir, string? password, string[]? files) {
     var r = new NtfsReader(stream);
     foreach (var e in r.Entries) {
-      if (e.IsDirectory) continue;
       if (files != null && !MatchesFilter(e.Name, files)) continue;
+      // Folders are created too, so an empty one survives extraction.
+      if (e.IsDirectory) {
+        CreateEntryDirectory(outputDir, e.Name);
+        continue;
+      }
       WriteFile(outputDir, e.Name, r.Extract(e));
     }
   }
 
   /// <summary>
-  /// Adds (or replaces by name) files into the root directory of an existing NTFS image.
-  /// The common case is a genuine in-place edit via <see cref="NtfsInPlaceAdder"/>: a free
-  /// MFT record slot is claimed, a spec-shaped FILE record (resident or non-resident $DATA)
-  /// is written, data clusters are allocated from $Bitmap, the $MFT:$BITMAP bit is set, and
-  /// a collation-sorted entry is inserted into the root $INDEX_ROOT — existing files, their
-  /// records and clusters stay byte-identical (no re-pack). ntfs-3g (ntfsls/ntfscat/ntfsfix)
-  /// accepts the result. Cases not yet handled in place — the MFT being full (needs a
-  /// reserved contiguous MFT zone + non-contiguous-MFT reader support), the root index
-  /// spilling out of the resident $INDEX_ROOT, or nested sub-directory targets — fall back
-  /// to the verified <see cref="NtfsWriter"/> rebuild.
+  /// Adds (or replaces by path) files in an existing NTFS image, genuinely in place via
+  /// <see cref="NtfsInPlaceAdder"/>: a free MFT record slot is claimed, a spec-shaped FILE
+  /// record is written, data clusters are allocated from $Bitmap, missing folders are
+  /// created and each entry is linked into its parent's $I30 index with every existing
+  /// entry kept as it was. Existing files, their records and clusters stay byte-identical.
   /// </summary>
-  /// <summary>
-  /// Largest volume the in-place editors can work on. NtfsModifier and NtfsRemover
-  /// mutate a byte[] copy of the whole volume; past this the edit is applied by a
-  /// streaming rebuild instead -- correct, just not in-place.
-  /// </summary>
-  private const long MaxBufferedImageBytes = 1L << 31;
-
-  /// <summary>
-  /// Applies an edit by reading every surviving entry out of <paramref name="archive" />
-  /// and writing a fresh volume of the same declared size back over it. Memory scales
-  /// with the content, not with the volume.
-  /// </summary>
-  private static void RebuildInPlaceStreaming(
-      Stream archive,
-      IReadOnlyList<(string Name, byte[] Data)> additions,
-      ISet<string>? drop,
-      IReadOnlyList<string>? newDirs = null) {
-    var declaredBytes = archive.Length;
-    var combined = new NtfsWriter();
-
-    archive.Position = 0;
-    var reader = new NtfsReader(archive, leaveOpen: true);
-    foreach (var entry in reader.Entries) {
-      if (drop != null && (Dropped(entry.Name, drop) || drop.Contains(Path.GetFileName(entry.Name))))
-        continue;
-      if (entry.IsDirectory) combined.AddDirectory(entry.Name);
-      else combined.AddFile(entry.Name, reader.Extract(entry));
-    }
-    foreach (var dir in newDirs ?? [])
-      combined.AddDirectory(dir);
-    foreach (var (name, data) in additions)
-      combined.AddFile(name, data);
-
-    // Every entry is materialised above, so the source is no longer needed.
-    archive.Position = 0;
-    archive.SetLength(0);
-    combined.BuildTo(archive, declaredBytes);
-  }
-
-  /// <summary>
-  /// Adds the supplied entry to the target container.
-  /// </summary>
+  /// <remarks>
+  /// All inputs are applied to a working copy and committed together, so a case the
+  /// in-place editor cannot express leaves the volume untouched and is reported as
+  /// <see cref="NotSupportedException"/>. There is deliberately no rebuild fallback: a
+  /// volume written afresh by <see cref="NtfsWriter"/> loses the label, serial number,
+  /// security descriptors, alternate data streams, reparse points, timestamps and
+  /// attributes of everything already on it.
+  /// </remarks>
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
-    // The in-place modifier walks the volume in memory, which a volume past two
-    // gigabytes does not fit in. Above that the edit unpacks and relays it out.
-    if (ModifyRebuilder.NeedsLargeVolumePath(archive)) {
-      ModifyRebuilder.AddLargeVolume(archive, inputs, this, this);
-      return;
-    }
-
-    var newDirs = DirectoriesOf(inputs);
-    // New folders, and files inside folders, need the directory tree rebuilt; the
-    // in-place adder only writes into the root directory.
-    var nested = newDirs.Count > 0 || inputs.Any(i => !i.IsDirectory && i.ArchiveName.Replace('\\', '/').Trim('/').Contains('/'));
-    if (nested || (archive.CanSeek && archive.Length > MaxBufferedImageBytes)) {
-      var files = FormatHelpers.FilesOnly(inputs).Select(f => (f.Name.Replace('\\', '/').Trim('/'), f.Data)).ToList();
-      // Replacing a file: the old one goes first.
-      RebuildInPlaceStreaming(archive, files, new HashSet<string>(files.Select(f => f.Item1), StringComparer.OrdinalIgnoreCase), newDirs);
-      return;
-    }
-
-    archive.Position = 0;
-    using var ms = new MemoryStream();
-    archive.CopyTo(ms);
-    var original = ms.ToArray();
-    var items = FormatHelpers.FilesOnly(inputs).ToList();
-
-    // Genuine in-place on a working copy; commit only if every input succeeds so a
-    // structural limit leaves the source untouched for the rebuild fallback.
-    var work = (byte[])original.Clone();
-    var inPlace = true;
+    var work = LoadForInPlaceEdit(archive);
     try {
-      foreach (var (name, data) in items)
+      // Folders added on their own (empty ones too) are created in place as well.
+      foreach (var input in inputs.Where(static i => i.IsDirectory && !string.IsNullOrEmpty(i.ArchiveName)))
+        NtfsInPlaceAdder.AddDirectory(work, input.ArchiveName);
+      foreach (var (name, data) in FormatHelpers.FilesOnly(inputs))
         NtfsInPlaceAdder.AddFile(work, name, data);
-    } catch (Exception ex) when (ex is NotSupportedException or IOException or InvalidDataException) {
-      inPlace = false;
+    } catch (Exception ex) when (ex is IOException or InvalidDataException) {
+      throw new NotSupportedException($"NTFS: the files cannot be added in place ({ex.Message}); the volume was left unchanged.", ex);
     }
-    if (inPlace) {
-      archive.Position = 0;
-      archive.Write(work, 0, work.Length);
-      archive.SetLength(work.Length);
-      return;
-    }
-
-    // Fallback: verified rebuild from the untouched original.
-    var reader = new NtfsReader(new MemoryStream(original, false));
-    var combined = new NtfsWriter();
-    foreach (var entry in reader.Entries)
-      if (entry.IsDirectory) combined.AddDirectory(entry.Name);
-      else combined.AddFile(entry.Name, reader.Extract(entry));
-    foreach (var (name, data) in items)
-      combined.AddFile(name, data);
-    var rebuilt = combined.Build(original.Length);
-    archive.Position = 0;
-    archive.Write(rebuilt);
-    archive.SetLength(rebuilt.Length);
+    Commit(archive, work);
   }
 
   /// <summary>
-  /// Removes files from an existing NTFS image with full secure wipe (cluster bytes
-  /// for non-resident data, MFT record, and root-dir index entry). No forensic
-  /// recovery of the removed content is possible from the resulting bytes.
+  /// Removes files — or folders with everything in them — from an existing NTFS image
+  /// with a full secure wipe (cluster bytes, MFT record and index entry). All names are
+  /// applied to a working copy and committed together.
   /// </summary>
   public void Remove(Stream archive, string[] entryNames) {
-    // See Add: past two gigabytes the volume cannot be walked in memory.
-    if (ModifyRebuilder.NeedsLargeVolumePath(archive)) {
-      ModifyRebuilder.RemoveLargeVolume(archive, entryNames, this, this);
-      return;
-    }
-
-    // The in-place remover works on the root directory; folders and entries inside
-    // folders are removed by a rebuild that keeps the rest of the tree.
-    var nestedOrFolder = entryNames.Any(n => n.Replace('\\', '/').Trim('/').Contains('/') || n.EndsWith('/') || n.EndsWith('\\'));
-    if (!nestedOrFolder && archive.CanSeek) {
-      archive.Position = 0;
-      var names = new HashSet<string>(entryNames, StringComparer.OrdinalIgnoreCase);
-      nestedOrFolder = new NtfsReader(archive, leaveOpen: true).Entries.Any(e => e.IsDirectory && names.Contains(e.Name));
-    }
-    if (nestedOrFolder || (archive.CanSeek && archive.Length > MaxBufferedImageBytes)) {
-      RebuildInPlaceStreaming(archive, [], new HashSet<string>(entryNames.Select(n => n.Replace('\\', '/').Trim('/')), StringComparer.OrdinalIgnoreCase));
-      return;
-    }
-
-    archive.Position = 0;
-    using var ms = new MemoryStream();
-    archive.CopyTo(ms);
-    var image = ms.ToArray();
-    try {
-      foreach (var name in entryNames)
-        NtfsRemover.Remove(image, name);
-    } catch (Exception ex) when (ex is NotSupportedException or IOException or InvalidDataException) {
-      // A structural limit of the in-place remover (a root index needing more than one
-      // INDX leaf): the volume, still untouched, is laid out anew without the entries.
-      RebuildInPlaceStreaming(archive, [], new HashSet<string>(entryNames.Select(n => n.Replace('\\', '/').Trim('/')), StringComparer.OrdinalIgnoreCase));
-      return;
-    }
-    archive.Position = 0;
-    archive.Write(image);
-    archive.SetLength(image.Length);
+    var work = LoadForInPlaceEdit(archive);
+    foreach (var name in ExpandFolders(work, entryNames))
+      NtfsRemover.Remove(work, name);
+    Commit(archive, work);
   }
-  /// <summary>Directory inputs as '/'-separated paths.</summary>
-  private static List<string> DirectoriesOf(IReadOnlyList<ArchiveInputInfo> inputs) =>
-    inputs.Where(i => i.IsDirectory).Select(i => i.ArchiveName.Replace('\\', '/').Trim('/')).Where(n => n.Length > 0).ToList();
 
-  /// <summary>True when <paramref name="name"/> or a folder above it is in <paramref name="drop"/>.</summary>
-  private static bool Dropped(string name, ISet<string> drop) {
-    var parts = name.Replace('\\', '/').Trim('/').Split('/');
-    for (var n = 1; n <= parts.Length; ++n)
-      if (drop.Contains(string.Join('/', parts[..n]))) return true;
-    return false;
+  /// <summary>
+  /// The in-place editors walk the volume as one array. A volume that does not fit one
+  /// is refused rather than rebuilt, for the reasons given on <see cref="Add(Stream, IReadOnlyList{ArchiveInputInfo})"/>.
+  /// </summary>
+  private static byte[] LoadForInPlaceEdit(Stream archive) {
+    ArgumentNullException.ThrowIfNull(archive);
+    if (archive.Length > Array.MaxLength)
+      throw new NotSupportedException(
+        $"NTFS: in-place editing holds the volume in memory; a {archive.Length:N0}-byte volume is larger than that allows, "
+        + "and rebuilding it instead would drop its metadata.");
+    archive.Position = 0;
+    var work = new byte[archive.Length];
+    archive.ReadExactly(work);
+    return work;
+  }
+
+  private static void Commit(Stream archive, byte[] work) {
+    archive.Position = 0;
+    archive.Write(work, 0, work.Length);
+    archive.SetLength(work.Length);
+  }
+
+  /// <summary>
+  /// Replaces every name that is a folder by everything beneath it, deepest first,
+  /// followed by the folder itself. Each entry comes once, also when a folder and entries
+  /// inside it are both named (failBrauwser names a folder with its contents; removing an
+  /// entry a second time failed with "not found").
+  /// </summary>
+  private static IEnumerable<string> ExpandFolders(byte[] image, string[] entryNames) {
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var name in ExpandFoldersWithRepeats(image, entryNames))
+      if (seen.Add(name)) yield return name;
+  }
+
+  private static IEnumerable<string> ExpandFoldersWithRepeats(byte[] image, string[] entryNames) {
+    List<(string Name, bool IsDirectory)>? listing = null;
+    foreach (var raw in entryNames ?? []) {
+      var name = raw.Replace('\\', '/').Trim('/');
+      listing ??= new NtfsReader(new MemoryStream(image, false)).Entries
+        .Select(e => (e.Name.Replace('\\', '/'), e.IsDirectory)).ToList();
+      var isFolder = listing.Any(e => e.IsDirectory && string.Equals(e.Item1, name, StringComparison.OrdinalIgnoreCase));
+      if (!isFolder) { yield return name; continue; }
+      foreach (var child in listing
+                 .Where(e => e.Item1.StartsWith(name + "/", StringComparison.OrdinalIgnoreCase))
+                 .OrderByDescending(e => e.Item1.Count(c => c == '/'))
+                 .ThenBy(e => e.IsDirectory))
+        yield return child.Item1;
+      yield return name;
+    }
   }
 
   /// <summary>
@@ -789,7 +704,7 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     var result = new List<Compression.Registry.Streaming.StreamingArchiveInput>();
     foreach (var i in inputs) {
       if (i.IsDirectory) {
-        result.Add(new Compression.Registry.Streaming.StreamingArchiveInput(i.ArchiveName, 0, true, () => Stream.Null));
+        result.Add(new Compression.Registry.Streaming.StreamingArchiveInput(i.ArchiveName, 0, true, static () => Stream.Null));
         continue;
       }
       var info = i;
@@ -824,11 +739,5 @@ public sealed class NtfsFormatDescriptor : IFormatDescriptor, IArchiveFormatOper
     return total;
   }
 
-
-  /// <summary>The first line of a message, for a one-line progress note.</summary>
-  private static string FirstLine(string message) {
-    var end = message.IndexOf('\n');
-    return end < 0 ? message : message[..end].TrimEnd('\r');
-  }
 
 }

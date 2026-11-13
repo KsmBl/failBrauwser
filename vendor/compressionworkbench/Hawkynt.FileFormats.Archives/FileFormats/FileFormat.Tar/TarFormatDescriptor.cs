@@ -15,7 +15,7 @@ namespace FileFormat.Tar;
 ///   <item><description><c>https://en.wikipedia.org/wiki/Tar_(computing)</c> — Wikipedia overview</description></item>
 /// </list>
 /// </summary>
-public sealed class TarFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IFormatValidator, IArchiveModifiable, IArchiveDefragmentable, IArchiveLayoutMap, IWipeEmpty, IArchiveShrinkable, IFormatOptionsSchema {
+public sealed class TarFormatDescriptor : IFormatDescriptor, IArchiveFormatOperations, IArchiveCreatable, IFormatValidator, IArchiveModifiable, IArchiveLayoutMap, IWipeEmpty, IArchiveShrinkable, IFormatOptionsSchema {
 
   /// <inheritdoc />
   public IReadOnlyList<FormatOptionDescriptor> OptionsSchema => [
@@ -27,34 +27,10 @@ public sealed class TarFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
       Description: "TAR header format. ustar = POSIX, gnu = GNU extensions for long names, pax = extended headers."),
   ];
 
-  /// <summary>Rebuild-based defrag: extracts then re-creates the TAR archive in listing order.</summary>
-  public void Defragment(Stream archive)
-    => this.Defragment(archive, new DefragOptions { Mode = DefragMode.ConsolidateAtStart });
+  // Not IArchiveDefragmentable: an archive has no free-space layout to defragment,
+  // and the repack that stood in for it kept only names and bytes — TAR timestamps,
+  // attributes/modes, owners, comments, links and methods were reset or dropped.
 
-  /// <summary>Rebuild-based defrag: extracts then re-creates the TAR archive per the requested mode.</summary>
-  public void Defragment(Stream archive, DefragOptions options) {
-    DefragRebuilder.Rebuild(archive, options,
-      readEntries: stream => {
-        var r = new TarReader(stream);
-        var list = new List<(string, byte[])>();
-        while (r.GetNextEntry() is { } e) {
-          if (e.IsDirectory) { r.Skip(); continue; }
-          using var es = r.GetEntryStream();
-          var data = new byte[e.Size];
-          es.ReadExactly(data);
-          list.Add((e.Name, data));
-        }
-        return list;
-      },
-      buildImage: files => {
-        using var ms = new MemoryStream();
-        var w = new TarWriter(ms);
-        foreach (var (n, d) in files)
-          w.AddEntry(new TarEntry { Name = n, Size = d.Length }, d);
-        w.Finish();
-        return ms.ToArray();
-      });
-  }
 
 
   /// <inheritdoc />
@@ -171,9 +147,20 @@ public sealed class TarFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
   /// because TAR has no central directory and trailing entries must be shifted.
   /// </summary>
   public void Add(Stream archive, IReadOnlyList<ArchiveInputInfo> inputs) {
-    foreach (var (name, data) in FilesOnly(inputs)) {
-      TarModifier.RemoveFile(archive, name, wipeData: true);
-      TarModifier.AddFile(archive, name, data);
+    ArgumentNullException.ThrowIfNull(inputs);
+    foreach (var input in inputs) {
+      if (string.IsNullOrEmpty(input.ArchiveName)) continue;
+      var mode = input.SourceUnixMode is { } unixMode ? (int)unixMode : (int?)null;
+      if (input.IsDirectory) {
+        // A folder added on its own is an entry of its own, so an empty one is kept.
+        var folder = input.ArchiveName.Replace('\\', '/').TrimEnd('/') + "/";
+        TarModifier.RemoveFile(archive, folder, wipeData: true);
+        TarModifier.AddEntry(archive, NewEntry(folder, true, 0, input.SourceLastModifiedUtc ?? DateTime.UtcNow, mode), []);
+        continue;
+      }
+      var data = input.ReadContent();
+      TarModifier.RemoveFile(archive, input.ArchiveName, wipeData: true);
+      TarModifier.AddEntry(archive, NewEntry(input.ArchiveName, false, data.Length, input.SourceLastModifiedUtc ?? DateTime.UtcNow, mode), data);
     }
   }
 
@@ -278,13 +265,33 @@ public sealed class TarFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
         r.CopyEntryDataTo(target);
       }
       ApplyEntryTime(written, e.ModifiedTime.UtcDateTime);
-      if (!OperatingSystem.IsWindows() && (e.Mode & 0x49) != 0) {
-        // Keep the executable bits; the rest of the mode follows the umask as before.
-        try { File.SetUnixFileMode(written, File.GetUnixFileMode(written) | (UnixFileMode)(e.Mode & 0x49)); }
-        catch (IOException) { } catch (UnauthorizedAccessException) { }
-      }
+      KeepExecutableBits(written, e.Mode);
     }
   }
+
+  // The execute bits of an entry's mode survive extraction on a Unix host; the rest of
+  // the mode follows the umask, as before.
+  private static void KeepExecutableBits(string path, int mode) {
+    const int executeBits = 0x49; // 0111
+    if (OperatingSystem.IsWindows() || (mode & executeBits) == 0) return;
+    try {
+      File.SetUnixFileMode(path, File.GetUnixFileMode(path) | (UnixFileMode)(mode & executeBits));
+    } catch (IOException) {
+    } catch (UnauthorizedAccessException) {
+    }
+  }
+
+  // Mode and time a new entry carries: the source's, else 0644 / 0755 and the epoch.
+  private const int DefaultFileMode = 420;      // 0644
+  private const int DefaultDirectoryMode = 493; // 0755
+
+  private static TarEntry NewEntry(string name, bool isDirectory, long size, DateTime? modifiedUtc, int? mode) => new() {
+    Name = name,
+    Size = isDirectory ? 0 : size,
+    TypeFlag = isDirectory ? TarConstants.TypeDirectory : TarConstants.TypeRegular,
+    Mode = mode is { } m ? m & 0xFFF : isDirectory ? DefaultDirectoryMode : DefaultFileMode,
+    ModifiedTime = modifiedUtc is { } t ? new DateTimeOffset(DateTime.SpecifyKind(t, DateTimeKind.Utc)) : DateTimeOffset.UnixEpoch,
+  };
 
   /// <summary>
   /// Opens a single TAR entry as a read-only <see cref="Stream"/> bounded
@@ -337,15 +344,14 @@ public sealed class TarFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     };
     var w = new TarWriter(output, leaveOpen: false, format: headerFormat, blockingFactor: blockingFactor);
     foreach (var i in inputs) {
-      var mtime = i.SourceLastModifiedUtc is { } t ? new DateTimeOffset(t) : DateTimeOffset.UnixEpoch;
+      var mode = i.SourceUnixMode is { } unixMode ? (int)unixMode : (int?)null;
       if (i.IsDirectory) {
-        w.AddEntry(new TarEntry { Name = i.ArchiveName, Size = 0, TypeFlag = (byte)'5', Mode = 493, ModifiedTime = mtime }, []);
+        w.AddEntry(NewEntry(i.ArchiveName, true, 0, i.SourceLastModifiedUtc, mode), []);
       } else {
         // ReadContent() transparently handles both on-disk inputs and the
         // in-memory variant fed by the small-image ConvertArchive pipeline.
         var data = i.ReadContent();
-        var mode = i.SourceUnixMode is { } m ? (int)m & 0xFFF : 420;
-        w.AddEntry(new TarEntry { Name = i.ArchiveName, Size = data.Length, Mode = mode, ModifiedTime = mtime }, data);
+        w.AddEntry(NewEntry(i.ArchiveName, false, data.Length, i.SourceLastModifiedUtc, mode), data);
       }
     }
     w.Finish();
@@ -372,11 +378,13 @@ public sealed class TarFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     };
     var w = new TarWriter(target, leaveOpen: false, format: headerFormat, blockingFactor: blockingFactor);
     foreach (var input in inputs) {
+      var modified = input.Metadata?.LastWriteTimeUtc?.UtcDateTime;
+      var mode = input.Metadata?.UnixMode is { } unixMode ? unixMode & 0xFFF : (int?)null;
       if (input.IsDirectory) {
-        w.AddEntry(new TarEntry { Name = input.Name, Size = 0, TypeFlag = (byte)'5' }, []);
+        w.AddEntry(NewEntry(input.Name, true, 0, modified, mode), []);
       } else {
         using var src = input.OpenStream();
-        w.AddStreamingEntry(new TarEntry { Name = input.Name }, input.Size, src);
+        w.AddStreamingEntry(NewEntry(input.Name, false, input.Size, modified, mode), input.Size, src);
       }
     }
     w.Finish();

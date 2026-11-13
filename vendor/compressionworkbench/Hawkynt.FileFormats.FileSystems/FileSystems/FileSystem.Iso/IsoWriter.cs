@@ -82,7 +82,7 @@ public sealed class IsoWriter {
   /// </summary>
   public void AddFile(string name, byte[] data) => _files.Add((name, data, null, null));
 
-  // ── Rock Ridge and El Torito (added for failBrauwser) ─────────────────────
+  // ── Rock Ridge and El Torito ─────────────────────────────────────────────
 
   /// <summary>
   /// Adds Rock Ridge (RRIP 1.10 / IEEE P1282) to the primary tree: full POSIX names (NM),
@@ -167,6 +167,7 @@ public sealed class IsoWriter {
     public string Path = "";
     public int? Mode;
     public DateTime? Modified;
+    public ContinuationArea? Continuation;  // where an NM too long for the record went
   }
 
   private sealed class FileNode {
@@ -180,6 +181,7 @@ public sealed class IsoWriter {
     public string Path = "";
     public int? Mode;
     public DateTime? Modified;
+    public ContinuationArea? Continuation;
     /// <summary>Not written as data: its extent is the boot catalog.</summary>
     public bool IsBootCatalog;
 
@@ -261,6 +263,31 @@ public sealed class IsoWriter {
         cursor += SectorsFor(dir.JolietSize);
       }
 
+    // Rock Ridge continuation areas: names too long for their directory record.
+    var continuations = new List<(ContinuationArea Area, byte[] Bytes)>();
+    if (this.EnableRockRidge) {
+      var areaOffset = 0;
+      var areaLba = cursor;
+      ContinuationArea? Place(string name, int idLen) {
+        if (NameContinuation(name, idLen) is not { } bytes) return null;
+        if (areaOffset + bytes.Length > SectorSize) {
+          ++areaLba;
+          areaOffset = 0;
+        }
+        var area = new ContinuationArea(areaLba, areaOffset, bytes.Length);
+        continuations.Add((area, bytes));
+        areaOffset += bytes.Length;
+        return area;
+      }
+      foreach (var dir in dirs) {
+        foreach (var child in dir.Children.Values)
+          child.Continuation = Place(child.RrName, IdentifierLength(child.Name, isFile: false, joliet: false));
+        foreach (var file in dir.Files)
+          file.Continuation = Place(file.RrName, IdentifierLength(file.Identifier, isFile: true, joliet: false));
+      }
+      if (continuations.Count > 0) cursor = areaLba + 1;
+    }
+
     // Shared file data after all directory extents; referenced by both trees.
     // Everything below this sector is metadata, so only that prefix has to be
     // materialised -- allocating the whole volume caps an ISO at the array limit,
@@ -321,7 +348,16 @@ public sealed class IsoWriter {
         catalog.CopyTo(image, (long)catalogLba * SectorSize);
       }
       foreach (var (entry, lba, data, file) in bootImages) {
-        if (file != null && entry.PatchBootInfoTable && file.StreamOpener == null) {
+        if (file != null && entry.PatchBootInfoTable) {
+          // A streamed boot image is small (a loader); it is read so the table can go in.
+          if (file.StreamOpener is { } open) {
+            using var source = open();
+            using var copy = new MemoryStream();
+            source.CopyTo(copy);
+            file.Data = copy.ToArray();
+            file.StreamOpener = null;
+            file.StreamingSize = null;
+          }
           file.Data = PatchBootInfoTable(file.Data, lba);
         } else if (data != null) {
           var bytes = entry.PatchBootInfoTable ? PatchBootInfoTable(data, lba) : data;
@@ -352,12 +388,14 @@ public sealed class IsoWriter {
       WritePathTable(image, jolietMPathLba * SectorSize, dirs, littleEndian: false, joliet: true);
     }
 
-    // Directory extents (primary then Joliet).
+    // Directory extents (primary then Joliet), then the Rock Ridge continuation areas.
     foreach (var dir in dirs)
       WriteDirectoryExtent(image, dir, joliet: false);
     if (joliet)
       foreach (var dir in dirs)
         WriteDirectoryExtent(image, dir, joliet: true);
+    foreach (var (area, bytes) in continuations)
+      bytes.CopyTo(image, (long)area.Lba * SectorSize + area.Offset);
 
     // Shared file data. Streaming entries leave their extent zero; the
     // streaming pass post-fills from this absolute byte offset. The sector
@@ -541,16 +579,16 @@ public sealed class IsoWriter {
     var parent = dir.Parent ?? dir;
     var size = 0;
     size = AppendRecord(size, 1, rr ? SelfSystemUse(dir).Length : 0);
-    size = AppendRecord(size, 1, rr ? RockRidgeFields(parent.Mode, parent.Modified, isDir: true, null, 0).Length : 0);
+    size = AppendRecord(size, 1, rr ? RockRidgeFields(parent.Mode, parent.Modified, isDir: true, null, 0, null).Length : 0);
 
     foreach (var child in dir.Children.Values) {
       var idLen = IdentifierLength(joliet ? child.JolietName : child.Name, isFile: false, joliet);
-      size = AppendRecord(size, idLen, rr ? RockRidgeFields(child.Mode, child.Modified, isDir: true, child.RrName, idLen).Length : 0);
+      size = AppendRecord(size, idLen, rr ? RockRidgeFields(child.Mode, child.Modified, isDir: true, child.RrName, idLen, null).Length : 0);
     }
 
     foreach (var file in dir.Files) {
       var idLen = IdentifierLength(joliet ? file.JolietName : file.Identifier, isFile: true, joliet);
-      size = AppendRecord(size, idLen, rr ? RockRidgeFields(file.Mode, file.Modified, isDir: false, file.RrName, idLen).Length : 0);
+      size = AppendRecord(size, idLen, rr ? RockRidgeFields(file.Mode, file.Modified, isDir: false, file.RrName, idLen, null).Length : 0);
     }
 
     if (size % SectorSize != 0)
@@ -559,7 +597,7 @@ public sealed class IsoWriter {
     return size;
   }
 
-  private static int RecordLength(int idLen, int suLen) {
+  internal static int RecordLength(int idLen, int suLen) {
     var recLen = 33 + idLen;
     if ((recLen & 1) != 0) recLen++;
     recLen += suLen;
@@ -577,12 +615,45 @@ public sealed class IsoWriter {
 
   // ── Rock Ridge system use fields ───────────────────────────────────────
 
+  /// <summary>Where a record's System Use continues (SUSP CE): sector, offset in it, length.</summary>
+  internal sealed record ContinuationArea(int Lba, int Offset, int Length);
+
+  private const int MaxRecordLength = 255;
+  private const int PxLength = 36;   // RRIP 1.10 PX: mode, links, uid, gid (both-endian)
+  private const int TfLength = 12;   // TF with the modification time in the 7-byte form
+  private const int CeLength = 28;   // SUSP CE: block, offset, length (both-endian)
+  private const int MaxNmPayload = 250;
+
+  /// <summary>Whether an NM for <paramref name="name"/> fits the record next to PX and TF.</summary>
+  internal static bool NameFitsRecord(string name, int idLen)
+    => RecordLength(idLen, PxLength + TfLength + 5 + Encoding.UTF8.GetByteCount(name)) <= MaxRecordLength;
+
   /// <summary>
-  /// PX (mode, links, owner), TF (modification time) and, for named entries, NM. A name
-  /// too long for the 255-byte record is shortened to fit (continuation areas are not
-  /// written).
+  /// The continuation area of a name too long for its record: the name as NM entries of at
+  /// most 250 bytes, each but the last flagged CONTINUE; null when the name fits the record.
   /// </summary>
-  private static byte[] RockRidgeFields(int? mode, DateTime? modified, bool isDir, string? name, int idLen) {
+  internal static byte[]? NameContinuation(string name, int idLen) {
+    if (NameFitsRecord(name, idLen)) return null;
+    var bytes = Encoding.UTF8.GetBytes(name);
+    var area = new List<byte>(bytes.Length + 16);
+    for (var start = 0; start < bytes.Length;) {
+      var take = Math.Min(MaxNmPayload, bytes.Length - start);
+      area.AddRange("NM"u8.ToArray());
+      area.Add((byte)(5 + take));
+      area.Add(1);
+      area.Add((byte)(start + take < bytes.Length ? 0x01 : 0x00)); // CONTINUE
+      area.AddRange(bytes.AsSpan(start, take).ToArray());
+      start += take;
+    }
+    return [.. area];
+  }
+
+  /// <summary>
+  /// PX (mode, links, owner), TF (modification time) and, for named entries, NM. A name too
+  /// long for the 255-byte record is written to a continuation area instead, which a CE entry
+  /// in the record points to (<paramref name="continuation"/>; zeros while sizing).
+  /// </summary>
+  internal static byte[] RockRidgeFields(int? mode, DateTime? modified, bool isDir, string? name, int idLen, ContinuationArea? continuation) {
     var su = new List<byte>(96);
     var m = (uint)(mode ?? (isDir ? 0x1ED : 0x1A4)) & 0xFFF; // 0755 / 0644
     m |= isDir ? 0x4000u : 0x8000u;
@@ -599,19 +670,20 @@ public sealed class IsoWriter {
     su.Add(1);
     su.Add(0x02); // modification time, 7-byte form
     su.AddRange([(byte)(t.Year - 1900), (byte)t.Month, (byte)t.Day, (byte)t.Hour, (byte)t.Minute, (byte)t.Second, 0]);
-    if (name != null) {
+    if (name != null && NameFitsRecord(name, idLen)) {
       var bytes = Encoding.UTF8.GetBytes(name);
-      var room = 255 - RecordLength(idLen, su.Count + 5);
-      if (bytes.Length > room) {
-        var cut = room;
-        while (cut > 0 && (bytes[cut] & 0xC0) == 0x80) cut--; // not inside a UTF-8 sequence
-        bytes = bytes[..cut];
-      }
       su.AddRange("NM"u8.ToArray());
       su.Add((byte)(5 + bytes.Length));
       su.Add(1);
       su.Add(0);
       su.AddRange(bytes);
+    } else if (name != null) {
+      su.AddRange("CE"u8.ToArray());
+      su.Add(CeLength);
+      su.Add(1);
+      AddBoth(su, (uint)(continuation?.Lba ?? 0));
+      AddBoth(su, (uint)(continuation?.Offset ?? 0));
+      AddBoth(su, (uint)(continuation?.Length ?? 0));
     }
     return su.ToArray();
 
@@ -625,7 +697,7 @@ public sealed class IsoWriter {
 
   /// <summary>The "." record: in the root it also marks the image as using SUSP and RRIP.</summary>
   private static byte[] SelfSystemUse(DirNode dir) {
-    var rr = RockRidgeFields(dir.Mode, dir.Modified, isDir: true, null, 1);
+    var rr = RockRidgeFields(dir.Mode, dir.Modified, isDir: true, null, 1, null);
     if (dir.Parent != null) return rr;
     byte[] sp = [(byte)'S', (byte)'P', 7, 1, 0xBE, 0xEF, 0];
     byte[] er = [(byte)'E', (byte)'R', 18, 1, 10, 0, 0, 1, .. "RRIP_1991A"u8];
@@ -759,7 +831,7 @@ public sealed class IsoWriter {
 
   // ── Directory record / extent writers ─────────────────────────────────────
 
-  private static void WriteDirectoryRecord(byte[] image, int off, int lba, int size, byte flags, byte[] identifier, byte[]? systemUse = null, DateTime? modified = null) {
+  internal static void WriteDirectoryRecord(byte[] image, int off, int lba, int size, byte flags, byte[] identifier, byte[]? systemUse = null, DateTime? modified = null) {
     var idLen = identifier.Length;
     var suStart = 33 + idLen + ((idLen & 1) == 0 ? 1 : 0);
     var recLen = RecordLength(idLen, systemUse?.Length ?? 0);
@@ -801,7 +873,7 @@ public sealed class IsoWriter {
     var parentSize = joliet ? parent.JolietSize : parent.Size;
     WriteDirectoryRecord(image, pos, lba, selfSize, 0x02, [0], rr ? SelfSystemUse(dir) : null, dir.Modified);
     pos += image[pos];
-    WriteDirectoryRecord(image, pos, parentLba, parentSize, 0x02, [1], rr ? RockRidgeFields(parent.Mode, parent.Modified, true, null, 1) : null, parent.Modified);
+    WriteDirectoryRecord(image, pos, parentLba, parentSize, 0x02, [1], rr ? RockRidgeFields(parent.Mode, parent.Modified, true, null, 1, null) : null, parent.Modified);
     pos += image[pos];
 
     // Child directory records.
@@ -809,7 +881,7 @@ public sealed class IsoWriter {
       var identifier = DirectoryIdentifierBytes(child, joliet);
       var childLba = joliet ? child.JolietLba : child.Lba;
       var childSize = joliet ? child.JolietSize : child.Size;
-      var su = rr ? RockRidgeFields(child.Mode, child.Modified, true, child.RrName, identifier.Length) : null;
+      var su = rr ? RockRidgeFields(child.Mode, child.Modified, true, child.RrName, identifier.Length, child.Continuation) : null;
       pos = AdvancePastSectorBoundary(baseOff, pos, identifier.Length, su?.Length ?? 0);
       WriteDirectoryRecord(image, pos, childLba, childSize, 0x02, identifier, su, child.Modified);
       pos += image[pos];
@@ -818,7 +890,7 @@ public sealed class IsoWriter {
     // File records (both trees reference the same shared data extent).
     foreach (var file in dir.Files) {
       var identifier = FileIdentifierBytes(file, joliet);
-      var su = rr ? RockRidgeFields(file.Mode, file.Modified, false, file.RrName, identifier.Length) : null;
+      var su = rr ? RockRidgeFields(file.Mode, file.Modified, false, file.RrName, identifier.Length, file.Continuation) : null;
       pos = AdvancePastSectorBoundary(baseOff, pos, identifier.Length, su?.Length ?? 0);
       var length = file.IsBootCatalog ? SectorSize : (int)file.Length;
       WriteDirectoryRecord(image, pos, file.Lba, length, 0x00, identifier, su, file.Modified);
@@ -884,7 +956,7 @@ public sealed class IsoWriter {
   /// With Rock Ridge the primary names are only a fallback: they are made valid ISO 9660
   /// (level 2) identifiers — A–Z, 0–9, "_", one ".", at most 30 characters.
   /// </summary>
-  private static string DChars(string name, bool keepDot) {
+  internal static string DChars(string name, bool keepDot) {
     var upper = name.ToUpperInvariant();
     var dot = keepDot ? upper.LastIndexOf('.') : -1;
     string Clean(string x) => new(x.Select(c => c is >= 'A' and <= 'Z' or >= '0' and <= '9' or '_' ? c : '_').ToArray());
@@ -951,7 +1023,7 @@ public sealed class IsoWriter {
 
   // Joliet caps identifiers at 64 UCS-2 characters (128 bytes). Longer names are
   // truncated to the limit while preserving the extension where possible.
-  private static string TruncateJolietName(string name) {
+  internal static string TruncateJolietName(string name) {
     if (name.Length <= JolietMaxNameChars) return name;
     var dot = name.LastIndexOf('.');
     if (dot > 0 && name.Length - dot - 1 < JolietMaxNameChars) {
