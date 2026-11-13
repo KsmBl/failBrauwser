@@ -17,8 +17,10 @@ failBrauwser builds on its own:
 | `FileFormats/FileFormat.Ani`, `FileFormats/FileFormat.Ico` | Windows cursors and icons (read through `Hawkynt.FileFormats.Images`) |
 | `Hawkynt.Algorithms.Checksums`, `.Hashing` | checksums and hashes |
 
-Upstream: https://github.com/Hawkynt/CompressionWorkbench, commit `b9c490df` of 2026-11-13
-("Integrate multi-device ZFS edits and StuffIt 5 encryption"). Until then failBrauwser carried
+Upstream: https://github.com/Hawkynt/CompressionWorkbench, commit `ab61c59f` of 2026-11-13
+("Integrate verified feature pools, archive codecs, ISO and writable mounts": StuffIt classic
+encryption and resource forks, UHARC 0.4, ISO Rock Ridge writing, ZFS pool edits), applied on
+top of `b9c490df` ("Integrate multi-device ZFS edits and StuffIt 5 encryption"). Until then failBrauwser carried
 a copy of upstream `17200a6d` (2026-09-28) with the changes listed below; that copy was merged
 into the new one, and where both had changed a file, upstream's version was taken.
 
