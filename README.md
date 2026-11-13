@@ -520,7 +520,7 @@ the folder's own or one of its parents'.
 | Blame | `git blame` | `hg annotate` | `svn annotate` | `cvs annotate` | — |
 | Rename | `git mv` | `hg rename` | `svn rename` | `cvs rename` | — |
 | Delete | `git rm` | `hg remove` | `svn delete` | `cvs remove` | `ss Delete` |
-| Delete (keep local) | `git rm --cached` | `hg remove --keep-files` | `svn delete --keep-local` | `cvs remove` leaving the file | — |
+| Delete (keep local) | `git rm --cached` | `hg remove --keep-files` | `svn delete --keep-local` | `cvs remove` leaving the file | `ss DeleteKeepLocal` |
 | Delete and add to ignore list | `.gitignore` | `.hgignore` | the `svn:ignore` property | `.cvsignore` | — |
 | Settings | `git config --local` | `.hg/hgrc` | the working copy's own properties | — | — |
 
