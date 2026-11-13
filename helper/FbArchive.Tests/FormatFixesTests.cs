@@ -57,9 +57,10 @@ public class FormatFixesTests {
 
   /// <summary>Adding to an MFS-1 image cut the other files' names down to their extension.</summary>
   [Test]
-  public void Mfs1_AddingKeepsTheOtherNames() {
-    var img = Path.Combine(_root, "m.mfsd");
-    Commands.Add(img, [new(File("a.txt", "alpha"), "a.txt"), new(File("b.bin", "beta"), "b.bin")], null, "Mfs1");
+  public void Mfs_AddingKeepsTheOtherNames() {
+    // MFS-1 is part of the MFS format since CompressionWorkbench merged the two.
+    var img = Path.Combine(_root, "m.mfs");
+    Commands.Add(img, [new(File("a.txt", "alpha"), "a.txt"), new(File("b.bin", "beta"), "b.bin")], null, "Mfs");
     Commands.Add(img, [new(File("c.txt", "gamma"), "c.txt")], null);
     Assert.That(Names(img).Select(n => n.ToLowerInvariant()), Is.EquivalentTo(new[] { "a.txt", "b.bin", "c.txt" }));
     Commands.Remove(img, [Names(img).First(n => n.Equals("a.txt", StringComparison.OrdinalIgnoreCase))], null);
@@ -106,7 +107,8 @@ public class FormatFixesTests {
     System.IO.File.Delete(whole);
     Assert.That(SplitSet.Parts(parts[0]), Is.EqualTo(parts));
     Assert.That(SplitSet.Parts(parts[1]), Is.Null);
-    Assert.That(Names(parts[0]).Count, Is.EqualTo(1), "the library alone sees one joined file");
+    // The library opens a split set by itself now, as the helper does.
+    Assert.That(Names(parts[0]).Order(), Is.EqualTo(new[] { "a.txt", "b.txt" }));
     Assert.That(SplitSet.List(parts.ToArray(), null, out var format).Select(e => e.Name).Order(), Is.EqualTo(new[] { "a.txt", "b.txt" }));
     Assert.That(format, Is.EqualTo(FormatDetector.Format.SevenZip));
     var dest = Path.Combine(_root, "out");
