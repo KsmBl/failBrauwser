@@ -140,7 +140,9 @@ public sealed class GenuineCvfReader : IDisposable {
           if (srcOff + inLen <= this._data.Length) {
             var payload = new byte[inLen];
             Array.Copy(this._data, srcOff, payload, 0, inLen);
-            var full = Compression.Registry.Cvf.CvfLzCodec.Decompress(payload, inLen, clusterBytes);
+            if (payload.Length >= 2 && payload[0] == (byte)'S' && payload[1] == (byte)'Q')
+              throw new NotSupportedException($"DoubleSpace (genuine): cluster {cluster} of '{entry.Name}' holds an SQ-0-0 payload, which only DriveSpace 3 volumes carry.");
+            var full = Compression.Core.FileSystems.Cvf.CvfLzCodec.Decompress(payload, inLen, clusterBytes);
             Array.Copy(full, 0, output, written, want);
           }
         }

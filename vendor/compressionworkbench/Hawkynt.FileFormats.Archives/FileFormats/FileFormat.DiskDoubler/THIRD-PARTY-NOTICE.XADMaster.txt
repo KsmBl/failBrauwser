@@ -1,0 +1,40 @@
+XADMaster (DiskDoubler) - converted to C#
+
+Source:   https://github.com/MacPaw/XADMaster (The Unarchiver's unarchiving engine)
+Revision: 7cb9ee0abbb163f261e4cb74501e15067032319c (master, 2026-09-21)
+Authors:  Dag Ågren (original author); MacPaw Way Ltd. (2017-present);
+          parts descend from libxad (Dirk Stöcker and contributors)
+Licence:  GNU Lesser General Public License, version 2.1 or (at your option)
+          any later version. This repository is LGPL-3.0-or-later, which the
+          "or any later version" grant permits; the full LGPL text is in the
+          repository's LICENSE file.
+
+Upstream notice, as carried in each XADMaster source file:
+
+  Copyright (c) 2017-present, MacPaw Way Ltd. All rights reserved.
+
+  This library is free software; you can redistribute it and/or
+  modify it under the terms of the GNU Lesser General Public
+  License as published by the Free Software Foundation; either
+  version 2.1 of the License, or (at your option) any later version.
+
+  This library is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+  Lesser General Public License for more details.
+
+Files converted:
+
+  XADDiskDoublerParser.m    -> DiskDoublerReader.cs (header layout, method
+                               numbering, XOR masks, checksums, the method 7
+                               table, the method 8 prefix, and the DDAR and
+                               DDA2 archive layouts)
+  XADDiskDoublerADnHandle.m -> DiskDoublerAdDecoder.cs
+  XADDiskDoublerMethod2Handle.m, XADStacLZSHandle.m, XADDeltaHandle.m
+                            -> DiskDoublerCodecs.cs (decoders; the encoders
+                               there are our own, written against them)
+
+Methods 3, 4 and 10 and delta types other than 1 are refused rather than
+decoded. Method 8 uses the Compact Pro decoder in FileFormat.CompactPro with
+DiskDoubler's 0xFFF0-unit LZH blocks. The header CRC is CRC-16/XMODEM over the 82 bytes before it (XADMaster
+computes the same value through a bit-reversed table).

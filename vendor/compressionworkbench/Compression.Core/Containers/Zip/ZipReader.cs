@@ -7,7 +7,7 @@ namespace FileFormat.Zip;
 /// <summary>
 /// Reads entries from a ZIP archive.
 /// </summary>
-public sealed class ZipReader : IDisposable {
+public sealed partial class ZipReader : IDisposable {
   private readonly Stream _stream;
   private readonly bool _leaveOpen;
   private readonly string? _password;
@@ -110,6 +110,11 @@ public sealed class ZipReader : IDisposable {
       effectiveMethod = ZipAesEncryption.ParseExtraField(entry.ExtraField);
       compressedData = ZipAesEncryption.Decrypt(compressedData, this._password);
     }
+    else if (entry.IsEncrypted && (entry.GeneralPurposeFlags & ZipStrongEncryption.FlagStrongEncryption) != 0) {
+      if (this._password == null)
+        throw new InvalidOperationException($"Entry '{entry.FileName}' is strong-encrypted but no password was provided.");
+      compressedData = ZipStrongEncryption.Decrypt(compressedData, this._password, entry.Crc32, entry.UncompressedSize);
+    }
     else if (entry.IsEncrypted && compressedData.Length > 0) {
       if (this._password == null)
         throw new InvalidOperationException($"Entry '{entry.FileName}' is encrypted but no password was provided.");
@@ -149,16 +154,22 @@ public sealed class ZipReader : IDisposable {
         data = ZipBzip2Helper.Decompress(compressedData);
         break;
       case ZipCompressionMethod.Lzma:
-        data = ZipLzmaHelper.Decompress(compressedData);
+        data = ZipLzmaHelper.Decompress(compressedData, entry.UncompressedSize);
         break;
       case ZipCompressionMethod.Zstd:
         data = ZipZstdHelper.Decompress(compressedData);
+        break;
+      case ZipCompressionMethod.Xz:
+        data = ZipXzHelper.Decompress(compressedData);
         break;
       case ZipCompressionMethod.Ppmd:
         data = ZipPpmdHelper.Decompress(compressedData, (int)entry.UncompressedSize);
         break;
       default:
-        throw new NotSupportedException($"Unsupported compression method: {effectiveMethod}");
+        data = ZipMethodCodecs.TryGetDecoder((ushort)effectiveMethod, out var external)
+          ? external(compressedData, entry.UncompressedSize)
+          : throw new NotSupportedException($"Unsupported compression method: {effectiveMethod}");
+        break;
     }
 
     // Verify CRC
@@ -197,6 +208,11 @@ public sealed class ZipReader : IDisposable {
       effectiveMethod = ZipAesEncryption.ParseExtraField(entry.ExtraField);
       compressedData = ZipAesEncryption.Decrypt(compressedData, this._password);
     }
+    else if (entry.IsEncrypted && (entry.GeneralPurposeFlags & ZipStrongEncryption.FlagStrongEncryption) != 0) {
+      if (this._password == null)
+        throw new InvalidOperationException($"Entry '{entry.FileName}' is strong-encrypted but no password was provided.");
+      compressedData = ZipStrongEncryption.Decrypt(compressedData, this._password, entry.Crc32, entry.UncompressedSize);
+    }
     else if (entry.IsEncrypted && compressedData.Length > 0) {
       if (this._password == null)
         throw new InvalidOperationException($"Entry '{entry.FileName}' is encrypted but no password was provided.");
@@ -214,6 +230,31 @@ public sealed class ZipReader : IDisposable {
   public Stream OpenEntry(ZipEntry entry) {
     var data = ExtractEntry(entry);
     return new MemoryStream(data, writable: false);
+  }
+
+  /// <summary>
+  /// Opens an entry for forward-only reading without materialising it. Stored and Deflate
+  /// entries that are not encrypted are decoded straight from the archive as they are read,
+  /// so an entry of any size costs a fixed amount of memory; the CRC-32 and size are checked
+  /// when the end is reached. Any other entry is decoded in memory, as by <see cref="OpenEntry"/>.
+  /// </summary>
+  /// <param name="entry">The entry to open.</param>
+  /// <returns>A stream over the decompressed data; reading it moves the archive stream.</returns>
+  /// <exception cref="InvalidDataException">The data does not match the entry's CRC-32 or size.</exception>
+  public Stream OpenEntryStream(ZipEntry entry) {
+    ArgumentNullException.ThrowIfNull(entry);
+    if (entry.IsEncrypted || entry.CompressionMethod is not (ZipCompressionMethod.Store or ZipCompressionMethod.Deflate))
+      return this.OpenEntry(entry);
+
+    this._stream.Position = entry.LocalHeaderOffset;
+    var reader = new BinaryReader(this._stream, System.Text.Encoding.Latin1, leaveOpen: true);
+    _ = ZipLocalFileHeader.Read(reader);
+
+    Stream data = new Compression.Registry.SubStream(this._stream, this._stream.Position, entry.CompressedSize);
+    if (entry.CompressionMethod == ZipCompressionMethod.Deflate)
+      data = new RawDeflateStream(data, Compression.Core.Streams.CompressionStreamMode.Decompress);
+
+    return new CheckedEntryStream(data, entry);
   }
 
   /// <inheritdoc />

@@ -1,4 +1,5 @@
 using F = Compression.Lib.FormatDetector.Format;
+using Compression.Registry;
 
 namespace Compression.Lib;
 
@@ -9,7 +10,7 @@ namespace Compression.Lib;
 public static class ArchiveOperations {
 
   public static List<ArchiveEntry> List(string path, string? password) {
-    var format = FormatDetector.Detect(path);
+    var format = ArchiveVolumes.Detect(path);
 
     // Handle SFX: extract embedded archive info and delegate to the inner format
     if (format == F.Sfx) {
@@ -20,7 +21,7 @@ public static class ArchiveOperations {
       return ListArchiveStream(sfxInfo.Value.ArchiveFormat, sub, password);
     }
 
-    using var fs = File.OpenRead(path);
+    using var fs = ArchiveVolumes.OpenRead(path);
     return ListArchiveStream(format, fs, password, path);
   }
 
@@ -39,7 +40,7 @@ public static class ArchiveOperations {
   }
 
   public static void Extract(string path, string outputDir, string? password, string[]? files) {
-    var format = FormatDetector.Detect(path);
+    var format = ArchiveVolumes.Detect(path);
     Directory.CreateDirectory(outputDir);
 
     // Handle SFX: extract embedded archive info and delegate to the inner format
@@ -57,7 +58,7 @@ public static class ArchiveOperations {
     FormatRegistration.EnsureInitialized();
     var archiveOps = Compression.Registry.FormatRegistry.GetArchiveOps(format.ToString());
     if (archiveOps != null) {
-      using var fs = File.OpenRead(path);
+      using var fs = ArchiveVolumes.OpenRead(path);
       archiveOps.Extract(fs, outputDir, password, files);
       return;
     }
@@ -159,6 +160,7 @@ public static class ArchiveOperations {
       if (files.Length != 1)
         throw new ArgumentException("Stream compression formats require exactly one input file.");
       CompressStream(files[0].FullPath, outputPath, format, method, registryOpts);
+      SplitIfAsked(outputPath, opts);
       return;
     }
 
@@ -184,16 +186,30 @@ public static class ArchiveOperations {
         Size: i.IsDirectory ? 0
               : i.InMemoryContent?.LongLength ?? (File.Exists(i.FullPath) ? new FileInfo(i.FullPath).Length : 0),
         IsDirectory: i.IsDirectory,
+        Metadata: i.InMemoryContent == null && (i.IsDirectory ? Directory.Exists(i.FullPath) : File.Exists(i.FullPath))
+          ? new Compression.Registry.ArchiveEntryMetadata(LastWriteTimeUtc: i.IsDirectory ? Directory.GetLastWriteTimeUtc(i.FullPath) : File.GetLastWriteTimeUtc(i.FullPath))
+          : null,
         OpenStream: i.InMemoryContent is { } bytes
           ? () => new MemoryStream(bytes, writable: false)
           : () => File.OpenRead(i.FullPath))).ToList();
 
       AtomicFileWriter.WriteAtomic(outputPath,
         fs => creator.CreateFromStreams(fs, streamingInputs, registryOpts));
+      SplitIfAsked(outputPath, opts);
       return;
     }
 
     AtomicFileWriter.WriteAtomic(outputPath, fs => creator.Create(fs, registryInputs, registryOpts));
+    SplitIfAsked(outputPath, opts);
+  }
+
+  /// <summary>
+  /// With <see cref="CompressionOptions.VolumeSize"/> set, cuts the finished archive into
+  /// 7-Zip-style volumes (<c>name.001</c>, <c>name.002</c>, …) and removes the single file.
+  /// </summary>
+  private static void SplitIfAsked(string outputPath, CompressionOptions opts) {
+    if (opts.VolumeSize > 0)
+      ArchiveVolumes.Split(outputPath, opts.VolumeSize);
   }
 
   /// <summary>
@@ -404,6 +420,110 @@ public static class ArchiveOperations {
   }
 
   /// <summary>
+  /// Whether <paramref name="archivePath"/> can have its entries renamed without anything else
+  /// changing: its format renames losslessly (<see cref="Compression.Registry.IArchiveRenamable"/>),
+  /// or it is a filesystem image whose driver renames in place. A format that could only rename by
+  /// re-creating itself is not renamable.
+  /// </summary>
+  public static bool CanRename(string archivePath) {
+    try {
+      var format = FormatDetector.Detect(archivePath);
+      FormatRegistration.EnsureInitialized();
+      var id = format.ToString();
+      if (Compression.Registry.FormatRegistry.GetArchiveOps(id) is Compression.Registry.IArchiveRenamable) return true;
+      if (Compression.Registry.FormatRegistry.GetById(id) is null) return false;
+
+      using var image = File.OpenRead(archivePath);
+      return RenamesInPlace(Compression.Registry.FormatRegistry.ProbeFilesystem(id, image));
+    } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException
+                                   or NotSupportedException or KeyNotFoundException or ArgumentException) {
+      return false;
+    }
+  }
+
+  /// <summary>
+  /// Gives entries new paths inside an archive or filesystem image, changing nothing else.
+  /// An archive is copied with the new names into a temporary file beside it, which then replaces it
+  /// in one step, so an interrupted rename leaves the original intact. A filesystem image is renamed
+  /// in place by its driver, the way the operating system would.
+  /// </summary>
+  /// <exception cref="NotSupportedException">The format cannot rename losslessly; see <see cref="CanRename"/>.</exception>
+  public static void Rename(string archivePath, IReadOnlyList<Compression.Registry.ArchiveRename> renames,
+                            CompressionOptions? opts = null) {
+    ArgumentNullException.ThrowIfNull(renames);
+    var format = FormatDetector.Detect(archivePath);
+    FormatRegistration.EnsureInitialized();
+    var id = format.ToString();
+
+    if (Compression.Registry.FormatRegistry.GetArchiveOps(id) is Compression.Registry.IArchiveRenamable renamable) {
+      var full = Path.GetFullPath(archivePath);
+      var temporary = Path.Combine(Path.GetDirectoryName(full)!, "." + Path.GetFileName(full) + ".cwb-rename-" + Guid.NewGuid().ToString("N")[..8]);
+      try {
+        using (var source = File.OpenRead(full))
+        using (var destination = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None)) {
+          renamable.Rename(source, destination, renames);
+          destination.Flush(flushToDisk: true);
+        }
+
+        File.Move(temporary, full, overwrite: true);
+      } finally {
+        if (File.Exists(temporary)) File.Delete(temporary);
+      }
+
+      return;
+    }
+
+    if (Compression.Registry.FormatRegistry.GetById(id) is not null) {
+      using var image = File.Open(archivePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+      if (RenamesInPlace(Compression.Registry.FormatRegistry.ProbeFilesystem(id, image))) {
+        image.Position = 0;
+        RenameInFilesystem(id, image, renames);
+        return;
+      }
+    }
+
+    throw new NotSupportedException($"{format} cannot rename its entries without re-creating itself, so renaming is not offered.");
+  }
+
+  private static bool RenamesInPlace(Compression.Registry.FilesystemDriverProfile profile)
+    => profile.CanMountWritable && profile.Capabilities.HasFlag(Compression.Registry.FilesystemDriverCapabilities.Rename);
+
+  /// <summary>Renames through the image's own filesystem driver: one directory entry changes per rename.</summary>
+  private static void RenameInFilesystem(string id, Stream image, IReadOnlyList<Compression.Registry.ArchiveRename> renames) {
+    using var session = Compression.Registry.FormatRegistry.OpenFilesystem(id, image, new Compression.Registry.FilesystemOpenOptions(ReadOnly: false));
+    foreach (var (fromName, toName) in renames) {
+      var from = Split(fromName);
+      var to = Split(toName);
+      var fromParent = Resolve(session, from[..^1], fromName);
+      var toParent = Resolve(session, to[..^1], toName);
+      if (session.Lookup(fromParent, from[^1]) is null)
+        throw new FileNotFoundException($"No entry named '{fromName}'.", fromName);
+
+      var caseOnly = fromParent == toParent && string.Equals(from[^1], to[^1], StringComparison.OrdinalIgnoreCase);
+      if (!caseOnly && session.Lookup(toParent, to[^1]) is not null)
+        throw new IOException($"'{toName}' already exists.");
+
+      session.Rename(fromParent, from[^1], toParent, to[^1], replace: false);
+    }
+
+    session.Flush();
+
+    static string[] Split(string path) {
+      var parts = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+      if (parts.Length == 0 || parts.Any(p => p is "." or ".."))
+        throw new ArgumentException($"'{path}' is not a valid entry path.", nameof(path));
+      return parts;
+    }
+
+    static Compression.Registry.FilesystemNodeId Resolve(Compression.Registry.IFilesystemSession session, string[] folders, string path) {
+      var node = session.RootNodeId;
+      foreach (var folder in folders)
+        node = session.Lookup(node, folder) ?? throw new FileNotFoundException($"No folder on the way to '{path}'.", path);
+      return node;
+    }
+  }
+
+  /// <summary>
   /// Replaces an existing entry with the contents of <paramref name="newSourcePath"/>.
   /// Sugar for <see cref="Remove"/> followed by <see cref="Add"/>; uses the
   /// modifier path when available so the operation is O(touched bytes) on the
@@ -432,10 +552,11 @@ public static class ArchiveOperations {
       Directory.CreateDirectory(tempDir);
       Extract(archivePath, tempDir, password: opts.Password, files: null);
 
-      // Splat new inputs into the temp tree, preserving their entry names.
-      Compression.Registry.RebuildStaging.AddEntries(tempDir, inputs
-        .Where(i => i.IsDirectory || !string.IsNullOrEmpty(i.FullPath))
-        .Select(i => new Compression.Registry.ArchiveInputInfo(
+      // Splat new inputs into the temp tree, preserving their entry names; folders added on
+      // their own (empty ones included) become folders.
+      Compression.Registry.RebuildVerb.StageInputs(tempDir, inputs
+        .Where(static i => i.IsDirectory || !string.IsNullOrEmpty(i.FullPath))
+        .Select(static i => new Compression.Registry.ArchiveInputInfo(
           i.FullPath,
           string.IsNullOrEmpty(i.EntryName) ? Path.GetFileName(i.FullPath) : i.EntryName,
           i.IsDirectory)));
@@ -450,13 +571,11 @@ public static class ArchiveOperations {
   /// <inheritdoc cref="AddViaRebuild" />
   private static void RemoveViaRebuild(string archivePath, string[] entryNames,
                                        CompressionOptions opts, F format) {
-    var skip = new HashSet<string>(entryNames, StringComparer.OrdinalIgnoreCase);
     var tempDir = Path.Combine(Path.GetTempPath(), "cwb_rm_" + Guid.NewGuid().ToString("N")[..8]);
     try {
       Directory.CreateDirectory(tempDir);
       Extract(archivePath, tempDir, password: opts.Password, files: null);
-
-      Compression.Registry.RebuildStaging.RemoveEntries(tempDir, skip);
+      Compression.Registry.RebuildVerb.DeleteNamedEntries(tempDir, entryNames);
 
       Create(archivePath, EnumerateTempInputs(tempDir), opts, format);
     }
@@ -502,7 +621,7 @@ public static class ArchiveOperations {
   /// simply has no verifier for it.
   /// </remarks>
   public static ArchiveTestResult TestDetailed(string path, string? password) {
-    var format = FormatDetector.Detect(path);
+    var format = ArchiveVolumes.Detect(path);
     if (format == F.Unknown) return ArchiveTestResult.NotTestable;
 
     FormatRegistration.EnsureInitialized();
@@ -513,7 +632,7 @@ public static class ArchiveOperations {
       return ArchiveTestResult.NotTestable;
 
     try {
-      using var fs = File.OpenRead(path);
+      using var fs = ArchiveVolumes.OpenRead(path);
 
       if (isStream) {
         DecompressToNull(fs, format);
@@ -536,6 +655,10 @@ public static class ArchiveOperations {
       // The format is registered but this particular container is beyond the reader -- an
       // unsupported codec or variant, not damage.
       return ArchiveTestResult.NotTestable;
+    }
+    catch (Compression.Registry.ArchivePasswordException) {
+      // Not a verdict on the archive: the caller has to ask for a (different) password.
+      throw;
     }
     catch {
       return ArchiveTestResult.Corrupt;
@@ -654,118 +777,26 @@ public static class ArchiveOperations {
   // ── Optimize ──────────────────────────────────────────────────────
 
   /// <summary>
-  /// Optimizes an archive by re-encoding with the best available encoder
-  /// while keeping the same format. Uses Zopfli (level Maximum) for Deflate,
-  /// Best for LZMA/LZX/etc. The output is fully compatible with standard decoders.
+  /// Re-encodes a file with the best compression its format offers, keeping the format and
+  /// everything else it carries — the <c>compress</c> maintenance operation
+  /// (<see cref="MaintenanceOperations.Compress"/>), kept under its old name for callers of it.
   /// </summary>
   /// <remarks>
-  /// Fail-safe: the output is staged to a sibling <c>.tmp</c> file, flushed
-  /// to disk, then atomically renamed over <paramref name="outputPath"/>. A
-  /// crash during recompression never leaves a partial archive in place.
+  /// Formats that cannot re-encode losslessly refuse with <see cref="NotSupportedException"/>
+  /// instead of being copied through; formats whose maintenance is canonicalization or
+  /// repacking have their own operations (<see cref="MaintenanceOperations.Canonicalize"/>,
+  /// <see cref="MaintenanceOperations.Repack"/>). When nothing smaller verifies, the output is
+  /// the original bytes.
   /// </remarks>
-  /// <returns>(originalSize, optimizedSize, entriesOptimized)</returns>
+  /// <returns>(originalSize, optimizedSize, entriesOptimized) — the last is 1 for a single stream,
+  /// the number of files for a container, and 0 when the original was kept.</returns>
   public static (long OriginalSize, long OptimizedSize, int EntriesOptimized) Optimize(
       string inputPath, string outputPath, string? password) {
-    var format = FormatDetector.Detect(inputPath);
-    var originalSize = new FileInfo(inputPath).Length;
-    var entries = 0;
-
-    // ── ZIP: re-encode each Deflate entry with Zopfli ────────────────
-    if (format == F.Zip) {
-      AtomicFileWriter.WriteAtomic(outputPath, outFs => entries = OptimizeZip(inputPath, outFs, password));
-      return (originalSize, new FileInfo(outputPath).Length, entries);
-    }
-
-    // ── Gzip: re-encode Deflate with Maximum level ───────────────────
-    if (format == F.Gzip) {
-      var data = DecompressFile(inputPath, F.Gzip);
-      AtomicFileWriter.WriteAtomic(outputPath, outFs => {
-        using var gs = new FileFormat.Gzip.GzipStream(outFs,
-          Compression.Core.Streams.CompressionStreamMode.Compress,
-          Compression.Core.Deflate.DeflateCompressionLevel.Maximum,
-          leaveOpen: true);
-        gs.Write(data);
-      });
-      return (originalSize, new FileInfo(outputPath).Length, 1);
-    }
-
-    // ── Zlib: re-encode Deflate with Maximum level ───────────────────
-    if (format == F.Zlib) {
-      var data = File.ReadAllBytes(inputPath);
-      var decompressed = FileFormat.Zlib.ZlibStream.Decompress(data.AsSpan());
-      var recompressed = FileFormat.Zlib.ZlibStream.Compress(decompressed.AsSpan(),
-        Compression.Core.Deflate.DeflateCompressionLevel.Maximum);
-      AtomicFileWriter.WriteAllBytesAtomic(outputPath, recompressed);
-      return (originalSize, new FileInfo(outputPath).Length, 1);
-    }
-
-    // ── MacBinary: canonicalize the wrapper without dropping Mac-specific payloads ──
-    if (format == F.MacBinary) {
-      AtomicFileWriter.WriteAtomic(outputPath, outFs => {
-        using var inFs = File.OpenRead(inputPath);
-        FileFormat.MacBinary.MacBinaryOptimizer.Optimize(inFs, outFs);
-      });
-      return (originalSize, new FileInfo(outputPath).Length, 1);
-    }
-
-    // ── Compound tar: re-encode outer compression with best level ────
-    var comp = FormatDetector.GetTarCompression(format);
-    if (comp.HasValue) {
-      // Decompress to raw tar, recompress with best settings
-      AtomicFileWriter.WriteAtomic(outputPath, outFs => {
-        using var inFs = File.OpenRead(inputPath);
-        using var rawTar = new MemoryStream();
-        DecompressStreamPair(inFs, rawTar, comp.Value);
-        rawTar.Position = 0;
-        CompressStreamPairOptimal(rawTar, outFs, comp.Value);
-      });
-      return (originalSize, new FileInfo(outputPath).Length, 1);
-    }
-
-    // ── Other stream formats: decompress + recompress with best ──────
-    if (FormatDetector.IsStreamFormat(format)) {
-      AtomicFileWriter.WriteAtomic(outputPath, outFs => {
-        using var inFs = File.OpenRead(inputPath);
-        using var raw = new MemoryStream();
-        DecompressStreamPair(inFs, raw, format);
-        raw.Position = 0;
-        CompressStreamPairOptimal(raw, outFs, format);
-      });
-      return (originalSize, new FileInfo(outputPath).Length, 1);
-    }
-
-    // ── Unsupported: fall back to copy ───────────────────────────────
-    // Use temp+rename so a crash mid-copy doesn't leave a truncated target.
-    AtomicFileWriter.WriteAtomic(outputPath, outFs => {
-      using var inFs = File.OpenRead(inputPath);
-      inFs.CopyTo(outFs);
-    });
-    return (originalSize, originalSize, 0);
-  }
-
-  private static int OptimizeZip(string inputPath, Stream outFs, string? password) {
-    using var inFs = File.OpenRead(inputPath);
-    var r = new FileFormat.Zip.ZipReader(inFs, leaveOpen: true, password: password);
-    var w = new FileFormat.Zip.ZipWriter(outFs, leaveOpen: true,
-      compressionLevel: Compression.Core.Deflate.DeflateCompressionLevel.Maximum,
-      password: password);
-
-    var optimized = 0;
-    foreach (var entry in r.Entries) {
-      if (entry.IsDirectory) {
-        w.AddDirectory(entry.FileName, entry.LastModified);
-        continue;
-      }
-
-      // For Deflate entries: decompress and re-encode with Zopfli (Maximum)
-      // For other methods: decompress and re-encode with Deflate Maximum
-      var data = r.ExtractEntry(entry);
-      w.AddEntry(entry.FileName, data, FileFormat.Zip.ZipCompressionMethod.Deflate, entry.LastModified);
-      ++optimized;
-    }
-
-    w.Finish();
-    return optimized;
+    var result = MaintenanceOperations.Compress(inputPath, outputPath, password);
+    if (!result.Changed) return (result.OriginalSize, result.NewSize, 0);
+    var format = FormatDetector.Detect(outputPath);
+    var entries = FormatDetector.IsStreamFormat(format) ? 1 : List(outputPath, password).Count(e => !e.IsDirectory);
+    return (result.OriginalSize, result.NewSize, entries);
   }
 
   // ── Stream compression dispatch (registry-only) ─────────────────
@@ -1379,6 +1410,61 @@ public static class ArchiveOperations {
     var name = Path.GetFileName(path);
     var ext = Path.GetExtension(name);
     return FormatDetector.IsStreamExtension(ext) ? Path.GetFileNameWithoutExtension(name) : name;
+  }
+
+  /// <summary>
+  /// Opens a single entry for reading without extracting the archive: the entry's bytes are
+  /// decoded as they are read, so a consumer can stream them straight to where they are going.
+  /// The archive file stays open until the returned stream is disposed.
+  /// </summary>
+  /// <remarks>
+  /// Formats with a native per-entry reader decode in place; the rest use the registry's
+  /// fallback, which spools the one entry through a temporary folder. A format that is not an
+  /// archive at all is answered from <see cref="ExtractEntry"/>.
+  /// </remarks>
+  public static Stream OpenEntry(string archivePath, string entryPath, string? password = null) {
+    ArgumentException.ThrowIfNullOrWhiteSpace(entryPath);
+    var format = ArchiveVolumes.Detect(archivePath);
+    FormatRegistration.EnsureInitialized();
+    if (Compression.Registry.FormatRegistry.GetArchiveOps(format.ToString()) is not { } ops)
+      return new MemoryStream(ExtractEntry(archivePath, entryPath, password), writable: false);
+
+    var archive = ArchiveVolumes.OpenRead(archivePath);
+    try {
+      return new EntryOwningStream(ops.OpenEntry(archive, entryPath, password), archive);
+    } catch {
+      archive.Dispose();
+      throw;
+    }
+  }
+
+  /// <summary>An entry stream that also owns the archive file it reads from.</summary>
+  private sealed class EntryOwningStream(Stream entry, Stream archive) : Stream {
+    public override bool CanRead => entry.CanRead;
+    public override bool CanSeek => entry.CanSeek;
+    public override bool CanWrite => false;
+    public override long Length => entry.Length;
+
+    public override long Position {
+      get => entry.Position;
+      set => entry.Position = value;
+    }
+
+    public override int Read(byte[] buffer, int offset, int count) => entry.Read(buffer, offset, count);
+    public override int Read(Span<byte> buffer) => entry.Read(buffer);
+    public override long Seek(long offset, SeekOrigin origin) => entry.Seek(offset, origin);
+    public override void Flush() { }
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing) {
+      if (disposing) {
+        entry.Dispose();
+        archive.Dispose();
+      }
+
+      base.Dispose(disposing);
+    }
   }
 
   /// <summary>

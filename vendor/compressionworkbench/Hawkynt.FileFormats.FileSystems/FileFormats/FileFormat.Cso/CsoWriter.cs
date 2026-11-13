@@ -1,6 +1,7 @@
 #pragma warning disable CS1591
 using System.Buffers.Binary;
-using System.IO.Compression;
+using Compression.Core.Deflate;
+using Compression.Core.Streams;
 
 namespace FileFormat.Cso;
 
@@ -69,7 +70,7 @@ public sealed class CsoWriter {
     for (var i = 0; i < blockCount; ++i) {
       Array.Clear(slab);
       var logicalLength = checked((int)Math.Min(blockSize64, uncompressedSize - consumed));
-      ReadExact(uncompressedInput, slab.AsSpan(0, logicalLength));
+      uncompressedInput.ReadExactly(slab.AsSpan(0, logicalLength));
       consumed += checked((uint)logicalLength);
 
       var offset = CheckedIndexOffset(output.Position);
@@ -112,7 +113,7 @@ public sealed class CsoWriter {
   /// <summary>Raw-DEFLATE encode <paramref name="data"/> (no zlib wrapper).</summary>
   internal static byte[] Deflate(ReadOnlySpan<byte> data) {
     using var output = new MemoryStream();
-    using (var deflate = new DeflateStream(output, CompressionLevel.Optimal, leaveOpen: true))
+    using (var deflate = new RawDeflateStream(output, CompressionStreamMode.Compress, DeflateCompressionLevel.Default, leaveOpen: true))
       deflate.Write(data);
     return output.ToArray();
   }
@@ -120,7 +121,7 @@ public sealed class CsoWriter {
   /// <summary>Raw-DEFLATE decode helper retained for callers that need a bounded decoded slab.</summary>
   internal static byte[] Inflate(ReadOnlySpan<byte> data, int expectedSize) {
     using var input = new MemoryStream(data.ToArray(), writable: false);
-    using var deflate = new DeflateStream(input, CompressionMode.Decompress);
+    using var deflate = new RawDeflateStream(input, CompressionStreamMode.Decompress);
     var output = new byte[expectedSize];
     var written = 0;
     while (written < output.Length) {
@@ -168,15 +169,5 @@ public sealed class CsoWriter {
       throw new InvalidOperationException(
         "CSO/ZSO output exceeds the 31-bit byte-offset range of an align=0 index.");
     return checked((uint)position);
-  }
-
-  private static void ReadExact(Stream input, Span<byte> destination) {
-    var read = 0;
-    while (read < destination.Length) {
-      var count = input.Read(destination[read..]);
-      if (count <= 0)
-        throw new EndOfStreamException("Uncompressed CSO/ZSO input ended before uncompressed_size.");
-      read += count;
-    }
   }
 }

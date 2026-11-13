@@ -61,7 +61,7 @@ fn new_archives_follow_the_settings() {
 
     // The formats say what can be chosen.
     let rar = h.options("Rar").unwrap();
-    assert_eq!(rar.version().unwrap().values, ["Rar5", "Rar4", "Rar1_5"]);
+    assert_eq!(rar.version().unwrap().values, ["Rar5", "Rar4", "Rar2_0", "Rar1_5"]);
     let zip = h.options("Zip").unwrap();
     assert!(zip.methods.iter().any(|(id, _)| id == "lzma"));
     assert!(zip.level().is_some());

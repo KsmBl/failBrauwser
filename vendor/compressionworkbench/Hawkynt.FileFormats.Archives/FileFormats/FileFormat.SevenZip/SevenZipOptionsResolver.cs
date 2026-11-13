@@ -24,28 +24,25 @@ internal static class SevenZipOptionsResolver {
     return optimize ? 1 << 26 : 1 << 23;
   }
 
-  public static int NormalizeDictSize(int size) {
-    if (size <= 4096) return 4096;
-    var bits = 31 - int.LeadingZeroCount(size);
-    var pow2 = 1 << bits;
-    var pow2Next = 1 << (bits + 1);
-    var threeHalf = 3 << (bits - 1);
-    var best = pow2Next;
-    if (pow2 >= size) best = pow2;
-    if (threeHalf >= size && threeHalf < best) best = threeHalf;
-    if (pow2Next < best) best = pow2Next;
-    return Math.Min(best, 1 << 30);
-  }
+  public static int NormalizeDictSize(int size) => Compression.Core.Dictionary.Lzma.LzmaDictionarySize.Normalize(size);
 
   public static int ResolvePpmdOrder(int? wordSize, int defaultOrder = 6) {
     if (wordSize.HasValue) return Math.Clamp(wordSize.Value, 2, 32);
     return defaultOrder;
   }
 
+  /// <summary>
+  /// The PPMd model memory for a requested dictionary size, within what the writer accepts
+  /// (1 MiB .. 1 GiB). Dictionaries are offered down to 64 KiB; below 1 MiB the writer used
+  /// to refuse the whole archive, whatever the method.
+  /// </summary>
   public static int ResolvePpmdMemorySize(long dictSize) {
-    if (dictSize > 0) return (int)Math.Min(dictSize, 1L << 30);
+    if (dictSize > 0) return (int)Math.Clamp(dictSize, MinPpmdMemorySize, 1L << 30);
     return 1 << 24;
   }
+
+  /// <summary>The smallest PPMd model memory the 7z writer takes.</summary>
+  public const int MinPpmdMemorySize = 1 << 20;
 
   public static int ResolveBzip2BlockSize(long dictSize) {
     if (dictSize > 0) return (int)Math.Clamp(dictSize / (100 * 1024), 1, 9);

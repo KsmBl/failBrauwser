@@ -27,6 +27,7 @@ internal static class ZipOptionsResolver {
     "lzma" => (ZipCompressionMethod.Lzma, DeflateCompressionLevel.Default),
     "ppmd" => (ZipCompressionMethod.Ppmd, DeflateCompressionLevel.Default),
     "zstd" => (ZipCompressionMethod.Zstd, DeflateCompressionLevel.Default),
+    "xz" => (ZipCompressionMethod.Xz, DeflateCompressionLevel.Default),
     _ => (ZipCompressionMethod.Deflate,
           optimize ? DeflateCompressionLevel.Maximum : DeflateCompressionLevel.Default),
   };
@@ -34,6 +35,7 @@ internal static class ZipOptionsResolver {
   /// <summary>Resolves the ZIP encryption method from the option string.</summary>
   public static ZipEncryptionMethod ResolveEncryption(string? method) => method switch {
     "zipcrypto" => ZipEncryptionMethod.PkzipTraditional,
+    "pkware-aes-256" => ZipEncryptionMethod.PkwareStrongAes256,
     _ => ZipEncryptionMethod.Aes256,
   };
 
@@ -56,18 +58,7 @@ internal static class ZipOptionsResolver {
   }
 
   /// <summary>Snaps a dict size to the nearest valid LZMA value (2^n or 3×2^(n-1)).</summary>
-  public static int NormalizeDictSize(int size) {
-    if (size <= 4096) return 4096;
-    var bits = 31 - int.LeadingZeroCount(size);
-    var pow2 = 1 << bits;
-    var pow2Next = 1 << (bits + 1);
-    var threeHalf = 3 << (bits - 1);
-    var best = pow2Next;
-    if (pow2 >= size) best = pow2;
-    if (threeHalf >= size && threeHalf < best) best = threeHalf;
-    if (pow2Next < best) best = pow2Next;
-    return Math.Min(best, 1 << 30);
-  }
+  public static int NormalizeDictSize(int size) => Compression.Core.Dictionary.Lzma.LzmaDictionarySize.Normalize(size);
 
   public static LzmaCompressionLevel ResolveLzmaLevel(int? level, bool optimize) {
     if (level.HasValue) return level.Value switch {

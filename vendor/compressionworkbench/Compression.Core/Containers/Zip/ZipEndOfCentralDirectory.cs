@@ -45,7 +45,8 @@ internal static class ZipEndOfCentralDirectory {
     if ((commentBytes?.Length ?? 0) > ushort.MaxValue)
       throw new InvalidDataException("ZIP archive comment exceeds the 65535-byte EOCD limit.");
 
-    var needZip64 = cdOffset > uint.MaxValue || cdSize > uint.MaxValue || count > ushort.MaxValue;
+    // The all-ones values are the ZIP64 sentinels (APPNOTE.TXT 4.4.19-4.4.24).
+    var needZip64 = cdOffset >= uint.MaxValue || cdSize >= uint.MaxValue || count >= ushort.MaxValue;
 
     if (needZip64) {
       // ZIP64 EOCD
@@ -81,7 +82,7 @@ internal static class ZipEndOfCentralDirectory {
       writer.Write(commentBytes);
   }
 
-  private static long FindEocd(Stream stream) {
+  internal static long FindEocd(Stream stream) {
     // EOCD is at most 65535 + 22 bytes from the end
     var searchLen = Math.Min(stream.Length, 65557);
     var searchStart = stream.Length - searchLen;

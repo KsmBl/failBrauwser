@@ -26,9 +26,18 @@ public static class BbcModifier {
   /// </summary>
   public static void AddFile(Stream image, string name, byte[] data,
                              char directory = '$', uint loadAddr = 0x1900,
-                             uint execAddr = 0x1900, bool locked = false) {
+                             uint execAddr = 0x1900, bool locked = false)
+    => AddEntry(image, SanitizeName(name), data, directory, loadAddr, execAddr, locked);
+
+  /// <summary>
+  /// Adds a file under a catalogue name the caller has already made valid (at most seven
+  /// printable characters), for callers whose names follow their own rules.
+  /// </summary>
+  public static void AddEntry(Stream image, string catalogName, byte[] data,
+                              char directory = '$', uint loadAddr = 0x1900,
+                              uint execAddr = 0x1900, bool locked = false) {
     ArgumentNullException.ThrowIfNull(image);
-    ArgumentNullException.ThrowIfNull(name);
+    ArgumentNullException.ThrowIfNull(catalogName);
     ArgumentNullException.ThrowIfNull(data);
 
     var totalSectors = ImageTotalSectors(image);
@@ -39,7 +48,7 @@ public static class BbcModifier {
     if (entries.Count >= MaxEntries)
       throw new InvalidOperationException("BBC DFS: catalog full (31 entries).");
 
-    var sanitized = SanitizeName(name);
+    var sanitized = catalogName;
     var sectorsNeeded = Math.Max(1, (data.Length + SectorSize - 1) / SectorSize);
     var startSector = FindContiguousGap(entries, sectorsNeeded, totalSectors);
     if (startSector < 0)
@@ -84,11 +93,6 @@ public static class BbcModifier {
     ArgumentNullException.ThrowIfNull(image);
     ArgumentNullException.ThrowIfNull(name);
 
-    var totalSectors = ImageTotalSectors(image);
-    var sec0 = ReadSector(image, 0);
-    var sec1 = ReadSector(image, 1);
-    var entries = ParseCatalog(sec0, sec1);
-
     // Accept both the bare short name ("SECRET") and the "DIR.NAME" form that
     // List/FullName emits ("$.SECRET") — SanitizeName treats the latter's ".NAME"
     // as an extension and would otherwise reduce it to the directory char, making
@@ -96,6 +100,22 @@ public static class BbcModifier {
     // The directory counts: "A.TXT" and "C.TXT" are different files, and a bare name
     // means the default directory '$'.
     var (wantDir, wantName) = SplitName(name);
+    return RemoveEntry(image, wantName, wantDir, wipeData);
+  }
+
+  /// <summary>
+  /// Removes the file stored under exactly <paramref name="catalogName"/> in
+  /// <paramref name="directory"/> (case-insensitively, as DFS compares); true when found.
+  /// </summary>
+  public static bool RemoveEntry(Stream image, string catalogName, char directory, bool wipeData = true) {
+    ArgumentNullException.ThrowIfNull(image);
+    ArgumentNullException.ThrowIfNull(catalogName);
+    var (wantDir, wantName) = (directory, catalogName);
+
+    var totalSectors = ImageTotalSectors(image);
+    var sec0 = ReadSector(image, 0);
+    var sec1 = ReadSector(image, 1);
+    var entries = ParseCatalog(sec0, sec1);
     var match = -1;
     for (var i = 0; i < entries.Count; i++) {
       var e = entries[i];

@@ -119,6 +119,7 @@ pub fn version_label(format: &str, value: &str) -> String {
     match (format, value) {
         ("Rar", "Rar5") => "RAR 5 (WinRAR 5.0 and later)".into(),
         ("Rar", "Rar4") => "RAR 4 (WinRAR 2.9 – 4.x, also 3.5)".into(),
+        ("Rar", "Rar2_0") => "RAR 2.0 (stored only, WinRAR 2.x and DOS)".into(),
         ("Rar", "Rar1_5") => "RAR 1.5 (stored only, very old programs)".into(),
         (_, "ustar") => "POSIX ustar (every tar)".into(),
         (_, "gnu") => "GNU tar (long names)".into(),
@@ -357,6 +358,7 @@ mod tests {
     #[test]
     fn labels_say_what_opens_it() {
         assert_eq!(version_label("Rar", "Rar4"), "RAR 4 (WinRAR 2.9 – 4.x, also 3.5)");
+        assert_eq!(version_label("Rar", "Rar2_0"), "RAR 2.0 (stored only, WinRAR 2.x and DOS)");
         assert_eq!(version_label("Iso", "Other"), "Other");
         assert_eq!(method_label("Zip", "lzma", "LZMA"), "LZMA (ZIP 6.3)");
         assert_eq!(method_label("SevenZip", "lzma", "LZMA"), "LZMA");

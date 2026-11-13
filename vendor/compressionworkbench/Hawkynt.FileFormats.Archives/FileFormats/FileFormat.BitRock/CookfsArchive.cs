@@ -1,4 +1,7 @@
-using System.IO.Compression;
+using System.Buffers.Binary;
+using Compression.Core.Deflate;
+using Compression.Core.Streams;
+using FileFormat.Bzip2;
 
 namespace FileFormat.BitRock;
 
@@ -8,7 +11,7 @@ namespace FileFormat.BitRock;
 /// Metakit VFS is a cookfs page store; reconstructing it yields the real deliverable (one or more
 /// gzip-wrapped tars laid end to end).
 ///
-/// <para><b>Layout (reverse-engineered from the runtime's own cookfs reader).</b> The archive ends,
+/// <para><b>Layout.</b> The archive ends,
 /// just before the Metakit VFS, with a 16-byte footer whose bytes 9..15 are the ASCII signature
 /// <c>CFS0002</c> and whose first 8 bytes are two big-endian int32s <c>idxsize</c> and <c>numpages</c>.
 /// Immediately before the footer sit, in order: a per-page 16-byte MD5/CRC table (<c>numpages*16</c>),
@@ -114,15 +117,37 @@ internal sealed class CookfsArchive {
           var comp = new byte[dataLen];
           this._s.ReadExactly(comp);
           using var src = new MemoryStream(comp, writable: false);
-          using var inf = new DeflateStream(src, CompressionMode.Decompress);
+          using var inf = new RawDeflateStream(src, CompressionStreamMode.Decompress);
           written += inf.CopyTo2(dest, buf);
           break;
         }
+        case 2:                                        // bzip2, behind a big-endian uncompressed size
+          written += ReconstructBzip2Page(this._s, dest, dataLen, i, buf);
+          break;
         default:
           throw new InvalidDataException($"Unsupported cookfs page compression id {cid} (page {i}).");
       }
     }
     return written;
+  }
+
+  /// <summary>
+  /// A cookfs 1.x (CFS0002) bzip2 page is <c>[u32 BE uncompressed size][bzip2 stream]</c>: libbz2's
+  /// buffer-to-buffer API needs the output size up front and the CFS0002 index does not record it,
+  /// so the page carries it. The decoded length has to match that prefix.
+  /// </summary>
+  private static long ReconstructBzip2Page(Stream s, Stream dest, int dataLen, int page, byte[] buf) {
+    if (dataLen < 4)
+      throw new InvalidDataException($"cookfs bzip2 page {page} is {dataLen} bytes, too short for its size prefix.");
+    var comp = new byte[dataLen];
+    s.ReadExactly(comp);
+    var expected = BinaryPrimitives.ReadUInt32BigEndian(comp);
+    using var src = new MemoryStream(comp, 4, dataLen - 4, writable: false);
+    using var decoder = new Bzip2Stream(src, CompressionStreamMode.Decompress);
+    var got = decoder.CopyTo2(dest, buf);
+    if (got != expected)
+      throw new InvalidDataException($"cookfs bzip2 page {page} decoded to {got} bytes, its prefix declares {expected}.");
+    return got;
   }
 
   private static long CopyExact(Stream src, Stream dest, long count, byte[] buf) {

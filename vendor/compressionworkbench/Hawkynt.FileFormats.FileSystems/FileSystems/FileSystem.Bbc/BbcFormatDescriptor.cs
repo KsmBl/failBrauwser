@@ -182,9 +182,10 @@ public sealed class BbcFormatDescriptor : IFormatDescriptor, IArchiveFormatOpera
     using var r = new BbcReader(stream, doubleSided: false);
     foreach (var e in r.Entries) {
       if (files != null && !MatchesFilter(e.FullName, files)) continue;
-      // Written under the name List publishes ("D.NAME"), so an entry extracted by its
-      // listed name is found there; a "D/NAME" folder would not be.
-      WriteFile(outputDir, e.FullName, r.Extract(e));
+      // A file of another directory is written under the name List publishes ("D.NAME"),
+      // which Create reads back into directory D; a "D/NAME" folder landed in '$' on the
+      // next rebuild. Files of the default directory '$' keep their bare name.
+      WriteFile(outputDir, e.Directory == '$' ? e.Name : e.FullName, r.Extract(e));
     }
   }
 

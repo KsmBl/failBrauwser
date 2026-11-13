@@ -40,14 +40,20 @@ internal static class RefsOfflineModifier {
         throw new ArgumentException("ReFS entry path must not be empty.", nameof(inputs));
 
       var metadata = RefsMetadataReader.Open(image);
-      var existing = new RefsNamespaceReader(metadata).ReadAll().FirstOrDefault(f =>
-        !f.IsDirectory && string.Equals(f.Path, path, StringComparison.OrdinalIgnoreCase));
-      if (existing == null)
+      var existing = RefsNamespaceLookup.FindUnique(new RefsNamespaceReader(metadata).ReadAll(), path);
+      if (existing == null || existing.IsDirectory)
         throw new NotSupportedException(
           $"ReFS offline R/W currently replaces existing regular files; creating the new namespace entry '{path}' " +
           "is withheld until all file-identity/security/link fields are proven for the active ReFS profile.");
 
-      ReplaceExisting(image, path, input.ReadContent());
+      // Existing-file replacement only needs a known input length and a
+      // forward read. Keep file-backed inputs on disk instead of materializing
+      // the entire replacement in a second byte array (large volume images can
+      // contain files much larger than the process working set).
+      using var content = OpenContent(input);
+      if (!content.CanRead || !content.CanSeek)
+        throw new IOException($"ReFS replacement input '{path}' must be readable and seekable so its allocation can be reserved first.");
+      ReplaceExisting(image, path, content, content.Length);
     }
   }
 
@@ -63,12 +69,113 @@ internal static class RefsOfflineModifier {
     }
   }
 
-  private static void ReplaceExisting(Stream image, string path, byte[] data) {
+  /// <summary>
+  /// Renames one live regular file inside its current directory on an unmounted image.
+  /// The directory value and any backing data row are preserved byte-for-byte;
+  /// only the type-0x30 filename key changes in a replacement CoW tree.
+  /// </summary>
+  public static void Rename(Stream image, string sourcePath, string destinationPath) {
+    ArgumentNullException.ThrowIfNull(image);
+    RequireWritableImage(image);
+    var source = NormalizePath(sourcePath);
+    var destination = NormalizePath(destinationPath);
+    var sourceSlash = source.LastIndexOf('/');
+    var destinationSlash = destination.LastIndexOf('/');
+    var sourceParent = sourceSlash < 0 ? string.Empty : source[..sourceSlash];
+    var destinationParent = destinationSlash < 0 ? string.Empty : destination[..destinationSlash];
+    if (!string.Equals(sourceParent, destinationParent, StringComparison.OrdinalIgnoreCase))
+      throw new NotSupportedException("ReFS offline rename currently requires the same parent directory.");
+
+    var newName = destination[(destinationSlash + 1)..];
+    ValidateFilename(newName);
+
     var metadata = RefsMetadataReader.Open(image);
     var files = new RefsNamespaceReader(metadata).ReadAll();
-    var file = files.FirstOrDefault(f =>
-      !f.IsDirectory && string.Equals(f.Path, path, StringComparison.OrdinalIgnoreCase))
+    var matches = files.Where(file => string.Equals(file.Path, source, StringComparison.OrdinalIgnoreCase)).ToArray();
+    if (matches.Length == 0)
+      throw new FileNotFoundException($"ReFS entry '{source}' was not found.", source);
+    if (matches.Length != 1)
+      throw new NotSupportedException($"ReFS source '{source}' is ambiguous under case-insensitive lookup.");
+    var original = matches[0];
+    // A directory is referenced by more than its filename row: its own object
+    // and any ID-to-name link the parent keeps for it would still carry the old
+    // name. None of those rows is decoded or proven yet, so a directory rename
+    // is refused rather than left half-applied.
+    if (original.IsDirectory)
+      throw new NotSupportedException(
+        $"ReFS offline rename is limited to regular files; renaming the directory '{source}' is withheld " +
+        "until its directory-link rows are proven for the active ReFS profile.");
+    if (string.Equals(original.Path, destination, StringComparison.Ordinal)) return;
+    if (files.Any(file => !ReferenceEquals(file, original)
+        && string.Equals(file.Path, destination, StringComparison.OrdinalIgnoreCase)))
+      throw new IOException($"ReFS destination '{destination}' already exists.");
+
+    var location = new RefsWritableNamespace(metadata).ResolveDirectoryEntry(source);
+    var oldKey = location.EntryRow.Key;
+    if (oldKey.Length < 6 || (oldKey.Length & 1) != 0
+        || BinaryPrimitives.ReadUInt16LittleEndian(oldKey) != 0x30)
+      throw new NotSupportedException("ReFS filename key has an unsupported layout.");
+    var newKey = BuildRenamedKey(oldKey, newName);
+
+    var store = new RefsCowPageStore(image, metadata);
+    var tree = new RefsCowBTree(image, metadata, store);
+    var changedDirectory = tree.Rewrite(location.ParentDirectoryRoot, virtualAddresses: true, (rows, comparer) => {
+      var sourceIndex = FindKey(rows, oldKey, comparer);
+      if (sourceIndex < 0)
+        throw new InvalidDataException($"ReFS source '{source}' disappeared before rename.");
+
+      foreach (var row in rows) {
+        if (row.Key.Length < 4 || BinaryPrimitives.ReadUInt16LittleEndian(row.Key) != 0x30
+            || comparer.Compare(row.Key, oldKey) == 0) continue;
+        var candidate = newKey.ToArray();
+        row.Key.AsSpan(0, 4).CopyTo(candidate);
+        if (comparer.Compare(row.Key, candidate) == 0)
+          throw new IOException($"ReFS destination '{destination}' collides with an existing filename.");
+      }
+
+      rows[sourceIndex] = rows[sourceIndex] with { Key = newKey };
+      return true;
+    });
+    var objectTable = new RefsCowObjectEditor(metadata, tree)
+      .ReplaceObjectRoot(location.ParentDirectoryOid, changedDirectory.RootReference);
+    PublishOfflineCheckpoint(image, metadata, store, objectTable);
+  }
+
+  private static byte[] BuildRenamedKey(byte[] sourceKey, string newName) {
+    var nameBytes = new UnicodeEncoding(false, false, true).GetBytes(newName);
+    var suffix = sourceKey.AsSpan(4);
+    var nameLength = suffix.Length;
+    while (nameLength >= 2 && suffix[nameLength - 2] == 0 && suffix[nameLength - 1] == 0)
+      nameLength -= 2;
+    for (var offset = 0; offset < nameLength; offset += 2)
+      if (suffix[offset] == 0 && suffix[offset + 1] == 0)
+        throw new NotSupportedException("ReFS filename key contains embedded data beyond the decoded name.");
+
+    var key = new byte[checked(4 + nameBytes.Length + suffix.Length - nameLength)];
+    sourceKey.AsSpan(0, 4).CopyTo(key);
+    nameBytes.CopyTo(key, 4);
+    return key;
+  }
+
+  private static void ValidateFilename(string name) {
+    if (name.Length is 0 or > 255 || name is "." or ".."
+        || name.EndsWith(' ') || name.EndsWith('.')
+        || name.Any(c => c < ' ' || "\"*/:<>?\\|".Contains(c)))
+      throw new ArgumentException("ReFS destination must have a valid filename of at most 255 UTF-16 units.", nameof(name));
+  }
+
+  private static Stream OpenContent(ArchiveInputInfo input)
+    => input.InMemoryContent is { } memory
+      ? new MemoryStream(memory, writable: false)
+      : new FileStream(input.FullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
+
+  private static void ReplaceExisting(Stream image, string path, Stream data, long dataLength) {
+    var metadata = RefsMetadataReader.Open(image);
+    var files = new RefsNamespaceReader(metadata).ReadAll();
+    var file = RefsNamespaceLookup.FindUnique(files, path)
       ?? throw new FileNotFoundException($"ReFS file '{path}' is no longer reachable.", path);
+    if (file.IsDirectory)
+      throw new InvalidOperationException($"ReFS path '{path}' names a directory, not a writable file.");
     if (file.Extents.Any(e => e.IsSparse || e.Flags == 0x1C00D0 || (e.Flags & 0x04) != 0))
       throw new NotSupportedException(
         $"ReFS file '{path}' uses sparse/integrity/shared allocation semantics outside the offline CRUD profile.");
@@ -78,7 +185,8 @@ internal static class RefsOfflineModifier {
     var location = writable.ResolveStorage(path);
 
     var clusterSize = metadata.ClusterSize;
-    var blocks = checked((data.LongLength + clusterSize - 1) / clusterSize);
+    if (dataLength < 0) throw new ArgumentOutOfRangeException(nameof(dataLength));
+    var blocks = dataLength / clusterSize + (dataLength % clusterSize == 0 ? 0 : 1);
     if (blocks > int.MaxValue)
       throw new NotSupportedException("ReFS replacement exceeds the supported allocation-run size.");
 
@@ -89,7 +197,7 @@ internal static class RefsOfflineModifier {
     var extents = RefsStreamLayoutEditor.BuildExtents(metadata, targetOffsets);
     var allocatedBytes = checked((long)targets.Length * clusterSize);
     var replacementFile = file with {
-      Size = data.LongLength,
+      Size = dataLength,
       AllocatedSize = allocatedBytes,
     };
     var replacementValue = RefsStreamLayoutEditor.BuildUpdatedValue(
@@ -110,7 +218,7 @@ internal static class RefsOfflineModifier {
         throw new InvalidDataException("ReFS short directory entry is too small for size/allocation fields.");
       shortEntryValue = shortEntry.Value.ToArray();
       BinaryPrimitives.WriteUInt64LittleEndian(shortEntryValue.AsSpan(0x30, 8), checked((ulong)allocatedBytes));
-      BinaryPrimitives.WriteUInt64LittleEndian(shortEntryValue.AsSpan(0x38, 8), checked((ulong)data.LongLength));
+      BinaryPrimitives.WriteUInt64LittleEndian(shortEntryValue.AsSpan(0x38, 8), checked((ulong)dataLength));
       if (shortEntryValue.Length >= 0x20)
         BinaryPrimitives.WriteUInt64LittleEndian(shortEntryValue.AsSpan(0x18, 8), checked((ulong)DateTime.UtcNow.ToFileTimeUtc()));
       if (!RefsPageEditor.CanReplaceValue(graph, shortEntry, shortEntryValue.Length))
@@ -128,7 +236,7 @@ internal static class RefsOfflineModifier {
         allocator.SetAllocated(targets, allocated: true);
         image.Flush();
         newClaimed = true;
-        WriteData(image, data, targets, clusterSize);
+        WriteData(image, data, dataLength, targets, clusterSize);
         image.Flush();
       }
 
@@ -155,7 +263,7 @@ internal static class RefsOfflineModifier {
   private static void RemoveOne(Stream image, string path) {
     var metadata = RefsMetadataReader.Open(image);
     var files = new RefsNamespaceReader(metadata).ReadAll();
-    var file = files.FirstOrDefault(f => string.Equals(f.Path, path, StringComparison.OrdinalIgnoreCase))
+    var file = RefsNamespaceLookup.FindUnique(files, path)
       ?? throw new FileNotFoundException($"ReFS entry '{path}' was not found.", path);
 
     if (file.IsDirectory && files.Any(f =>
@@ -303,19 +411,21 @@ internal static class RefsOfflineModifier {
     throw new InvalidDataException($"No ReFS allocator tier covers PLCN 0x{physicalLcn:X}.");
   }
 
-  private static void WriteData(Stream image, byte[] data, IReadOnlyList<ulong> targets, int clusterSize) {
-    var cursor = 0;
+  private static void WriteData(Stream image, Stream data, long dataLength, IReadOnlyList<ulong> targets, int clusterSize) {
+    var remaining = dataLength;
     var buffer = new byte[clusterSize];
     foreach (var lcn in targets) {
       buffer.AsSpan().Clear();
-      var take = Math.Min(clusterSize, data.Length - cursor);
-      if (take > 0) data.AsSpan(cursor, take).CopyTo(buffer);
+      var take = checked((int)Math.Min(clusterSize, remaining));
+      if (take > 0) data.ReadExactly(buffer.AsSpan(0, take));
       image.Position = checked((long)lcn * clusterSize);
       image.Write(buffer);
-      cursor += take;
+      remaining -= take;
     }
-    if (cursor != data.Length)
+    if (remaining != 0)
       throw new IOException("ReFS replacement allocation did not receive every source byte.");
+    if (data.ReadByte() != -1)
+      throw new IOException("ReFS replacement input grew while it was being read; the partial allocation was not published.");
   }
 
   private static void ReleaseOldData(Stream image, RefsFileRecord file) {

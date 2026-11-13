@@ -14,6 +14,7 @@ namespace FileSystem.Refs;
 /// can relocate file data, live MSB+ metadata and checkpoint pages while
 /// preserving the format-fixed VBR/SUPB bootstrap anchors.
 /// </summary>
+[FilesystemBlockMover(typeof(RefsBlockMover))]
 public sealed class RefsFormatDescriptor :
   IFormatDescriptor,
   IArchiveFormatOperations,
@@ -267,6 +268,13 @@ public sealed class RefsFormatDescriptor :
   /// </summary>
   public void Remove(Stream archive, string[] entryNames)
     => RefsOfflineModifier.Remove(archive, entryNames);
+
+  /// <summary>
+  /// Renames an existing ReFS regular file within the same parent directory
+  /// on an unmounted image, preserving its existing metadata and data allocation.
+  /// </summary>
+  public void Rename(Stream image, string sourcePath, string destinationPath)
+    => RefsOfflineModifier.Rename(image, sourcePath, destinationPath);
 
   private static List<ArchiveEntryInfo> ListDiagnosticSurface(Stream stream) {
     var entries = new List<ArchiveEntryInfo>();

@@ -8,9 +8,9 @@ A fast, native GTK 3 file manager in the spirit of Thunar — that opens archive
   and many small files copied in parallel. Writes to USB sticks and spinning disks are paced,
   so the system never stalls behind gigabytes of cached data and unmounting is instant.
 - **Archives are folders.** Enter a `.zip`, `.7z`, `.tar.gz`, a disk image or any of the
-  ~480 formats the archive library knows, even an archive inside an archive, and copy, paste,
+  ~580 formats the archive library knows, even an archive inside an archive, and copy, paste,
   rename, delete or create files in it like anywhere else. Open a file from inside an archive,
-  edit it, save — the archive is updated. *Compress…* writes about 350 of these formats.
+  edit it, save — the archive is updated. *Compress…* writes about 420 of these formats.
 - **Looks like your desktop.** Native GTK widgets and your GTK theme, icon theme and fonts;
   nothing is custom-drawn; the right-click menus show your icon theme's icons. Switching the
   desktop between light and dark mode restyles every window at once.
@@ -648,7 +648,7 @@ such a script (see `src/ui/selftest.rs` for the commands).
   folders a crash leaves behind are removed at the next start.
 - A failBrauwser closed while a share hangs stays in the background until the share answers
   again (closing files on it waits for GVfs).
-- Of the formats failBrauwser can write, about 270 keep files exactly. The rest are what
+- Of the formats failBrauwser can write, about 300 keep files exactly. The rest are what
   their format is: old disk formats store upper-case 8.3 names or pad files to whole sectors
   (CP/M, RT-11, LIF, PlayStation memory cards), some formats have no folders, a few need
   particular inputs (icons, fonts, subtitles), and container formats such as PDF or e-mail add
