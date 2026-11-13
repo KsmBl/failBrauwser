@@ -633,8 +633,17 @@ fn make_pictures(t: &Path) {
     assert!(Command::new("python3").arg("-c").arg(script).status().unwrap().success());
 }
 
+/// How many of the 12 pictures have a thumbnail in the cache (by the freedesktop.org name: the
+/// MD5 of the file's URI). Other files may get one too where a thumbnailer for them is installed.
 fn cached_thumbnails(t: &Path) -> usize {
-    std::fs::read_dir(t.join("cache/thumbnails/normal")).map(|d| d.count()).unwrap_or(0)
+    use md5::Digest;
+    (0..12)
+        .filter(|i| {
+            let uri = gtk::gio::prelude::FileExt::uri(&gtk::gio::File::for_path(t.join(format!("pics/p{i:02}.png"))));
+            let name: String = md5::Md5::digest(uri.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+            t.join("cache/thumbnails/normal").join(format!("{name}.png")).is_file()
+        })
+        .count()
 }
 
 #[test]

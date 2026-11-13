@@ -21,8 +21,10 @@ if [ -d "$TH/.config/tileWin" ]; then
     [ -e "$TH/.config/tileWin/$f" ] && cp -r "$TH/.config/tileWin/$f" "$T/config/tileWin/" 2>/dev/null
   done
 fi
-# Icon themes installed per user live in the data dir; keep them visible.
+# Icon and GTK themes installed per user live in the data dir; keep them visible (a theme's
+# light or dark variant is looked up there).
 [ -d "$TH/.local/share/icons" ] && ln -sfn "$TH/.local/share/icons" "$T/data/icons"
+[ -d "$TH/.local/share/themes" ] && ln -sfn "$TH/.local/share/themes" "$T/data/themes"
 
 # $T: the work folder; $UI: this folder (helpers next to the scripts).
 UI=$(cd "$(dirname "$0")" && pwd)
