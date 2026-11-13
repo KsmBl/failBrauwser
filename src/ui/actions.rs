@@ -110,6 +110,24 @@ pub fn install_app_actions(ctx: &Rc<AppCtx>) {
     });
     app.add_action(&a);
 
+    // Git the TortoiseGit way: off until switched on here.
+    let git = ctx.settings.borrow().git_integration;
+    let a = gio::SimpleAction::new_stateful("git-integration", None, &git.to_variant());
+    let c = Rc::downgrade(ctx);
+    a.connect_change_state(move |a, v| {
+        let Some(c) = c.upgrade() else { return };
+        let on = v.and_then(|v| v.get::<bool>()).unwrap_or(false);
+        a.set_state(&on.to_variant());
+        c.settings.borrow_mut().git_integration = on;
+        c.save_settings_soon();
+        c.for_each_window(|w| {
+            for p in w.panes() {
+                super::git::overlay::update(w, &p);
+            }
+        });
+    });
+    app.add_action(&a);
+
     let a = gio::SimpleAction::new("about", None);
     let c = Rc::downgrade(ctx);
     a.connect_activate(move |_, _| {
@@ -188,6 +206,7 @@ pub fn menubar_model() -> gio::Menu {
         item(s, "Keep Running in _Background", "app.daemon");
         item(s, "_Smooth Writes to Slow Drives", "app.smooth-writes");
         item(s, "_Verify Copies", "app.verify-copies");
+        item(s, "_Git Integration (TortoiseGit)", "app.git-integration");
     });
     bar.append_submenu(Some("_Edit"), &edit);
 

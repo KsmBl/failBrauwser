@@ -107,7 +107,11 @@ pub struct Settings {
     pub zoom_icons: usize,
     /// Throttle writes to removable and rotational drives so the page cache never fills up.
     pub smooth_writes: bool,
-    /// Git status overlays on files and folders in working trees (TortoiseGit's icons).
+    /// Git in the file manager (TortoiseGit's overlays, menus and dialogs); off until
+    /// switched on in Edit → Git Integration.
+    pub git_integration: bool,
+    /// Git status overlays on files and folders in working trees (TortoiseGit's icons), while
+    /// the Git integration is on.
     pub git_overlays: bool,
 }
 
@@ -133,6 +137,7 @@ impl Default for Settings {
             zoom_list: 1,
             zoom_icons: 1,
             smooth_writes: true,
+            git_integration: false,
             git_overlays: true,
         }
     }
@@ -170,6 +175,7 @@ impl Settings {
         b("smooth_writes", &mut s.smooth_writes);
         b("show_thumbnails", &mut s.show_thumbnails);
         b("verify_copies", &mut s.verify_copies);
+        b("git_integration", &mut s.git_integration);
         b("git_overlays", &mut s.git_overlays);
         i("window_width", &mut s.window_width, 300);
         i("window_height", &mut s.window_height, 200);
@@ -235,6 +241,7 @@ impl Settings {
         kf.set_boolean(GROUP, "smooth_writes", self.smooth_writes);
         kf.set_boolean(GROUP, "show_thumbnails", self.show_thumbnails);
         kf.set_boolean(GROUP, "verify_copies", self.verify_copies);
+        kf.set_boolean(GROUP, "git_integration", self.git_integration);
         kf.set_boolean(GROUP, "git_overlays", self.git_overlays);
         kf.set_integer(GROUP, "window_width", self.window_width);
         kf.set_integer(GROUP, "window_height", self.window_height);
@@ -318,6 +325,7 @@ mod tests {
         s.window_width = 1234;
         s.zoom_icons = 4;
         s.git_overlays = false;
+        s.git_integration = true;
         s.save_to(&path).unwrap();
         assert_eq!(Settings::load_from(&path), s);
     }
@@ -335,6 +343,8 @@ mod tests {
     fn missing_or_broken_file_gives_defaults() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(Settings::load_from(&dir.path().join("none.ini")), Settings::default());
+        // Git stays off until switched on.
+        assert!(!Settings::default().git_integration);
         let bad = dir.path().join("bad.ini");
         std::fs::write(&bad, "[General]\ncolumns=bogus;size\ntree_root=sideways\nwindow_width=-5\n").unwrap();
         let s = Settings::load_from(&bad);
