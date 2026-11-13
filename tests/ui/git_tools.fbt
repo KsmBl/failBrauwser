@@ -1,0 +1,117 @@
+# TortoiseGit's tools for files: Stash, Revert, Add, Ignore, Rename, Delete, Clean up,
+# Check for modifications, RefLog, Export, Patch Serial, Settings, About, Create repository.
+open $T/repo
+wait-git-overlay changed.txt = Modified
+# Stash Save, then Stash Pop.
+click-empty
+git-menu TortoiseGit/Stash Save
+wait-git-window Stash - TortoiseGit
+git-set Stash - TortoiseGit : message = parked
+git-click Stash - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+git-click Git Command Progress : Close
+wait-git-overlay changed.txt = Normal
+wait-git-overlay src = Normal
+git-menu TortoiseGit/Stash Pop
+wait-git-result Git Command Progress = Success
+git-click Git Command Progress : Close
+wait-git-overlay changed.txt = Modified
+wait-git-overlay src = Modified
+# Revert one file.
+select changed.txt
+git-menu TortoiseGit/Revert...
+wait-git-window Revert - TortoiseGit
+wait-git-rows Revert - TortoiseGit : files = +changed.txt Modified
+git-snapshot Revert - TortoiseGit = $T/revert.png
+git-click Revert - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+git-click Git Command Progress : Close
+wait-git-overlay changed.txt = Normal
+# Add an unversioned file.
+select new.txt
+git-menu TortoiseGit/Add...
+wait-git-rows Add - TortoiseGit : files = +new.txt Unversioned
+git-click Add - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+git-click Git Command Progress : Close
+wait-git-overlay new.txt = Added
+# Add to ignore list by extension, recursively.
+write-file $T/repo/scratch.tmp = x
+wait-git-overlay scratch.tmp = Unversioned
+select scratch.tmp
+git-menu TortoiseGit/Add to ignore list/*.tmp
+wait-git-window Ignore - TortoiseGit
+git-set Ignore - TortoiseGit : recursive = on
+git-snapshot Ignore - TortoiseGit = $T/ignore.png
+git-click Ignore - TortoiseGit : OK
+wait-git-overlay scratch.tmp = Ignored
+# Rename.
+select clean.txt
+git-menu TortoiseGit/Rename...
+wait-git-window Rename - TortoiseGit
+git-set Rename - TortoiseGit : new-name = tidy.txt
+git-click Rename - TortoiseGit : OK
+wait-row tidy.txt
+wait-git-overlay tidy.txt = Renamed
+# Delete (keep local): out of the repository, still on disk.
+select docs
+git-menu TortoiseGit/Delete (keep local)
+wait-dialog keep it on disk
+dialog-button keep it on disk : Delete
+wait-git-overlay docs = Modified
+# Clean up the ignored files.
+click-empty
+git-menu TortoiseGit/Clean up...
+wait-git-window Clean up - TortoiseGit
+git-set Clean up - TortoiseGit : ignored = on
+git-click Clean up - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+git-click Git Command Progress : Close
+wait-no-row build.log
+wait-no-row scratch.tmp
+# Check for modifications.
+git-menu TortoiseGit/Check for modifications
+wait-git-window Working Tree - TortoiseGit
+wait-git-text Working Tree - TortoiseGit : 2 Modified, 3 Added, 1 Deleted, 1 Unversioned, 0 Conflicted
+git-snapshot Working Tree - TortoiseGit = $T/checkmods.png
+git-close Working Tree - TortoiseGit
+# RefLog.
+git-menu TortoiseGit/Show Reflog
+wait-git-window RefLog - TortoiseGit
+git-snapshot RefLog - TortoiseGit = $T/reflog.png
+git-close RefLog - TortoiseGit
+# Export HEAD as zip.
+git-menu TortoiseGit/Export...
+wait-git-window Export - TortoiseGit
+git-set Export - TortoiseGit : zip-file = $T/export.zip
+git-click Export - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+git-click Git Command Progress : Close
+# The last commit as patch.
+git-menu TortoiseGit/Create Patch Serial...
+wait-git-window Create Patch Serial - TortoiseGit
+git-set Create Patch Serial - TortoiseGit : directory = $T/patches
+git-click Create Patch Serial - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+git-click Git Command Progress : Close
+# Settings: the name for this repository only.
+git-menu TortoiseGit/Settings
+wait-git-window Settings - TortoiseGit
+git-set Settings - TortoiseGit : scope-local = on
+git-set Settings - TortoiseGit : user-name = Local Name
+git-snapshot Settings - TortoiseGit = $T/settings.png
+git-click Settings - TortoiseGit : OK
+wait-no-git-window Settings - TortoiseGit
+git-menu TortoiseGit/About
+wait-git-window About
+expect-git-text About : Git integration of failBrauwser
+git-click About : OK
+# Create repository here.
+open $T/plain
+click-empty
+git-menu Git Create repository here...
+wait-git-window Git init - TortoiseGit
+git-click Git init - TortoiseGit : OK
+wait-dialog Empty Git repository created in
+dialog-button Empty Git repository created in : OK
+quit

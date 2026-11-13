@@ -14,7 +14,7 @@ fn run(script: &str, setup: impl FnOnce(&Path)) {
 
 /// Like `run`, with extra environment and a check of the folder afterwards.
 fn run_checked(script: &str, env: &[(&str, &str)], setup: impl FnOnce(&Path), check: impl FnOnce(&Path)) {
-    if !["sway", "grim", "dbus-run-session"].iter().all(|t| have(t)) {
+    if !(have("sway") || have("tilewin")) || !["grim", "dbus-run-session"].iter().all(|t| have(t)) {
         eprintln!("headless UI tools missing, skipping {script}");
         return;
     }

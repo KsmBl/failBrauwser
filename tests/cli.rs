@@ -21,3 +21,18 @@ fn version_and_help_need_no_display() {
     assert!(h.status.success());
     assert!(String::from_utf8_lossy(&h.stdout).contains("--daemon"));
 }
+
+#[test]
+fn answers_git_password_questions() {
+    // Started by git as GIT_ASKPASS: prints the answer and opens no main window.
+    let out = Command::new(env!("CARGO_BIN_EXE_failbrauwser"))
+        .arg("Password for 'https://ann@example.org': ")
+        .env("FB_GIT_ASKPASS", "1")
+        .env("FB_ASKPASS_REPLY", "s3cret")
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "s3cret\n");
+}

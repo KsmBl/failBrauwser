@@ -1,0 +1,51 @@
+# Git Sync, Pull, Push, Fetch and Clone with a remote.
+open $T/repo
+click-empty
+git-menu Git Sync...
+wait-git-window Git Synchronization - TortoiseGit
+expect-git-text Git Synchronization - TortoiseGit : $T/remote.git
+git-click Git Synchronization - TortoiseGit : Fetch
+wait-git-text Git Synchronization - TortoiseGit : Success
+wait-git-sync Git Synchronization
+git-snapshot Git Synchronization - TortoiseGit = $T/sync.png
+git-close Git Synchronization - TortoiseGit
+# Pull: the commit from elsewhere is merged.
+git-menu TortoiseGit/Pull...
+wait-git-window Pull - TortoiseGit
+git-snapshot Pull - TortoiseGit = $T/pull.png
+git-click Pull - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+git-click Git Command Progress : Close
+wait-row other.txt
+wait-git-overlay other.txt = Normal
+# Push the merge.
+git-menu TortoiseGit/Push...
+wait-git-window Push - TortoiseGit
+git-snapshot Push - TortoiseGit = $T/push.png
+git-click Push - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+expect-git-text Git Command Progress : git push --progress -v origin main
+git-click Git Command Progress : Close
+# Fetch with prune.
+git-menu TortoiseGit/Fetch...
+wait-git-window Fetch - TortoiseGit
+git-set Fetch - TortoiseGit : prune = on
+git-click Fetch - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+expect-git-text Git Command Progress : git fetch --progress -v --prune origin
+git-click Git Command Progress : Close
+# Clone into the folder above.
+open $T
+click-empty
+git-menu Git Clone...
+wait-git-window Git clone - TortoiseGit
+git-set Git clone - TortoiseGit : url = $T/remote.git
+expect-git-dialog-field Git clone - TortoiseGit : directory = $T/remote
+git-set Git clone - TortoiseGit : directory = $T/cloned
+git-snapshot Git clone - TortoiseGit = $T/clone.png
+git-click Git clone - TortoiseGit : OK
+wait-git-result Git Command Progress = Success
+git-click Git Command Progress : Close
+wait-row cloned
+wait-git-overlay cloned = Normal
+quit

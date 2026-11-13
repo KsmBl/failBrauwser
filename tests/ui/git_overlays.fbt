@@ -1,0 +1,65 @@
+# TortoiseGit's overlay icons and its items in the right-click menu.
+open $T/repo
+wait-git-overlay clean.txt = Normal
+wait-git-overlay changed.txt = Modified
+wait-git-overlay added.txt = Added
+wait-git-overlay new.txt = Unversioned
+wait-git-overlay build.log = Ignored
+wait-git-overlay src = Modified
+wait-git-overlay docs = Normal
+# A file changed: the folder changes, the overlay follows.
+write-file $T/repo/clean.txt = edited
+wait-git-overlay clean.txt = Modified
+# A commit made elsewhere: the repository is watched.
+run cd $T/repo && git commit -qam elsewhere
+wait-git-overlay clean.txt = Normal
+wait-git-overlay changed.txt = Normal
+wait-git-overlay added.txt = Normal
+wait-git-overlay src = Normal
+# The menu of a versioned file, as in Explorer.
+select clean.txt
+expect-git-menu Git Sync...
+expect-git-menu Git Commit -> "main"...
+expect-git-menu TortoiseGit/Pull...
+expect-git-menu TortoiseGit/Show log
+expect-git-menu TortoiseGit/Diff with previous version
+expect-git-menu TortoiseGit/Blame
+expect-git-menu TortoiseGit/Rename...
+expect-git-menu TortoiseGit/Settings
+expect-no-git-menu TortoiseGit/Diff
+expect-no-git-menu TortoiseGit/Add...
+expect-no-git-menu Git Clone...
+# An unversioned file: Add and the ignore list.
+select new.txt
+expect-git-menu TortoiseGit/Add...
+expect-git-menu TortoiseGit/Add to ignore list/new.txt
+expect-git-menu TortoiseGit/Add to ignore list/*.txt
+expect-no-git-menu TortoiseGit/Delete
+# The folder above: each working tree shows its state; Clone and Create repository here.
+open $T
+wait-git-overlay repo = Normal
+wait-git-overlay plain = none
+run echo more >> $T/repo/clean.txt
+action win.reload
+wait-git-overlay repo = Modified
+click-empty
+expect-git-menu Git Clone...
+expect-git-menu Git Create repository here...
+expect-git-menu TortoiseGit/About
+expect-no-git-menu Git Sync...
+select repo
+expect-git-menu Git Commit -> "main"...
+# How it looks: the overlays, and the menu with the TortoiseGit submenu open.
+open $T/repo
+wait-git-overlay clean.txt = Modified
+window-snapshot $T/overlays.png
+right-click new.txt
+expect-context-menu file
+git-open-submenu TortoiseGit
+sleep 400
+screenshot $T/menu.png
+close-context-menu
+action win.view-mode icons
+sleep 300
+window-snapshot $T/overlays-icons.png
+quit
