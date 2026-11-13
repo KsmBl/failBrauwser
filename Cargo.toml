@@ -29,5 +29,7 @@ regex = "1"
 [profile.release]
 opt-level = 3
 lto = "thin"
-codegen-units = 1
+# The program is built on 16 cores instead of one: about 40 s instead of 2.5 min for its last
+# step, for a few percent of size.
+codegen-units = 16
 strip = true
