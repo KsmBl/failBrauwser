@@ -2,7 +2,7 @@
 //! overlay icons on files and folders, in TortoiseGit's colors and places, and the icons of
 //! its menu items and dialogs.
 
-use failbrauwser::git::Status;
+use failbrauwser::vcs::git::Status;
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::prelude::*;
 use gtk::{gio, glib};

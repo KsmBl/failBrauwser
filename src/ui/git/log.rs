@@ -8,7 +8,7 @@ use super::super::window::Window;
 use super::dialog;
 use super::filelist::{self, FileList};
 use super::progress;
-use failbrauwser::git::{self, Commit, GraphRow, RefLabel, Refs, Repo, Status};
+use failbrauwser::vcs::git::{self, Commit, GraphRow, RefLabel, Refs, Repo, Status};
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::prelude::*;
 use gtk::{gdk, glib};

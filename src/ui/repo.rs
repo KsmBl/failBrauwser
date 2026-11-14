@@ -1,5 +1,5 @@
 //! The Repository menu and the windows its commands answer in (M15). The submenu is the folder's
-//! own tool's commands as filtered by what the selection carries (`failbrauwser::repo`), and every
+//! own tool's commands as filtered by what the selection carries (`failbrauwser::vcs`), and every
 //! entry names the window action its command owns: the menu is built from that same list, so an
 //! entry never stands without a window behind it. Nothing here reads a repository's own data — the
 //! tool's client is asked, and its words are shown as they arrived, because that is the answer a
@@ -10,9 +10,9 @@ use super::pane::Pane;
 use super::window::Window;
 use super::util;
 use failbrauwser::location::Location;
-use failbrauwser::repo::run as client;
-use failbrauwser::repo::verbs::{Ask, Command, Request, Selection};
-use failbrauwser::repo::{self, Tool};
+use failbrauwser::vcs::run as client;
+use failbrauwser::vcs::verbs::{Ask, Command, Request, Selection};
+use failbrauwser::vcs::{self, Tool};
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
@@ -78,7 +78,7 @@ fn selection_of(items: &[Item]) -> Selection {
 pub fn submenu(pane: &Pane, items: &[Item]) -> Option<gio::Menu> {
     let dir = match pane.location() { Location::Dir(p) => p, _ => return None };
     let menu = gio::Menu::new();
-    for c in offered(repo::find(&dir).map(|c| c.tool), &selection_of(items)) {
+    for c in offered(vcs::find(&dir).map(|c| c.tool), &selection_of(items)) {
         menu.append_item(&super::menuicons::model_item(c.label(), &format!("win.{}", c.action())));
     }
     Some(menu)
@@ -208,7 +208,7 @@ fn run(w: &Window, c: Command) {
         ask_clone(w, &dir);
         return;
     }
-    let Some(copy) = repo::find(&dir) else {
+    let Some(copy) = vcs::find(&dir) else {
         say(w, c.label(), "no working copy", &format!("{} is not inside a working copy of any tool this program knows, so it has no client of its own to ask.", dir.display()));
         return;
     };

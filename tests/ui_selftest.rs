@@ -701,7 +701,7 @@ fn mouse_back_and_forward_keys() {
 
 /// The Repository submenu (M15). The markers here are the plain ones a tool leaves — an empty
 /// `.git`, `.hg` or `.svn`, a `CVS/Repository` file, a `vssver2.scc` file — because detection
-/// reads nothing else; what the tools' clients answer is pinned in `src/repo`.
+/// reads nothing else; what the tools' clients answer is pinned in `src/vcs`.
 #[test]
 fn repository_menu_per_working_copy() {
     run_outside_the_working_copy(
@@ -759,7 +759,7 @@ fn repository_commands_answer_in_a_window_of_the_program_s_own() {
 }
 
 /// A working copy of Git's own making, with this machine's own settings kept out of it: no hooks, a
-/// fixed identity, no signing — the same hermetic calls the scenarios of `src/repo` make.
+/// fixed identity, no signing — the same hermetic calls the scenarios of `src/vcs` make.
 fn git_copy(dir: &Path, files: &[(&str, &str)]) {
     std::fs::create_dir_all(dir).unwrap();
     git(dir, &["init", "-q"]);

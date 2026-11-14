@@ -7,7 +7,7 @@ use super::super::window::Window;
 use super::dialog;
 use super::filelist::{self, FileList};
 use super::progress::{self, Cmd};
-use failbrauwser::git::{Change, Repo, Status};
+use failbrauwser::vcs::git::{Change, Repo, Status};
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::Cell;

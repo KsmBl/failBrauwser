@@ -8,7 +8,7 @@ use super::dialog::{self, BaseOn};
 use super::filelist::{self, FileList};
 use super::progress::{self, Cmd};
 use super::Target;
-use failbrauwser::git::{self, Change, Repo, Status};
+use failbrauwser::vcs::git::{self, Change, Repo, Status};
 use gtk::prelude::*;
 use gtk::glib;
 use std::path::{Path, PathBuf};

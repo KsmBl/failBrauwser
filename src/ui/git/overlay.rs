@@ -6,7 +6,7 @@
 use super::super::pane::Pane;
 use super::super::window::Window;
 use super::icons::status_code;
-use failbrauwser::git;
+use failbrauwser::vcs::git;
 use failbrauwser::location::Location;
 use gtk::prelude::*;
 use gtk::{gio, glib};

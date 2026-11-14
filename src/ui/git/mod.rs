@@ -19,7 +19,7 @@ pub mod testing;
 use super::model::Item;
 use super::pane::Pane;
 use super::window::Window;
-use failbrauwser::git::{self, Repo, Status};
+use failbrauwser::vcs::git::{self, Repo, Status};
 use failbrauwser::location::Location;
 use gtk::prelude::*;
 use gtk::{gio, glib};

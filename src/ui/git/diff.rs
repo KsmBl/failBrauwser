@@ -4,7 +4,7 @@
 
 use super::super::window::Window;
 use super::dialog;
-use failbrauwser::git::{self, DiffKind, DiffRow, Repo};
+use failbrauwser::vcs::git::{self, DiffKind, DiffRow, Repo};
 use gtk::prelude::*;
 use gtk::glib;
 use std::cell::RefCell;

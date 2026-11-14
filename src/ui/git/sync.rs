@@ -6,7 +6,7 @@ use super::super::window::Window;
 use super::dialog;
 use super::progress::{self, Event};
 use super::Target;
-use failbrauwser::git::{Commit, Repo};
+use failbrauwser::vcs::git::{Commit, Repo};
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::Cell;

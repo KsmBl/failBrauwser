@@ -4,6 +4,7 @@
 //! back. The Repository menu (M15) is the only caller that turns this into actions.
 
 pub mod diff;
+pub mod git;
 pub mod run;
 pub mod verbs;
 

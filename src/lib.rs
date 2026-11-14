@@ -7,7 +7,6 @@ pub mod archive;
 pub mod chooser;
 pub mod clipformat;
 pub mod fs;
-pub mod git;
 pub mod config;
 pub mod desktoplink;
 pub mod devices;
@@ -20,7 +19,7 @@ pub mod osprim;
 #[cfg(windows)]
 pub mod remote_fs;
 pub mod remote;
-pub mod repo;
+pub mod vcs;
 pub mod search;
 pub mod servers;
 pub mod shortcuts;
