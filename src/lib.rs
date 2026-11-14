@@ -16,7 +16,11 @@ pub mod location;
 pub mod lvm;
 pub mod network;
 pub mod ops;
+pub mod osprim;
+#[cfg(windows)]
+pub mod remote_fs;
 pub mod remote;
+pub mod repo;
 pub mod search;
 pub mod servers;
 pub mod shortcuts;
@@ -24,3 +28,7 @@ pub mod thumbs;
 pub mod trash;
 pub mod update;
 pub mod wmtheme;
+#[cfg(windows)]
+pub mod win;
+#[cfg(windows)]
+pub mod wpd;

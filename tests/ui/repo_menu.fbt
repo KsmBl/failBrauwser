@@ -1,0 +1,94 @@
+# M15 "Repository": what a folder offers depends on the marker its own tool left in it, and on
+# what the selection can carry. The folders here are marker fixtures — an empty `.git`, `.hg`,
+# `.svn`, `CVS/Repository` or `vssver2.scc` is all the marker a tool leaves, and detection reads
+# nothing else; what the clients themselves answer is pinned by the scenarios of src/repo.
+
+# A folder Git owns: the working copy's commands are there, and Clone is not — a folder the tool
+# already owns has nothing to clone into.
+open $T/gitcopy
+expect-menu-item Commit
+expect-menu-item Pull
+expect-menu-item Sync
+expect-menu-item Check for modifications
+expect-menu-item Show Log
+expect-menu-item Browse Repository
+expect-menu-item Settings
+expect-no-menu-item Clone…
+
+# A plain folder: the Repository entry is still there, and its submenu carries only Clone.
+open $T/plain
+expect-menu-item Repository
+expect-menu-item Clone…
+expect-no-menu-item Commit
+expect-no-menu-item Push
+
+# A CVS folder is a central store: nothing local to send out, nothing of one's own to stash.
+open $T/cvs
+expect-menu-item Pull
+expect-menu-item Commit
+expect-no-menu-item Push
+expect-no-menu-item Sync
+expect-no-menu-item Stash
+expect-no-menu-item Clone…
+
+# Mercurial has both a stash of its own and something to push.
+open $T/hgcopy
+expect-menu-item Stash
+expect-menu-item Push
+expect-no-menu-item Clone…
+
+# A Subversion working copy reads its settings from the folder's properties.
+open $T/svncopy
+expect-menu-item Check for modifications
+expect-menu-item Settings
+expect-no-menu-item Stash
+
+# A Visual Source Safe binding answers Blame with nothing, renames nothing through its own client,
+# and keeps a local copy of what it deletes.
+open $T/vsscopy
+select a.txt
+expect-menu-item Delete (keep local)
+expect-menu-item Check for modifications
+expect-no-menu-item Blame
+expect-no-menu-item Rename
+expect-no-menu-item Settings
+expect-no-menu-item Clone…
+
+# A folder that only holds a working copy deeper down is not one itself: Clone stays.
+open $T/wrapper
+expect-menu-item Clone…
+expect-no-menu-item Commit
+
+# and the folder the marker sits in is the working copy.
+open $T/wrapper/inner
+expect-menu-item Commit
+expect-no-menu-item Clone…
+
+# One file can be compared with its previous version, renamed, blamed and deleted; two cannot be
+# renamed as one thing.
+open $T/gitcopy
+select one.txt
+expect-menu-item Diff with previous version
+expect-menu-item Rename
+expect-menu-item Blame
+expect-menu-item Delete and add to ignore list
+
+open $T/gitcopy
+select one.txt | two.txt
+expect-no-menu-item Rename
+expect-no-menu-item Diff with previous version
+expect-menu-item Delete
+
+# Nothing selected: the folder's own diff and history remain, the per-item commands do not.
+open $T/gitcopy
+select-none
+expect-menu-item Diff
+expect-menu-item Check for modifications
+expect-no-menu-item Rename
+expect-no-menu-item Blame
+
+# A folder inside a working copy reached from a parent marker is one too, and the marker of a
+# sibling folder does not reach across.
+open $T/gitcopy/deep
+expect-menu-item Commit
+expect-menu-item Switch/Checkout…

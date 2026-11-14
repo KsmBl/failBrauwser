@@ -30,6 +30,7 @@ pub mod phones;
 pub mod portal;
 pub mod properties;
 pub mod remote;
+pub mod repo;
 pub mod searchbar;
 pub mod shares;
 pub mod showfilter;

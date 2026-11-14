@@ -175,6 +175,10 @@ impl Window {
         super::showfilter::install_actions(self);
         super::showfilter::attach(&self.statusbar);
         super::extensions::window_created(self);
+        // The mouse's back and forward keys, which GDK reports to no one on Windows: the watch
+        // needs this window's handle, and that exists once the window has been shown.
+        #[cfg(windows)]
+        failbrauwser::win::xbuttons::watch(&self.win);
     }
 
     pub fn me(&self) -> Rc<Window> {
@@ -531,6 +535,15 @@ impl Window {
         });
         self.win.add_action(&a);
 
+        // *Open as ▸ a chosen container*: the one-argument shape of "open-with", carrying the kind's id.
+        let a = gio::SimpleAction::new("open-as-volume", Some(glib::VariantTy::STRING));
+        let weak = self.weak.borrow().clone();
+        a.connect_activate(move |_, v| {
+            let (Some(w), Some(kind)) = (weak.upgrade(), v.and_then(|v| v.get::<String>())) else { return };
+            super::archive::open_as_volume(&w, &kind);
+        });
+        self.win.add_action(&a);
+
         let s = self.app.settings.clone();
         let app = Rc::downgrade(&self.app);
         self.win.add_action(&toggle_action("show-hidden", s.borrow().show_hidden, move |on| {
@@ -828,15 +841,6 @@ fn status_text(pane: &Pane) -> String {
 }
 
 pub fn free_space(dir: &std::path::Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
-    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
-        return None;
-    }
     // No size at all: a server that does not tell (FTP, some WebDAV), not a full drive.
-    if st.f_blocks == 0 {
-        return None;
-    }
-    Some(st.f_bavail as u64 * st.f_frsize as u64)
+    failbrauwser::osprim::free_space(dir)
 }
