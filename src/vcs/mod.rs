@@ -5,11 +5,15 @@
 
 pub mod backend;
 pub mod caps;
+pub mod cvs;
 pub mod diff;
 pub mod git;
+pub mod hg;
 pub mod state;
 pub mod run;
+pub mod svn;
 pub mod verbs;
+pub mod xml;
 
 use std::path::{Path, PathBuf};
 

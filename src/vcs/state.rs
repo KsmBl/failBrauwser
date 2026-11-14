@@ -440,3 +440,87 @@ pub fn ignore_patterns(name: &str) -> Vec<String> {
     out
 }
 
+
+/// Lines added and removed per file in a unified diff, keyed by the path the `+++` line names
+/// (the `---` one for a deleted file), with `strip` taken off its front (`b/` for Mercurial) and
+/// what follows a tab (a date, "(working copy)") left out. What Git's `--numstat` answers, for the
+/// clients that only print the diff itself.
+pub fn count_unified(text: &str, strip: &str) -> HashMap<String, (Option<u64>, Option<u64>)> {
+    let name = |s: &str, prefix: &str| -> String {
+        let s = s.split('\t').next().unwrap_or(s).trim_end();
+        s.strip_prefix(prefix).unwrap_or(s).to_string()
+    };
+    let mut out: HashMap<String, (Option<u64>, Option<u64>)> = HashMap::new();
+    let mut old = String::new();
+    let mut current: Option<String> = None;
+    let mut in_hunk = false;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("--- ").filter(|_| !in_hunk || current.is_none()) {
+            old = rest.to_string();
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("+++ ").filter(|_| !old.is_empty()) {
+            let new = rest.split('\t').next().unwrap_or(rest);
+            let a_side = if strip == "b/" { "a/" } else { strip };
+            let path = if new == "/dev/null" { name(&old, a_side) } else { name(rest, strip) };
+            out.entry(path.clone()).or_insert((Some(0), Some(0)));
+            current = Some(path);
+            old.clear();
+            in_hunk = false;
+            continue;
+        }
+        if line.starts_with("@@") {
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk {
+            continue;
+        }
+        let Some(path) = &current else { continue };
+        let e = out.get_mut(path).expect("entry made at its header");
+        if line.starts_with('+') {
+            e.0 = e.0.map(|n| n + 1);
+        } else if line.starts_with('-') {
+            e.1 = e.1.map(|n| n + 1);
+        } else if !line.starts_with(' ') && !line.starts_with('\\') {
+            // A line outside the hunk's alphabet starts the next file's header.
+            in_hunk = false;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod unified_tests {
+    use super::*;
+
+    #[test]
+    fn lines_are_counted_per_file_of_a_mercurial_diff() {
+        let text = "diff -r 1 one.txt\n--- a/one.txt\tThu Jan 01 00:00:00 1970 +0000\n+++ b/one.txt\tThu Jan 01 00:00:00 1970 +0000\n@@ -1,2 +1,3 @@\n alpha\n-beta\n+beta changed\n+gamma\ndiff -r 1 gone.txt\n--- a/gone.txt\tThu\n+++ /dev/null\tThu\n@@ -1,1 +0,0 @@\n-x\n";
+        let c = count_unified(text, "b/");
+        assert_eq!(c["one.txt"], (Some(2), Some(1)));
+        assert_eq!(c["gone.txt"], (Some(0), Some(1)));
+    }
+
+    #[test]
+    fn a_subversion_diff_names_its_files_without_a_prefix() {
+        let text = "Index: one.txt\n===================================================================\n--- one.txt\t(revision 2)\n+++ one.txt\t(working copy)\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(count_unified(text, "")["one.txt"], (Some(1), Some(1)));
+    }
+
+    /// A removed line reading `-- x` must not be taken for the next file's `---` header.
+    #[test]
+    fn a_removed_line_that_looks_like_a_header_stays_a_line() {
+        let text = "--- a/f\n+++ b/f\n@@ -1,2 +1,1 @@\n--- x\n keep\n";
+        assert_eq!(count_unified(text, "b/")["f"], (Some(0), Some(1)));
+    }
+}
+
+/// Lines of a file not yet in the repository: every line counts as added (None for binary files
+/// and those that cannot be read).
+pub fn new_file_lines(path: &Path) -> (Option<u64>, Option<u64>) {
+    match std::fs::read(path) {
+        Ok(text) if !text.contains(&0) => (Some(text.iter().filter(|&&b| b == b'\n').count() as u64 + u64::from(!text.is_empty() && !text.ends_with(b"\n"))), Some(0)),
+        _ => (None, None),
+    }
+}

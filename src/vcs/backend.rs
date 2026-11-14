@@ -86,6 +86,9 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
 pub fn open(wc: &WorkingCopy) -> Option<Arc<dyn Backend>> {
     match wc.tool {
         Tool::Git => super::git::repo_at(&wc.root).map(|r| Arc::new(r) as Arc<dyn Backend>),
+        Tool::Mercurial => Some(Arc::new(super::hg::Hg { root: wc.root.clone() })),
+        Tool::Subversion => Some(Arc::new(super::svn::Svn { root: wc.root.clone() })),
+        Tool::Cvs => Some(Arc::new(super::cvs::Cvs { root: wc.root.clone() })),
         _ => None,
     }
 }
