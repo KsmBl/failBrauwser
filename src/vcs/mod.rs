@@ -5,6 +5,7 @@
 
 pub mod diff;
 pub mod git;
+pub mod state;
 pub mod run;
 pub mod verbs;
 
