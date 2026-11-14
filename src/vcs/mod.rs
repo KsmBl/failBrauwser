@@ -13,6 +13,7 @@ pub mod state;
 pub mod run;
 pub mod svn;
 pub mod verbs;
+pub mod vss;
 pub mod xml;
 
 use std::path::{Path, PathBuf};

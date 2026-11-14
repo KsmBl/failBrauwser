@@ -82,14 +82,14 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// The backend of a working copy (None where the tool cannot be read here).
+/// The backend of a working copy (None where a Git marker names no repository).
 pub fn open(wc: &WorkingCopy) -> Option<Arc<dyn Backend>> {
     match wc.tool {
         Tool::Git => super::git::repo_at(&wc.root).map(|r| Arc::new(r) as Arc<dyn Backend>),
         Tool::Mercurial => Some(Arc::new(super::hg::Hg { root: wc.root.clone() })),
         Tool::Subversion => Some(Arc::new(super::svn::Svn { root: wc.root.clone() })),
         Tool::Cvs => Some(Arc::new(super::cvs::Cvs { root: wc.root.clone() })),
-        _ => None,
+        Tool::VisualSourceSafe => Some(Arc::new(super::vss::Vss { root: wc.root.clone() })),
     }
 }
 
