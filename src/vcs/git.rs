@@ -545,6 +545,64 @@ pub fn clone_dir_name(url: &str) -> String {
     if last.is_empty() { "repository".into() } else { last.to_string() }
 }
 
+/// Git as one tool among the five: the same questions, answered by the methods above.
+impl super::backend::Backend for Repo {
+    fn tool(&self) -> super::Tool {
+        super::Tool::Git
+    }
+    fn root(&self) -> &Path {
+        &self.root
+    }
+    fn branch_label(&self) -> String {
+        Repo::branch_label(self)
+    }
+    fn changes(&self, paths: &[String], unversioned: bool, ignored: bool) -> Result<Vec<Change>, String> {
+        Repo::changes(self, paths, unversioned, ignored)
+    }
+    fn folder_status(&self, dir: &Path) -> Result<HashMap<OsString, Status>, String> {
+        Repo::folder_status(self, dir)
+    }
+    fn summary(&self) -> Result<Status, String> {
+        summary(&self.root)
+    }
+    fn log(&self, paths: &[String], max: usize) -> Result<Vec<Commit>, String> {
+        Repo::log(self, false, paths, max)
+    }
+    fn log_actions(&self, paths: &[String], max: usize) -> HashMap<String, Vec<char>> {
+        Repo::log_actions(self, false, paths, max)
+    }
+    fn revision_changes(&self, rev: &str) -> Result<Vec<Change>, String> {
+        self.commit_changes(rev)
+    }
+    fn parent(&self, rev: &str) -> Option<String> {
+        self.run(&["rev-parse", "--verify", "-q", &format!("{rev}^1")]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+    fn blame(&self, path: &str) -> Result<Vec<BlameLine>, String> {
+        Repo::blame(self, path, None)
+    }
+    fn base_text(&self, path: &str) -> Vec<u8> {
+        self.show_file("HEAD", path)
+    }
+    fn text_at(&self, rev: &str, path: &str) -> Vec<u8> {
+        if rev.is_empty() || rev == EMPTY_TREE { Vec::new() } else { self.show_file(rev, path) }
+    }
+    fn last_two_versions(&self, path: &str) -> Option<(String, String)> {
+        Repo::last_two_versions(self, path).map(|(a, b)| (a, if b == EMPTY_TREE { String::new() } else { b }))
+    }
+    fn has_conflicts(&self) -> bool {
+        Repo::has_conflicts(self)
+    }
+    fn refs(&self) -> Refs {
+        Repo::refs(self)
+    }
+    fn admin_dir(&self) -> Option<PathBuf> {
+        Some(self.git_dir.clone())
+    }
+    fn as_git(&self) -> Option<&Repo> {
+        Some(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

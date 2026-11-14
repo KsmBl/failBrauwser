@@ -3,6 +3,8 @@
 //! here reads a repository's own data, so a working copy is never understood behind its tool's
 //! back. The Repository menu (M15) is the only caller that turns this into actions.
 
+pub mod backend;
+pub mod caps;
 pub mod diff;
 pub mod git;
 pub mod state;
