@@ -47,11 +47,14 @@ dialog-button Passphrase for : Cancel
 wait-row volume.img
 wait-no-row metadata.ini
 
-# A program answers the Archive entry with the resources inside it instead of being run,
-# which is what its name alone would do.
+# A program answers the Archive entry with what is inside it instead of being run, which is what
+# its name alone would do. The program is the helper itself: a PE on Windows, whose resources are
+# listed; an ELF elsewhere, whose loader and dynamic symbols are.
 open $T/w
 select setup.exe
 expect-menu-item Archive
 action win.open-as-archive
-wait-row MANIFEST
-wait-row VERSION
+!win wait-row MANIFEST
+!win wait-row VERSION
+!unix wait-row interp.txt
+!unix wait-row symbols_dyn.txt

@@ -1064,7 +1064,7 @@ fn open_as_chosen_kind() {
         // The same container under a second name: this session has no passphrase for it yet, which
         // is what the cancelled-prompt step needs.
         std::fs::copy(&volume, w.join("locked.bin")).unwrap();
-        // A program: a name whose default action runs it, whose resources the Archive entry shows.
+        // A program: a name whose default action runs it, whose insides the Archive entry shows.
         std::fs::copy(&helper, w.join("setup.exe")).unwrap();
     });
 }
