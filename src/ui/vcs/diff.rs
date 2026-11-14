@@ -1,10 +1,16 @@
 //! Two versions of a file side by side, as TortoiseGitMerge shows them: the old one on the
 //! left, the new one on the right, line numbers in front, removed lines red, added lines
-//! yellow, gaps grey; buttons to jump to the previous or next difference.
+//! yellow, gaps grey; buttons to jump to the previous or next difference. A marker before each
+//! line says removed (-), added (+) or changed (~) so nothing rests on colour alone, the words
+//! that changed inside a changed pair stand out (and are underlined), and unchanged runs fold
+//! to three lines around each change, the lines they hide named.
 
 use super::super::window::Window;
 use super::dialog;
-use failbrauwser::git::{self, DiffKind, DiffRow, Repo};
+use super::Wc;
+use failbrauwser::vcs::git::{self, DiffKind, DiffRow};
+use failbrauwser::vcs::state::{fold_same, Shown};
+use failbrauwser::vcs::Tool;
 use gtk::prelude::*;
 use gtk::glib;
 use std::cell::RefCell;
@@ -13,39 +19,67 @@ use std::rc::Rc;
 const REMOVED: &str = "#ffc8c8";
 const ADDED: &str = "#ffff96";
 const GAP: &str = "#e2e2e2";
+/// The words that changed inside a changed pair, a shade deeper than their line.
+const REMOVED_WORD: &str = "#ff8c8c";
+const ADDED_WORD: &str = "#e6e600";
+/// Lines of unchanged text kept around each change.
+const CONTEXT: usize = 3;
+
+/// A side's text as markup: the words that changed (where the pair has any) in a deeper shade
+/// and underlined, everything else as it is.
+fn side_markup(marks: &[failbrauwser::vcs::diff::Mark], word_bg: &str) -> String {
+    marks
+        .iter()
+        .map(|m| {
+            let t = glib::markup_escape_text(&m.text.replace('\t', "    "));
+            if m.changed && !m.text.trim().is_empty() { format!("<span background=\"{word_bg}\" underline=\"single\">{t}</span>") } else { t.to_string() }
+        })
+        .collect()
+}
 
 thread_local! {
     /// The diff windows shown and their rows (tests).
     static SHOWN: RefCell<Vec<(glib::WeakRef<gtk::Window>, Vec<DiffRow>)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The working tree file against HEAD.
-pub fn working(w: &Window, repo: &Repo, path: &str) {
-    let old = repo.show_file("HEAD", path);
-    let new = std::fs::read(repo.root.join(path)).unwrap_or_default();
-    open(w, repo, path, &format!("{path} - Base (HEAD)"), &format!("{path} - Working Tree"), old, new);
+/// What each tool compares a working file with, as the left pane names it.
+fn base_word(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Git => "HEAD",
+        Tool::Mercurial => "parent",
+        Tool::Subversion => "BASE",
+        Tool::Cvs => "checked out",
+        Tool::VisualSourceSafe => "current",
+    }
+}
+
+/// The working file against what its tool compares it with.
+pub fn working(w: &Window, wc: &Wc, path: &str) {
+    let old = wc.base_text(path);
+    let new = std::fs::read(wc.root().join(path)).unwrap_or_default();
+    open(w, wc, path, &format!("{path} - Base ({})", base_word(wc.tool())), &format!("{path} - Working Tree"), old, new);
 }
 
 /// The file as its last commit left it against the version before.
-pub fn previous(w: &Window, repo: &Repo, path: &str) {
-    let Some((latest, before)) = repo.last_two_versions(path) else {
+pub fn previous(w: &Window, wc: &Wc, path: &str) {
+    let Some((latest, before)) = wc.last_two_versions(path) else {
         dialog::error(&w.win, &format!("{path} has no history."));
         return;
     };
-    revisions(w, repo, path, path, &before, &latest);
+    revisions(w, wc, path, path, &before, &latest);
 }
 
 /// `path` at `new_rev` against `old_path` at `old_rev`.
-pub fn revisions(w: &Window, repo: &Repo, old_path: &str, path: &str, old_rev: &str, new_rev: &str) {
-    let short = |r: &str| if r == git::EMPTY_TREE { "(none)".to_string() } else { r[..r.len().min(8)].to_string() };
-    let old = if old_rev == git::EMPTY_TREE { Vec::new() } else { repo.show_file(old_rev, old_path) };
-    let new = repo.show_file(new_rev, path);
-    open(w, repo, path, &format!("{old_path} - Revision {}", short(old_rev)), &format!("{path} - Revision {}", short(new_rev)), old, new);
+pub fn revisions(w: &Window, wc: &Wc, old_path: &str, path: &str, old_rev: &str, new_rev: &str) {
+    let short = |r: &str| if r.is_empty() || r == git::EMPTY_TREE { "(none)".to_string() } else { r[..r.len().min(8)].to_string() };
+    let old = wc.text_at(old_rev, old_path);
+    let new = wc.text_at(new_rev, path);
+    open(w, wc, path, &format!("{old_path} - Revision {}", short(old_rev)), &format!("{path} - Revision {}", short(new_rev)), old, new);
 }
 
-fn open(w: &Window, repo: &Repo, path: &str, left: &str, right: &str, old: Vec<u8>, new: Vec<u8>) {
+fn open(w: &Window, wc: &Wc, path: &str, left: &str, right: &str, old: Vec<u8>, new: Vec<u8>) {
     let win = gtk::Window::new(gtk::WindowType::Toplevel);
-    win.set_title(&format!("{} - TortoiseGitMerge", repo.root.join(path).display()));
+    win.set_title(&format!("{} - TortoiseGitMerge", wc.root().join(path).display()));
     win.set_transient_for(Some(&w.win));
     win.set_destroy_with_parent(true);
     win.set_default_size(1000, 640);
@@ -82,17 +116,39 @@ fn open(w: &Window, repo: &Repo, path: &str, left: &str, right: &str, old: Vec<u
     }
     outer.pack_start(&heads, false, false, 0);
     let store = gtk::ListStore::new(&[glib::Type::STRING, glib::Type::STRING, glib::Type::STRING, glib::Type::STRING, glib::Type::STRING, glib::Type::STRING]);
-    for r in &rows {
+    let shown = fold_same(&rows, CONTEXT);
+    for s in &shown {
         let it = store.append();
+        let r = match s {
+            Shown::Row(i) => &rows[*i],
+            Shown::Fold { rows: hidden, old, new } => {
+                let say = |(a, b): (usize, usize)| format!("<i>⋯ {} unchanged line(s), {a}–{b} ⋯</i>", hidden.len());
+                store.set(&it, &[(0, &""), (1, &say(*old)), (2, &Some(GAP)), (3, &""), (4, &say(*new)), (5, &Some(GAP))]);
+                continue;
+            }
+        };
         let (lbg, rbg) = match r.kind {
             DiffKind::Same => (None, None),
             DiffKind::Removed => (Some(REMOVED), Some(GAP)),
             DiffKind::Added => (Some(GAP), Some(ADDED)),
             DiffKind::Changed => (Some(REMOVED), Some(ADDED)),
         };
-        let num = |s: &Option<(usize, String)>| s.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default();
-        let text = |s: &Option<(usize, String)>| s.as_ref().map(|(_, t)| t.replace('\t', "    ")).unwrap_or_default();
-        store.set(&it, &[(0, &num(&r.left)), (1, &text(&r.left)), (2, &lbg), (3, &num(&r.right)), (4, &text(&r.right)), (5, &rbg)]);
+        let (lmark, rmark) = match r.kind {
+            DiffKind::Same => (" ", " "),
+            DiffKind::Removed => ("-", " "),
+            DiffKind::Added => (" ", "+"),
+            DiffKind::Changed => ("~", "~"),
+        };
+        let num = |s: &Option<(usize, String)>, mark: &str| s.as_ref().map(|(n, _)| format!("{mark} {n}")).unwrap_or_default();
+        let plain = |s: &Option<(usize, String)>| s.as_ref().map(|(_, t)| glib::markup_escape_text(&t.replace('\t', "    ")).to_string()).unwrap_or_default();
+        let (ltext, rtext) = match (&r.kind, &r.left, &r.right) {
+            (DiffKind::Changed, Some((_, a)), Some((_, b))) => {
+                let (old, new) = failbrauwser::vcs::diff::words(a, b);
+                (side_markup(&old, REMOVED_WORD), side_markup(&new, ADDED_WORD))
+            }
+            _ => (plain(&r.left), plain(&r.right)),
+        };
+        store.set(&it, &[(0, &num(&r.left, lmark)), (1, &ltext), (2, &lbg), (3, &num(&r.right, rmark)), (4, &rtext), (5, &rbg)]);
     }
     let view = gtk::TreeView::with_model(&store);
     view.set_widget_name("diff");
@@ -115,7 +171,7 @@ fn open(w: &Window, repo: &Repo, path: &str, left: &str, right: &str, old: Vec<u
         let tr = gtk::CellRendererText::new();
         tr.set_property("family", "monospace");
         TreeViewColumnExt::pack_start(&tc, &tr, true);
-        TreeViewColumnExt::add_attribute(&tc, &tr, "text", text);
+        TreeViewColumnExt::add_attribute(&tc, &tr, "markup", text);
         TreeViewColumnExt::add_attribute(&tc, &tr, "cell-background", bg);
         // Dark text on the colored lines, whatever the theme.
         let tr2 = tr.clone();
@@ -143,7 +199,8 @@ fn open(w: &Window, repo: &Repo, path: &str, left: &str, right: &str, old: Vec<u
         outer.pack_start(&sw, true, true, 0);
     }
     // Where each block of differences starts.
-    let starts: Vec<usize> = rows.iter().enumerate().filter(|(i, r)| r.kind != DiffKind::Same && (*i == 0 || rows[i - 1].kind == DiffKind::Same)).map(|(i, _)| i).collect();
+    let is_change = |s: &Shown| matches!(s, Shown::Row(i) if rows[*i].kind != DiffKind::Same);
+    let starts: Vec<usize> = shown.iter().enumerate().filter(|(i, s)| is_change(s) && (*i == 0 || !is_change(&shown[i - 1]))).map(|(i, _)| i).collect();
     let status = gtk::Statusbar::new();
     let lines = |side: &dyn Fn(&DiffRow) -> bool| rows.iter().filter(|r| side(r)).count();
     let summary = format!(

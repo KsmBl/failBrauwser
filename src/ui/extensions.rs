@@ -16,7 +16,6 @@ use std::rc::Rc;
 
 pub fn window_created(w: &Rc<Window>) {
     fileops::install_actions(w);
-    super::repo::install_actions(w);
     w.add_action("extract-here", |w| archive::extract_selected(w, None));
     w.add_action("extract-to", archive::extract_to);
     w.add_action("compress", archive::compress);
@@ -26,7 +25,7 @@ pub fn window_created(w: &Rc<Window>) {
     w.add_action("find", super::searchbar::open);
     super::customactions::install_actions(w);
     super::trash::install_actions(w);
-    super::git::install_actions(w);
+    super::vcs::install_actions(w);
     super::sidebar::attach(w);
 }
 
@@ -56,7 +55,7 @@ pub fn pane_created(w: &Window, p: &Rc<Pane>) {
 }
 
 pub fn pane_location_changed(w: &Window, p: &Rc<Pane>) {
-    super::git::overlay::update(w, p);
+    super::vcs::overlay::update(w, p);
     super::drives::location_changed(p);
     super::network::location_changed(p);
     super::trash::update_bar(p);
@@ -70,7 +69,7 @@ pub fn pane_scrolled(w: &Window, p: &Rc<Pane>) {
 
 pub fn pane_contents_changed(w: &Window, p: &Rc<Pane>) {
     super::dirsize::update(w, p);
-    super::git::overlay::update(w, p);
+    super::vcs::overlay::update(w, p);
     if Rc::ptr_eq(p, &w.current_pane()) {
         super::summary::update(w, true);
     }
@@ -108,7 +107,7 @@ pub fn settings_changed(w: &Window) {
     }
     for p in w.panes() {
         super::dirsize::update(w, &p);
-        super::git::overlay::update(w, &p);
+        super::vcs::overlay::update(w, &p);
     }
 }
 
@@ -206,20 +205,13 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
         section(&menu, &[("Create _Folder…", "win.new-folder"), ("Create _Document…", "win.new-file")]);
         section(&menu, &[("_Paste", "win.paste")]);
         section(&menu, &[("Select _All", "win.select-all"), ("Show _Hidden Files", "win.show-hidden"), ("_Reload", "win.reload")]);
-        // TortoiseGit's items, where Explorer has them: after the folder's own.
-        if let Some(g) = super::git::menu_section(w, pane, items) {
+        // The version-control items, where Explorer has TortoiseGit's: after the folder's own.
+        if let Some(g) = super::vcs::menu_section(w, pane, items) {
             menu.append_section(None, &g);
         }
         if local {
             section(&menu, &[("Create _Link on Desktop", "win.link-on-desktop")]);
             if let Some(s) = super::customactions::menu_section(w) {
-                menu.append_section(None, &s);
-            }
-            // Nothing selected answers the folder's own commands: a folder with a marker of its own
-            // offers its tool's commands, and any other folder offers only Clone (M15).
-            if let Some(sub) = super::repo::submenu(pane, items) {
-                let s = gio::Menu::new();
-                s.append_item(&super::menuicons::model_submenu("_Repository", &sub));
                 menu.append_section(None, &s);
             }
         }
@@ -235,9 +227,9 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
         open.append_item(&super::menuicons::model_submenu("Open _With", &sub));
     }
     menu.append_section(None, &open);
-    // TortoiseGit's items, as in Explorer: right after opening.
+    // The version-control items, as in Explorer: right after opening.
     if local || matches!(pane.location(), Location::Search(_)) {
-        if let Some(g) = super::git::menu_section(w, pane, items) {
+        if let Some(g) = super::vcs::menu_section(w, pane, items) {
             menu.append_section(None, &g);
         }
     }
@@ -284,13 +276,6 @@ pub fn context_menu_model(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> gio::M
         if let Some(s) = super::customactions::menu_section(w) {
             menu.append_section(None, &s);
         }
-    }
-    // The Repository submenu of the selected items' folder (M15): what the folder's own tool offers
-    // for what is selected, and Clone alone where no working copy reaches.
-    if let Some(sub) = super::repo::submenu(pane, items) {
-        let s = gio::Menu::new();
-        s.append_item(&super::menuicons::model_submenu("_Repository", &sub));
-        menu.append_section(None, &s);
     }
     section(&menu, &[("_Properties…", "win.properties")]);
     menu

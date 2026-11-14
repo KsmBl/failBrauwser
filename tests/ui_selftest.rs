@@ -699,95 +699,36 @@ fn mouse_back_and_forward_keys() {
     });
 }
 
-/// The Repository submenu (M15). The markers here are the plain ones a tool leaves — an empty
-/// `.git`, `.hg` or `.svn`, a `CVS/Repository` file, a `vssver2.scc` file — because detection
-/// reads nothing else; what the tools' clients answer is pinned in `src/repo`.
+/// The Repository menu of every tool (README, Version control). The markers are the plain ones
+/// each tool leaves — `.git` with its HEAD, `.hg`, `.svn`, a `CVS/Repository` file, a
+/// `vssver2.scc` file — because the menu reads nothing else; what the clients answer is measured
+/// in `tests/vcs_backends.rs`.
 #[test]
 fn repository_menu_per_working_copy() {
     run_outside_the_working_copy(
         "repo_menu.fbt",
         &[],
         |t| {
-            std::fs::create_dir_all(t.join("gitcopy/.git")).unwrap();
-            std::fs::create_dir_all(t.join("gitcopy/deep")).unwrap();
-            for n in ["one.txt", "two.txt"] {
-                std::fs::write(t.join("gitcopy").join(n), n).unwrap();
+            for git in ["gitcopy", "wrapper/inner"] {
+                std::fs::create_dir_all(t.join(git).join(".git/refs/heads")).unwrap();
+                std::fs::create_dir_all(t.join(git).join(".git/objects")).unwrap();
+                std::fs::write(t.join(git).join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
             }
+            std::fs::create_dir_all(t.join("gitcopy/deep")).unwrap();
             std::fs::create_dir_all(t.join("plain/sub")).unwrap();
             std::fs::create_dir_all(t.join("cvs/CVS")).unwrap();
             std::fs::write(t.join("cvs/CVS/Repository"), "module\n").unwrap();
+            std::fs::write(t.join("cvs/CVS/Entries"), "D\n").unwrap();
             std::fs::create_dir_all(t.join("hgcopy/.hg")).unwrap();
             std::fs::create_dir_all(t.join("svncopy/.svn")).unwrap();
             std::fs::create_dir_all(t.join("vsscopy")).unwrap();
             std::fs::write(t.join("vsscopy/vssver2.scc"), "").unwrap();
             std::fs::write(t.join("vsscopy/a.txt"), "a\n").unwrap();
-            std::fs::create_dir_all(t.join("wrapper/inner/.git")).unwrap();
         },
         |_| {},
     );
 }
 
-/// The Repository commands of a working copy Git itself made (M15): the client's words come back in
-/// a window of this program's own, the words a client would read from an editor of its own are asked
-/// first, an ask that is refused starts no client, an ignored name reaches Git's own ignore file, and
-/// Clone asks which address, which folder and which tool. Git is the client this machine runs; where
-/// no Git runs, the scenario says so rather than failing.
-#[test]
-fn repository_commands_answer_in_a_window_of_the_program_s_own() {
-    if !answers("git") {
-        eprintln!("no git client on this machine, skipping the real-working-copy scenario");
-        return;
-    }
-    run_outside_the_working_copy(
-        "repo_windows.fbt",
-        &[],
-        |t| {
-            let repo = t.join("repo");
-            git_copy(&repo, &[("one.txt", "one line\n"), ("notes.txt", "notes\n")]);
-            // What the folder is to answer: one file changed since its commit, one never added.
-            std::fs::write(repo.join("one.txt"), "one line changed\n").unwrap();
-            std::fs::write(repo.join("untracked.txt"), "never added\n").unwrap();
-            git_copy(&t.join("origin"), &[("seed.txt", "seed\n")]);
-            std::fs::create_dir_all(t.join("plain")).unwrap();
-        },
-        |t| {
-            let out = Command::new("git").current_dir(t.join("repo")).args(["log", "--format=%s", "-1"]).output().expect("git could not answer");
-            assert!(out.status.success(), "the fixture's repository could not be read: {}", String::from_utf8_lossy(&out.stderr));
-            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "a message the window asked for", "the commit this program asked for did not reach the repository");
-        },
-    );
-}
-
-/// A working copy of Git's own making, with this machine's own settings kept out of it: no hooks, a
-/// fixed identity, no signing — the same hermetic calls the scenarios of `src/repo` make.
-fn git_copy(dir: &Path, files: &[(&str, &str)]) {
-    std::fs::create_dir_all(dir).unwrap();
-    git(dir, &["init", "-q"]);
-    // Kept in the fixture's own configuration, so the calls the window makes are as hermetic as the
-    // ones this helper makes: this machine's identity and its hooks stay out of both.
-    for (key, value) in [("user.name", "fixture"), ("user.email", "fixture@example"), ("core.hooksPath", ""), ("commit.gpgsign", "false")] {
-        git(dir, &["config", key, value]);
-    }
-    for (n, c) in files {
-        std::fs::write(dir.join(n), *c).unwrap();
-    }
-    let mut added = vec!["add", "--"];
-    added.extend(files.iter().map(|(n, _)| *n));
-    git(dir, &added);
-    git(dir, &["commit", "-q", "--no-verify", "-m", "seeded by the fixture"]);
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let hermetic = ["-c", "user.name=fixture", "-c", "user.email=fixture@example", "-c", "core.hooksPath=", "-c", "commit.gpgsign=false"];
-    let out = Command::new("git").current_dir(dir).args(hermetic).args(args).output().expect("git could not be started");
-    assert!(out.status.success(), "git {args:?} in {} did not answer: {}", dir.display(), String::from_utf8_lossy(&out.stderr));
-}
-
-/// Whether a client can be asked for its version at all: a scenario that measures a real tool needs
-/// one, and records the reason where the machine has none.
-fn answers(program: &str) -> bool {
-    Command::new(program).arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
-}
 
 /// The shell's Recycle Bin belongs to the whole machine, so an older run's `a.txt`
 /// would be picked by name instead of this run's, and our leftovers would pile up.

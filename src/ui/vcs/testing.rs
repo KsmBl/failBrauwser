@@ -88,7 +88,12 @@ pub fn step(w: &Rc<Window>, cmd: &str, arg: &str) -> Option<Result<Option<Check>
             let (title, rest) = split(arg, " : ")?;
             let (name, want) = split(rest, " = ")?;
             let win = dialog::find_window(title).ok_or("no such window")?;
-            let got = named(win.upcast_ref(), name).and_then(|e| e.downcast::<gtk::Entry>().ok()).map(|e| e.text().to_string()).ok_or_else(|| format!("no field {name}"))?;
+            let field = named(win.upcast_ref(), name).ok_or_else(|| format!("no field {name}"))?;
+            let got = match (field.downcast_ref::<gtk::ComboBoxText>(), field.downcast_ref::<gtk::Entry>()) {
+                (Some(c), _) => dialog::combo_text(c),
+                (None, Some(e)) => e.text().to_string(),
+                _ => return Err(format!("{name} is no field")),
+            };
             if got == want { Ok(None) } else { Err(format!("{name} holds {got:?}")) }
         })(),
         "expect-git-disabled" => (|| {

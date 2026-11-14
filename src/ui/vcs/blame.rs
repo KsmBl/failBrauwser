@@ -4,7 +4,8 @@
 
 use super::super::window::Window;
 use super::dialog;
-use failbrauwser::git::{BlameLine, Repo};
+use super::Wc;
+use failbrauwser::vcs::git::BlameLine;
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::RefCell;
@@ -21,9 +22,9 @@ pub fn age_color(time: i64, oldest: i64, newest: i64) -> String {
     format!("#{:02x}{:02x}{:02x}", mix(255.0, 255.0), mix(255.0, 214.0), mix(255.0, 150.0))
 }
 
-pub fn show(w: &Window, repo: &Repo, path: &str) {
+pub fn show(w: &Window, wc: &Wc, path: &str) {
     let win = gtk::Window::new(gtk::WindowType::Toplevel);
-    win.set_title(&format!("{} - TortoiseGitBlame", repo.root.join(path).display()));
+    win.set_title(&format!("{} - TortoiseGitBlame", wc.root().join(path).display()));
     win.set_transient_for(Some(&w.win));
     win.set_destroy_with_parent(true);
     win.set_default_size(1000, 700);
@@ -63,9 +64,9 @@ pub fn show(w: &Window, repo: &Repo, path: &str) {
     win.add(&outer);
     win.show_all();
     status.push(0, "Blaming…");
-    let (repo, p) = (repo.clone(), path.to_string());
+    let (wc, p) = (wc.clone(), path.to_string());
     let (store2, status2, win2, view2) = (store.clone(), status.clone(), win.downgrade(), view.clone());
-    super::background(move || repo.blame(&p, Some("HEAD")), move |res| {
+    super::background(move || wc.blame(&p), move |res| {
         let lines = match res {
             Ok(l) => Rc::new(l),
             Err(e) => {

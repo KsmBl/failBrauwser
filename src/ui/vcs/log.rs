@@ -8,7 +8,10 @@ use super::super::window::Window;
 use super::dialog;
 use super::filelist::{self, FileList};
 use super::progress;
-use failbrauwser::git::{self, Commit, GraphRow, RefLabel, Refs, Repo, Status};
+use super::Wc;
+use failbrauwser::vcs::caps::Cap;
+use failbrauwser::vcs::git::{self, Commit, GraphRow, RefLabel, Refs, Repo, Status};
+use failbrauwser::vcs::ops::{self, Op};
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
@@ -32,7 +35,9 @@ const C_DATE: u32 = 4;
 const C_INDEX: u32 = 5;
 
 struct Log {
-    repo: Repo,
+    wc: Wc,
+    /// The Git repository, for what only Git has: All Branches, reset, revert, cherry-pick.
+    repo: Option<Repo>,
     paths: Vec<String>,
     store: gtk::ListStore,
     view: gtk::TreeView,
@@ -55,14 +60,14 @@ thread_local! {
     static LOGS: RefCell<Vec<std::rc::Weak<Log>>> = const { RefCell::new(Vec::new()) };
 }
 
-pub fn show(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>) {
+pub fn show(w: &Window, wc: &Wc, path: &Path, paths: Vec<String>) {
     let d = dialog::new(w, &dialog::title(path, "Log Messages"), "log");
     d.set_default_size(980, 720);
     let area = d.content_area();
     // Top: the branch, From/To, the filter.
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let head = gtk::Label::new(None);
-    head.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&repo.branch_label())));
+    head.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&wc.branch_label())));
     top.pack_start(&head, false, false, 0);
     top.pack_start(&dialog::label("From:"), false, false, 6);
     let from = dialog::entry("from", "");
@@ -128,7 +133,10 @@ pub fn show(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>) {
     let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let all = dialog::check("All Branches", "all-branches", false);
     let whole = dialog::check("Show Whole Project", "whole-project", paths.iter().all(String::is_empty));
-    bottom.pack_start(&all, false, false, 0);
+    // Only Git keeps branches a log of the working copy would leave out.
+    if wc.as_git().is_some() {
+        bottom.pack_start(&all, false, false, 0);
+    }
     bottom.pack_start(&whole, false, false, 0);
     let ok = gtk::Button::with_label("OK");
     bottom.pack_end(&ok, false, false, 0);
@@ -137,7 +145,8 @@ pub fn show(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>) {
     ok.connect_clicked(move |_| unsafe { dd.destroy() });
 
     let log = Rc::new(Log {
-        repo: repo.clone(),
+        wc: wc.clone(),
+        repo: wc.as_git().cloned(),
         paths,
         store,
         view: view.clone(),
@@ -193,9 +202,9 @@ pub fn show(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>) {
     files.connect_activated(move |c| {
         let (Some(l), Some(w)) = (lw.upgrade(), ww.upgrade()) else { return };
         if let Some(commit) = l.selected().first() {
-            let parent = commit.parents.first().cloned().unwrap_or_else(|| git::EMPTY_TREE.to_string());
+            let parent = commit.parents.first().cloned().or_else(|| l.wc.parent(&commit.hash)).unwrap_or_default();
             let old = c.old_path.clone().unwrap_or_else(|| c.path.clone());
-            super::diff::revisions(&w, &l.repo, &old, &c.path, &parent, &commit.hash);
+            super::diff::revisions(&w, &l.wc, &old, &c.path, &parent, &commit.hash);
         }
     });
     let (lw, ww) = (Rc::downgrade(&log), Rc::downgrade(&w.me()));
@@ -310,16 +319,19 @@ fn parse_day(s: &str) -> Option<i64> {
 
 impl Log {
     fn load(self: &Rc<Self>) {
-        let (repo, all) = (self.repo.clone(), self.all.is_active());
+        let (wc, all) = (self.wc.clone(), self.all.is_active());
         let paths = if self.whole.is_active() { Vec::new() } else { self.paths.clone() };
         let me = Rc::downgrade(self);
         self.status.set_text("Loading…");
         super::background(
             move || {
-                let commits = repo.log(all, &paths, MAX).unwrap_or_default();
-                let refs = repo.refs();
-                let actions = repo.log_actions(all, &paths, MAX);
-                let g = git::graph(&commits.iter().map(|c| (c.hash.clone(), c.parents.clone())).collect::<Vec<_>>());
+                let (commits, actions) = match wc.as_git() {
+                    Some(repo) => (repo.log(all, &paths, MAX).unwrap_or_default(), repo.log_actions(all, &paths, MAX)),
+                    None => (wc.log(&paths, MAX).unwrap_or_default(), wc.log_actions(&paths, MAX)),
+                };
+                let refs = wc.refs();
+                // A history of one line draws no graph: the tool records no parents of its own.
+                let g = if wc.tool().has(Cap::Graph) { git::graph(&commits.iter().map(|c| (c.hash.clone(), c.parents.clone())).collect::<Vec<_>>()) } else { Vec::new() };
                 (commits, refs, actions, g)
             },
             move |(commits, refs, actions, g)| {
@@ -345,7 +357,10 @@ impl Log {
         let graph = self.graph.borrow();
         let refs = self.refs.borrow();
         let actions = self.actions.borrow();
-        let head = self.repo.branch();
+        let head = match &self.repo {
+            Some(r) => r.branch(),
+            None => Some(self.wc.branch_label()),
+        };
         let filtered = !q.is_empty() || from.is_some() || to.is_some();
         let max_width = graph.iter().map(|g| g.width).max().unwrap_or(1).min(16);
         let mut shown = 0;
@@ -395,18 +410,19 @@ impl Log {
             self.files.set(Vec::new(), |_| false);
             return;
         };
+        let author = if c.email.is_empty() { c.author.clone() } else { format!("{} <{}>", c.author, c.email) };
         buf.set_text(&format!(
-            "SHA-1: {}\nAuthor: {} <{}>\nDate: {}\nParents: {}\n\n{}",
+            "{}: {}\nAuthor: {}\nDate: {}\nParents: {}\n\n{}",
+            if self.repo.is_some() { "SHA-1" } else { "Revision" },
             c.hash,
-            c.author,
-            c.email,
+            author,
             dialog::when(c.time),
             c.parents.iter().map(|p| &p[..p.len().min(8)]).collect::<Vec<_>>().join(", "),
             c.message
         ));
-        let (repo, me) = (self.repo.clone(), Rc::downgrade(self));
+        let (wc, me) = (self.wc.clone(), Rc::downgrade(self));
         let hash = c.hash.clone();
-        super::background(move || repo.commit_changes(&hash).unwrap_or_default(), move |changes| {
+        super::background(move || wc.revision_changes(&hash).unwrap_or_default(), move |changes| {
             let Some(l) = me.upgrade() else { return };
             // Still the commit selected?
             if l.selected().first().is_some_and(|s| s.hash == c.hash) {
@@ -438,11 +454,41 @@ impl Log {
         self.status.set_text(&text);
     }
 
+    /// The right-click menu of a revision of a tool other than Git: the working copy brought to
+    /// it, and its name copied.
+    fn tool_menu(self: &Rc<Self>, w: &Window, c: &Commit) -> gtk::Menu {
+        let m = gtk::Menu::new();
+        let tool = self.wc.tool();
+        let runs = ops::runs(tool, &Op::UpdateTo { rev: c.hash.clone() });
+        if !runs.is_empty() {
+            let it = filelist::menu_item("Update to this revision...", "switch");
+            let (wc, short) = (self.wc.clone(), c.short().to_string());
+            let ww = Rc::downgrade(&w.me());
+            it.connect_activate(move |_| {
+                let Some(w) = ww.upgrade() else { return };
+                let (wc, runs) = (wc.clone(), runs.clone());
+                let w2 = Rc::downgrade(&w.me());
+                dialog::confirm(&w.win, &format!("Bring the working copy to revision {short}?"), "", "Update", move || {
+                    if let Some(w) = w2.upgrade() {
+                        progress::run(&w, wc.root(), wc.root(), progress::tool_cmds(wc.tool(), runs.clone()), Vec::new(), |w, _| super::overlay::refresh_all(w));
+                    }
+                });
+            });
+            m.append(&it);
+            m.append(&gtk::SeparatorMenuItem::new());
+        }
+        let copy = filelist::menu_item("Copy revision to clipboard", "log");
+        let h = c.hash.clone();
+        copy.connect_activate(move |_| gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(&h));
+        m.append(&copy);
+        m
+    }
+
     /// The right-click menu of the commit selected.
     fn menu(self: &Rc<Self>, w: &Window) -> Option<gtk::Menu> {
         let c = self.selected().first().cloned()?;
+        let Some(repo) = self.repo.clone() else { return Some(self.tool_menu(w, &c)) };
         let m = gtk::Menu::new();
-        let repo = self.repo.clone();
         let short = c.short().to_string();
         let branch = repo.branch_label();
         let entries: Vec<(String, &str, Rc<dyn Fn(&Window)>)> = vec![

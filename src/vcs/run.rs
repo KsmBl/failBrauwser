@@ -83,6 +83,29 @@ pub fn call_in_order(tool: Tool, dir: &Path, runs: &[Vec<String>]) -> Answer {
     answer
 }
 
+/// What a client printed on its standard output, for parsing: machine-readable answers never mix
+/// with the client's remarks on the other stream. A refusal answers the client's own words.
+pub fn output(program: &str, dir: &Path, argv: &[impl AsRef<std::ffi::OsStr>]) -> Result<Vec<u8>, String> {
+    let mut command = Command::new(program);
+    command.current_dir(dir).args(argv).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.env("LC_ALL", "C").env("LANG", "C").env("PAGER", "").env("GIT_PAGER", "").env("HGPLAIN", "1").env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").env("SVN_INTERACTIVE", "false");
+    #[cfg(windows)]
+    crate::win::console::no_window(&mut command);
+    match command.output() {
+        Ok(out) if out.status.success() => Ok(out.stdout),
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if err.is_empty() { format!("{program} {} failed", argv.first().map(|a| a.as_ref().to_string_lossy().into_owned()).unwrap_or_default()) } else { err })
+        }
+        Err(e) => Err(format!("{program} could not be started: {e}")),
+    }
+}
+
+/// The same, as text.
+pub fn text(program: &str, dir: &Path, argv: &[impl AsRef<std::ffi::OsStr>]) -> Result<String, String> {
+    output(program, dir, argv).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
 /// Both streams of one client, with the empty lines a stream leaves at its end taken out and
 /// CRLF made into what the windows read.
 fn joined(stdout: &[u8], stderr: &[u8]) -> String {

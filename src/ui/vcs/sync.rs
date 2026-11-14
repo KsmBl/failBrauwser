@@ -6,7 +6,7 @@ use super::super::window::Window;
 use super::dialog;
 use super::progress::{self, Event};
 use super::Target;
-use failbrauwser::git::{Commit, Repo};
+use failbrauwser::vcs::git::{Commit, Repo};
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::Cell;
@@ -162,13 +162,13 @@ pub fn show(w: &Window, t: Target, repo: Repo) {
     let (ww2, r2) = (ww.clone(), repo.clone());
     commit.connect_clicked(move |_| {
         if let Some(w) = ww2.upgrade() {
-            super::commit::show(&w, &r2, &r2.root, vec![String::new()]);
+            super::commit::show(&w, &super::wc(&r2), &r2.root, vec![String::new()]);
         }
     });
     let r2 = repo.clone();
     log_btn.connect_clicked(move |_| {
         if let Some(w) = ww.upgrade() {
-            super::log::show(&w, &r2, &r2.root, Vec::new());
+            super::log::show(&w, &super::wc(&r2), &r2.root, Vec::new());
         }
     });
     let sw = Rc::downgrade(&s);
@@ -239,7 +239,7 @@ impl Sync {
                     Event::Progress(_) => {}
                     Event::Done(code) => {
                         let now = glib::DateTime::now_local().ok().and_then(|d| d.format("%Y-%m-%d %H:%M:%S").ok()).map(|s| s.to_string()).unwrap_or_default();
-                        let text = format!("{} ({} ms @ {now})\n\n", progress::outcome(code, false), started.elapsed().as_millis());
+                        let text = format!("{} ({} ms @ {now})\n\n", progress::outcome("git", code, false), started.elapsed().as_millis());
                         me.append(&text, Some(if code == Some(0) { "#1f8f2f" } else { "#c62020" }));
                     }
                 }

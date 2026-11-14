@@ -4,7 +4,7 @@
 //! the status.
 
 use super::icons;
-use failbrauwser::git::{Change, Status};
+use failbrauwser::vcs::git::{Change, Status};
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use std::cell::RefCell;

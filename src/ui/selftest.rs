@@ -749,48 +749,6 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 return Err(format!("without icon: {missing:?}"));
             }
         }
-        "wait-repo-answer" => {
-            // wait-repo-answer <text>: a Repository command's window, once its client answered and
-            // showing this among its words.
-            let want = arg.to_string();
-            wait(r, move |_| Ok(super::repo::current().is_some_and(|a| !a.is_busy() && a.text().contains(&want))));
-        }
-        "wait-repo-done" => {
-            // The window of a command whose client answered; a command the client said nothing to
-            // still ends, and its status line is what carries that.
-            wait(r, move |_| Ok(super::repo::current().is_some_and(|a| !a.is_busy())));
-        }
-        "expect-repo-status" => {
-            // The status line names the calls that ran and how they ended.
-            let want = arg.to_string();
-            let a = super::repo::current().ok_or("no Repository answer window")?;
-            let (got, words) = (a.status(), a.text());
-            if !got.contains(&want) {
-                return Err(format!("the status line says {got:?}, the window shows {words:?}"));
-            }
-        }
-        "close-repo" => unsafe { super::repo::current().ok_or("no Repository answer window")?.window.destroy() },
-        "clone-set" => {
-            // clone-set <address | folder | tool> = <text>
-            let (field, value) = arg.split_once(" = ").ok_or("need clone-set <field> = <text>")?;
-            super::repo::clone_form().ok_or("no Clone form")?.set(field.trim(), value)?;
-        }
-        "expect-clone-folder" => {
-            let want = arg.to_string();
-            let got = super::repo::clone_form().ok_or("no Clone form")?.folder();
-            if got != want {
-                return Err(format!("the folder field holds {got:?}"));
-            }
-        }
-        "expect-clone-tool" => {
-            // The tool the form has chosen, which no marker could have answered for a folder that is
-            // no working copy.
-            let want = arg.to_string();
-            let got = super::repo::clone_form().ok_or("no Clone form")?.tool().ok_or("the Clone form has no tool chosen")?;
-            if got != want {
-                return Err(format!("the tool choice shows {got:?}"));
-            }
-        }
         "expect-menu-item" | "expect-no-menu-item" => {
             // The right-click menu of the selection has (or has not) this item.
             fn labels(m: &gio::MenuModel, out: &mut Vec<String>) {
@@ -1358,7 +1316,7 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             println!("SELFTEST OK");
             std::process::exit(0);
         }
-        _ => match super::git::testing::step(&w, cmd, arg) {
+        _ => match super::vcs::testing::step(&w, cmd, arg) {
             Some(Ok(Some(check))) => wait(r, move |_| check()),
             Some(Ok(None)) => {}
             Some(Err(e)) => return Err(e),

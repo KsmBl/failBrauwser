@@ -39,11 +39,12 @@ A fast, native GTK 3 file manager for Linux and Windows, in the spirit of Thunar
   theme, the time and items left; pause and resume, copies to the same drive wait in a queue instead
   of fighting each other, and optional read-back verification.
 - **Custom actions** from Thunar (`uca.xml`) in the right-click menu, and *Open Terminal Here*.
-- **Git the TortoiseGit way.** Overlay icons on the files and folders of working trees (a
-  green tick, a red exclamation mark, a blue plus, …), *Git Sync…*, *Git Commit -> "main"…*
-  and the *TortoiseGit* submenu in the right-click menu, and TortoiseGit's dialogs: Commit,
-  Log Messages with the revision graph, side-by-side diffs, Blame, Pull, Push, Switch, Merge,
-  Resolve, Revert and more. Off until switched on in *Edit → Git Integration (TortoiseGit)*.
+- **Version control the TortoiseGit way, for Git, Mercurial, Subversion, CVS and Visual
+  Source Safe.** Overlay icons on the files and folders of working copies (a green tick, a red
+  exclamation mark, a blue plus, …), *Git Sync…* / *SVN Update*, *Commit -> "main"…* and the
+  *Repository* submenu in the right-click menu, and TortoiseGit's dialogs: Commit, Log Messages
+  with the revision graph, side-by-side diffs, Blame, Pull, Push, Switch, Merge, Resolve, Revert
+  and more. Off until switched on in *Edit → Version Control Integration*.
 - **More details.** Folder sizes in the *Size* column (recursive, symlink-safe), a
   configurable column set, shortcuts and a folder tree rooted at the current folder, your home
   or `/`.
@@ -520,49 +521,11 @@ it with an example). *Open Terminal Here* is built in and uses `$TERMINAL`, the 
 choice (`xdg-terminal-exec`, Xfce's, or Debian's `x-terminal-emulator`) or the first terminal
 found.
 
-**Git:** off until you switch it on in *Edit → Git Integration (TortoiseGit)* (switching it
-off again takes the overlays and menu items away). Then folders that are Git working trees show the state of each file and folder as an
-overlay icon in TortoiseGit's place, its lower left corner: a green tick for unchanged, a red
-exclamation mark for changed, a blue plus for added (or renamed), a red cross for deleted, a
-yellow warning sign for a conflict, a purple question mark for files Git does not know and a
-grey bar for ignored ones. A folder shows what is most important inside it, and a folder that
-is a working tree of its own shows from outside whether it has uncommitted changes. The icons
-follow edits, commits and checkouts as they happen (the repository is watched) and are read
-again when the window comes back into use; *Settings → Icon Overlays* in the TortoiseGit
-submenu turns them off. The right-click menu has, as in Explorer, *Git Sync…*,
-*Git Commit -> "branch"…* and the *TortoiseGit* submenu: *Pull…*, *Fetch…*, *Push…*, *Diff*,
-*Diff with previous version*, *Show log*, *Show Reflog*, *Blame*, *Check for modifications*,
-*Stash Save* / *Stash Pop*, *Resolve…*, *Revert…*, *Clean up…*, *Switch/Checkout…*, *Merge…*,
-*Create Branch…*, *Create Tag…*, *Export…*, *Add…*, *Delete*, *Delete (keep local)*,
-*Rename…*, *Add to ignore list*, *Create Patch Serial…*, *Apply Patch Serial…*, *Settings* and
-*About*, each where it applies (Diff for changed files, Add for unversioned ones, Resolve
-during a merge with conflicts); outside working trees, folders offer *Git Clone…* and *Git
-Create repository here…*. The dialogs are TortoiseGit's, laid out and worded as there:
-*Commit* ticks the changed files (the *Check:* links, *Show Unversioned Files*, *Show Whole
-Project*, *Amend Last Commit*, *Commit & Push*) and commits exactly what is ticked; *Log
-Messages* shows the revision graph, the kinds of change of each commit and its branch and tag
-labels, the message and changed files of the commit selected, and switches, branches, tags,
-resets, reverts or cherry-picks at a commit from its right-click menu; a double click on a
-changed file opens its diff side by side (removed lines red, added lines yellow, as in
-TortoiseGitMerge); every command runs in the *Git Command Progress* window, which shows what
-git prints and ends in green *Success* or a red error, with *Push…* after a commit. Passwords
-and key passphrases git or ssh ask for come in a window of their own. Git itself does the
-work: the `git` command must be installed.
-
-**Version control:** a folder some version-control tool manages says so in its right-click
-menu (a Git working tree with *Git Integration* switched on shows the TortoiseGit items above
-as well; the *Repository* submenu is there either way): *Repository* holds the commands that make sense for that folder and for the selection in
-it, in the order the work goes — *Commit*, *Pull*, *Push*, *Sync*, *Stash*, *Switch/Checkout*
-and *Revert*, then *Check for modifications*, then *Diff*, *Diff with previous version*, *Show
-Log*, *Browse Repository* and *Blame*, then what the selected items get done to — *Rename*,
-*Delete*, *Delete (keep local)* and *Delete and add to ignore list* — and *Settings* last. A
-plain folder keeps the menu item too, and its submenu holds only *Clone*. What a folder's tool
-has no equivalent for is left out of the submenu rather than greyed out, and so is what the
-selection cannot carry: a rename or a delete wants files, *Clone* wants no working copy above
-the folder. Nothing here runs over a tool's head: every command goes through that tool's own
-command-line client, asked inside the working copy, so a working copy is never rewritten behind
-its tool's back and a command the client refuses fails in the client's own words, which the
-window shows.
+**Version control:** off until you switch it on in *Edit → Version Control Integration*
+(switching it off again takes the overlays and the menu items away; a `git_integration=true` left
+by an older version counts as switched on). Then a folder some version-control tool manages works
+the way TortoiseGit works in Explorer — for every tool alike, Git, Mercurial, Subversion, CVS and
+Visual Source Safe:
 
 | Working copy of | How the folder is recognised | Client |
 |---|---|---|
@@ -578,70 +541,111 @@ Safe. A bare repository — `HEAD`, `objects` and `refs` without a working tree 
 copy, and neither is a folder that only contains one somewhere deeper down: the marker has to be
 the folder's own or one of its parents'.
 
-| Command | Git | Mercurial | Subversion | CVS | Visual Source Safe |
+*Overlays.* Each file and folder of a working copy shows its state as an overlay icon in
+TortoiseGit's place, its lower left corner, with TortoiseGit's icons whatever the tool: a green
+tick for unchanged, a red exclamation mark for changed, a blue plus for added (or renamed or
+copied), a red cross for deleted (or missing), a yellow warning sign for a conflict, a purple
+question mark for files the tool does not know and a grey bar for ignored ones. A folder shows what
+is most important inside it, and a folder that is a working copy of its own shows from outside
+whether it has uncommitted changes. The icons follow edits, commits and checkouts as they happen
+(the folder and the tool's own data folder are watched) and are read again when the window comes
+back into use; *Settings → Icon Overlays* turns them off. Where the states come from:
+
+| | Git | Mercurial | Subversion | CVS | Visual Source Safe |
 |---|---|---|---|---|---|
-| Clone | `git clone` | `hg clone` | `svn checkout` | `cvs checkout` | — |
-| Commit | `git commit` | `hg commit` | `svn commit` | `cvs commit` | `ss Checkin` |
-| Pull | `git pull` | `hg pull` | `svn update` | `cvs update` | `ss Get` |
-| Push | `git push` | `hg push` | — | — | — |
-| Sync | fetch, then pull and push | `hg pull` then `hg push` | — | — | — |
-| Stash | `git stash` | `hg shelve` | — | — | — |
-| Switch/Checkout | `git switch` | `hg update` | `svn switch` | `cvs update -r` | `ss Get -V` |
-| Revert | `git restore` | `hg revert` | `svn revert` | `cvs checkout -C` | `ss UndoCheckout`, then `ss Restore` |
-| Check for modifications | `git status` | `hg status` | `svn status` | `cvs update -n -d` | `ss Status` |
-| Diff | `git diff` | `hg diff` | `svn diff` | `cvs diff` | `ss Diff` |
-| Diff with previous version | `git diff` between a file and its parent revision | `hg diff` of the file against its parent | `svn diff -r N-1:N` | `cvs diff -r prev -r cur` | `ss Diff` between two versions |
-| Show Log | `git log` | `hg log` | `svn log` | `cvs log` | `ss History` |
-| Browse Repository | its own log, over the whole working copy, in a window | ← | ← | ← | ← |
-| Blame | `git blame --porcelain` | `hg annotate` | `svn annotate` | `cvs annotate` | — |
-| Rename | `git mv` | `hg rename` | `svn rename` | `cvs rename` | — |
-| Delete | `git rm` | `hg remove` | `svn delete` | `cvs remove` | `ss Delete` |
-| Delete (keep local) | `git rm --cached` | `hg remove --keep-files` | `svn delete --keep-local` | `cvs remove` leaving the file | `ss DeleteKeepLocal` |
-| Delete and add to ignore list | `.gitignore` | `.hgignore` | the `svn:ignore` property | `.cvsignore` | — |
-| Settings | `git config --local` | `.hg/hgrc` | the working copy's own properties | — | — |
+| states | `git status --porcelain=v2` and `git ls-files` | `hg status --all` and `hg resolve --list` | `svn status --verbose --xml --no-ignore` | the folder's own `CVS/Entries` (see below) | `ss Status` and `ss Dir` |
+| conflict | an unmerged index entry | `hg resolve --list` says `U` | `conflicted` or a tree conflict | a `Result of merge+` / conflict time stamp in `CVS/Entries` | — |
 
-A dash means the submenu leaves that command out, because the tool has no equivalent: a
-central-store tool (Subversion, CVS, Visual Source Safe) has nothing to *Push* or *Sync*,
-Visual Source Safe keeps no ignore list of its own and no blame. *Pull* is the update of a
-central tool, and for Git and Mercurial *Sync* is what their fetch plus pull plus push amount
-to. Only `git` is installed on this host, so Git's column is the measured one: the other four
-rows are read off each client's documented command line, and their commands are unmeasured
-here — the detection and the arguments each command builds are tested against fixtures for all
-five tools, the answers of `hg`, `svn`, `cvs` and `ss` are not.
+CVS asks its server for every `cvs status`, so the overlays read what CVS itself keeps in the
+working copy instead, as TortoiseCVS does (rung 3, the CVS manual's *Entries* format): revision `0`
+is added, a revision starting with `-` removed, a time stamp carrying a conflict mark conflicted, a
+file whose modification time differs from the recorded one changed, a name missing from `Entries`
+unversioned unless `.cvsignore` or CVS's default ignore list names it. Visual Source Safe shows a
+file checked out to anyone as changed.
 
-Every command answers in a window of failBrauwser's own — never by handing the work to another
-program's window. The window shows what the client said, line for line, and a status line naming
-the call that ran, whether it was refused and with which code; a refusal quotes the client's own
-sentence rather than an invented one, because that is the sentence a user can act on. A command
-whose client would otherwise open an editor or a prompt is asked for the word it needs *before*
-anything runs: *Commit* for the log message, *Clone* for the address, the folder to make and which
-tool is cloning, *Switch/Checkout* for the branch, tag or revision (Subversion is asked for the
-place to switch to), *Rename* for the new name, and *Diff with previous version* for the revision
-being compared when the tool counts revisions — Git and Mercurial name the previous version of
-their own accord and are asked nothing. A word that never arrives starts no client at all.
+*The right-click menu.* Inside a working copy it has, as in Explorer, *⟨Tool⟩ Sync…* (Git,
+Mercurial) or *⟨Tool⟩ Update* (Subversion, CVS, Visual Source Safe), *⟨Tool⟩ Commit ->
+"branch"…* and the *Repository* submenu; outside one, folders offer *Repository* with *Clone…*
+and, for Git and Mercurial, *Create repository here…*. The "branch" is the tool's own word for
+where the working copy is: Git's branch (or `(no branch)`), Mercurial's `hg branch`, Subversion's
+path inside its repository (`^/trunk`), CVS's sticky tag (or `HEAD`) and Visual Source Safe's
+project. The submenu holds TortoiseGit's items in TortoiseGit's sections, each where it applies
+(Diff for changed files, Add for unversioned ones, Resolve while there are conflicts) and each
+only where the folder's tool has it — what a tool has no equivalent for is left out rather than
+greyed out:
 
-The reading commands answer in a window shaped for their kind of answer. *Show Log* and *Browse
-Repository* list what the client's own machine-readable log format gives — the revision, who, when,
-and the first line of the message — one row per entry even when a message spans several lines.
-*Blame* reads the annotation the client gives per line: for Git `--porcelain`, whose shape the
-client documents, since the human layout's columns move under a long author name; elsewhere the
-annotation lines stand as their own client writes them. *Diff* and *Diff with previous version*
-show the client's diff as rows the two sides share: a marker column saying added, removed or
-unchanged, the line number on each side, and inside a changed pair the words that actually changed
-standing out against the words that did not. Unchanged runs between changes fold to three lines with
-the range they hide named, *next change* and *previous change* walk the changes, and the status line
-counts the files, the added lines and the removed ones. Nothing in those views is carried by colour
-alone.
+| Item | Git | Mercurial | Subversion | CVS | Visual Source Safe |
+|---|---|---|---|---|---|
+| Sync… (top level) | fetch, pull, push | `hg pull`, `hg push` | — | — | — |
+| Update (top level) | — | — | `svn update` | `cvs update -d` | `ss Get -R` |
+| Commit -> "branch"… (top level) | `git commit` | `hg commit` | `svn commit` | `cvs commit` | `ss Checkin` |
+| Pull… | `git pull` | `hg pull --update` | — | — | — |
+| Fetch… | `git fetch` | `hg pull` | — | — | — |
+| Push… | `git push` | `hg push` | — | — | — |
+| Diff | against the index and `HEAD` | against `.` | against `BASE` | against the revision in `CVS/Entries` | against the current version |
+| Diff with previous version | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Show log | `git log` | `hg log` | `svn log --xml --verbose` | `cvs log` | `ss History` |
+| Show Reflog | `git reflog` | — | — | — | — |
+| Blame | `git blame --porcelain` | `hg annotate -Tjson` | `svn blame --xml` | `cvs annotate` | — |
+| Check for modifications | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Stash Save / Stash Pop | `git stash` | `hg shelve` / `hg unshelve` | — | — | — |
+| Resolve… | `git add` | `hg resolve --mark` | `svn resolve --accept working` | — | — |
+| Revert… | `git restore` | `hg revert --no-backup` | `svn revert` | `cvs update -C` | `ss UndoCheckout` |
+| Clean up… | `git clean` | `hg purge` | `svn cleanup --remove-unversioned` | — | — |
+| Get Lock… / Release Lock | — | — | `svn lock` / `svn unlock` | — | `ss Checkout` / `ss UndoCheckout` |
+| Switch/Checkout… | `git switch` | `hg update` | `svn switch` | `cvs update -r` | `ss Get -V` |
+| Merge… | `git merge` | `hg merge` | `svn merge` | `cvs update -j` | — |
+| Create Branch… | `git branch` | `hg branch` | `svn copy` to `^/branches/…` | `cvs tag -b` | — |
+| Create Tag… | `git tag` | `hg tag` | `svn copy` to `^/tags/…` | `cvs tag` | `ss Label` |
+| Export… | `git archive` | `hg archive` | `svn export` | `cvs export` | — |
+| Add… | `git add` | `hg add` | `svn add` | `cvs add` | `ss Add` |
+| Delete | `git rm` | `hg remove` | `svn delete` | `cvs remove -f` | `ss Delete` |
+| Delete (keep local) | `git rm --cached` | `hg forget` | `svn delete --keep-local` | `cvs remove`, the file put back | — |
+| Rename… | `git mv` | `hg rename` | `svn move` | — | `ss Rename` |
+| Add to ignore list | `.gitignore` | `.hgignore` | the `svn:ignore` property | `.cvsignore` | — |
+| Create Patch Serial… | `git format-patch` | `hg export` | `svn diff` into a file | `cvs diff -u` into a file | — |
+| Apply Patch Serial… | `git am` | `hg import` | `svn patch` | — | — |
+| Clone… (outside) | `git clone` | `hg clone` | `svn checkout` | `cvs checkout` | — |
+| Create repository here… (outside) | `git init` | `hg init` | — | — | — |
+| Settings, About | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-The shape of the diff views was learned from ShiftDiff (LGPL-3.0-or-later), which differs whole
+A central-store tool (Subversion, CVS, Visual Source Safe) has nothing to pull, fetch, push or
+sync: its *Update* fetches and merges in one step. CVS has no rename and no patch of its own,
+Visual Source Safe no ignore list, no blame and no merge.
+
+*The windows* are TortoiseGit's, laid out and worded as there, and the same for every tool:
+*Commit* ticks the changed files (the *Check:* links, *Show Unversioned Files*, *Show Whole
+Project*, plus *Amend Last Commit* and *Commit & Push* where the tool can) and commits exactly
+what is ticked — unversioned files ticked are added first; *Log Messages* shows the history with
+the kinds of change of each revision, its branch and tag labels, the message and changed files of
+the revision selected, and the revision graph where the tool records parents (Git, Mercurial;
+Subversion's, CVS's and Visual Source Safe's history is one line); its right-click menu switches,
+branches, tags, reverts or compares at a revision where the tool can. CVS records no changesets,
+so its log groups the file revisions that share author and message and lie within five minutes of
+each other into one entry, as `cvsps` does. A double click on a changed file opens its diff side by
+side: rows the two sides share, the line number on each side, removed lines red and added lines
+yellow as in TortoiseGitMerge, inside a changed pair the words that actually changed standing out,
+unchanged runs folded to three lines with the range they hide named, and *next change* / *previous
+change* walking the changes; nothing in that view is carried by colour alone. *Blame* shows each
+line with its revision, author and date. Every command runs in the *⟨Tool⟩ Command Progress*
+window, which shows what the client prints and ends in green *Success* or a red error quoting the
+client's own words, with *Push…* after a commit where the tool pushes. A command whose client would
+otherwise open an editor or a prompt is asked for the word it needs before anything runs (the commit
+message, the address to clone, the branch to switch to), and passwords and key passphrases a client
+or ssh asks for come in a window of their own.
+
+Nothing here runs over a tool's head: every command goes through that tool's own command-line
+client, asked inside the working copy — so the clients must be installed — and reading is done
+through their machine-readable output, or for CVS the working copy's `CVS/Entries`. Git, Mercurial,
+Subversion and CVS are measured against working copies their own clients make; Visual Source Safe
+runs on Windows only, so its commands are pinned against recorded `ss` output and unmeasured here.
+
+The shape of the diff view was learned from ShiftDiff (LGPL-3.0-or-later), which differs whole
 files and trees side by side; its behaviour — rows aligned by construction, the marker gutter,
 word-level highlighting inside a changed pair, folded unchanged runs, walking between changes — is
 re-implemented here for GTK and for what a version-control client reports, with no code, markup or
 naming taken from it. Its relationship ribbons and its detection of moved blocks are left out,
 because a client's diff of a working copy reports changes, not two trees to relate.
-*Delete and add to ignore list* hands the name to the tool's own ignore record: one line appended to
-`.gitignore`, `.hgignore` or `.cvsignore`, or the folder's `svn:ignore` property set through
-`svn propset` where Subversion keeps the list that way.
 
 **Trash:** *Move to Trash* (<kbd>Delete</kbd>) follows the freedesktop.org Trash
 specification, exactly like Thunar, Nautilus and Dolphin: the file goes to
@@ -732,10 +736,11 @@ src/
     shortcuts.rs   side panel entries: order, names, hidden ones, saved
     thumbs.rs      freedesktop.org thumbnail cache
     actions.rs     custom actions (Thunar uca.xml)
-    git.rs         Git working trees through the git command: status, changes, log, blame, diffs, graph
+    vcs/           version control, tool-neutral: working-copy detection, states, changes, history,
+                   blame, diffs, graph; one backend per tool (git, hg, svn, cvs, ss) over its client
     appearance.rs  light or dark: the theme variant for the desktop's colour scheme
   ui/              GTK: window, tabs, sidebar, drives page, jobs, clipboard, dnd, archives
-    git/           TortoiseGit's overlays, menus and dialogs
+    vcs/           TortoiseGit's overlays, menus and dialogs, for every tool
 helper/FbArchive/  fb-archive: C# (NativeAOT) host for CompressionWorkbench's archive logic
 tests/             engine, archive and headless UI tests
 ```
@@ -832,9 +837,10 @@ such a script (see `src/ui/selftest.rs` for the commands).
   shortened when an ISO is rebuilt.
 - The folder total in the status bar follows changes in the folder itself; changes deeper
   down show after <kbd>F5</kbd>.
-- Git: TortoiseGit's *Rebase*, *Bisect*, submodules, *Revision graph*, *Repo-browser*,
-  *Daemon*, *Send Mail* and its three-way merge editor are not there; conflicts are edited in
-  the file and marked with *Resolve…*. Overlays of folders below the one shown follow changes
+- Version control: TortoiseGit's *Rebase*, *Bisect*, submodules, *Revision graph*,
+  *Repo-browser*, *Daemon*, *Send Mail* and its three-way merge editor are not there; conflicts are
+  edited in the file and marked with *Resolve…*. Visual Source Safe is pinned against recorded
+  output only. Overlays of folders below the one shown follow changes
   made there by other programs when the folder or repository changes or the window is used
   again.
 

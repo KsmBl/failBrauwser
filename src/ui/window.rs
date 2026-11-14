@@ -394,7 +394,7 @@ impl Window {
         let items = pane.selected_items();
         let model = super::extensions::context_menu_model(self, pane, &items);
         let menu = gtk::Menu::from_model(&model);
-        super::menuicons::submenu_icons(&menu, &|text| super::git::icons::submenu_icon(text).or_else(|| super::menuicons::icon_for(text).map(|i| i.upcast())));
+        super::menuicons::submenu_icons(&menu, &|text| super::vcs::icons::submenu_icon(text).or_else(|| super::menuicons::icon_for(text).map(|i| i.upcast())));
         menu.set_attach_widget(Some(&self.win));
         // A right click on the files while the menu is open (it has the pointer then) opens
         // the menu of the folder there, as on Windows: with no empty space left to click,
