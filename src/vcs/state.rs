@@ -524,3 +524,93 @@ pub fn new_file_lines(path: &Path) -> (Option<u64>, Option<u64>) {
         _ => (None, None),
     }
 }
+
+/// What the diff window shows at one position: a row of the side-by-side diff, or a run of
+/// unchanged rows folded away, named by the lines it hides on each side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shown {
+    Row(usize),
+    Fold { rows: std::ops::Range<usize>, old: (usize, usize), new: (usize, usize) },
+}
+
+/// The rows with each unchanged run longer than it needs to be folded down to `context` rows on
+/// each side of a change (at the start and end of the file, on the change's side only). A run
+/// that would fold a single row stays shown: naming one hidden line costs as much as showing it.
+pub fn fold_same(rows: &[DiffRow], context: usize) -> Vec<Shown> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rows.len() {
+        if rows[i].kind != DiffKind::Same {
+            out.push(Shown::Row(i));
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < rows.len() && rows[i].kind == DiffKind::Same {
+            i += 1;
+        }
+        let end = i;
+        let keep_before = if start == 0 { 0 } else { context };
+        let keep_after = if end == rows.len() { 0 } else { context };
+        if end - start <= keep_before + keep_after + 1 {
+            out.extend((start..end).map(Shown::Row));
+            continue;
+        }
+        out.extend((start..start + keep_before).map(Shown::Row));
+        let hidden = start + keep_before..end - keep_after;
+        let line = |r: &DiffRow, left: bool| (if left { &r.left } else { &r.right }).as_ref().map(|(n, _)| *n).unwrap_or(0);
+        let (first, last) = (&rows[hidden.start], &rows[hidden.end - 1]);
+        out.push(Shown::Fold { old: (line(first, true), line(last, true)), new: (line(first, false), line(last, false)), rows: hidden.clone() });
+        out.extend((hidden.end..end).map(Shown::Row));
+    }
+    out
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+
+    fn text(n: usize, changed_at: &[usize]) -> (String, String) {
+        let old: Vec<String> = (1..=n).map(|i| format!("line {i}")).collect();
+        let new: Vec<String> = (1..=n).map(|i| if changed_at.contains(&i) { format!("line {i} changed") } else { format!("line {i}") }).collect();
+        (old.join("\n") + "\n", new.join("\n") + "\n")
+    }
+
+    #[test]
+    fn unchanged_runs_fold_to_three_lines_around_a_change() {
+        let (a, b) = text(30, &[15]);
+        let rows = side_by_side(&a, &b);
+        let shown = fold_same(&rows, 3);
+        let folds: Vec<_> = shown.iter().filter_map(|s| if let Shown::Fold { old, .. } = s { Some(*old) } else { None }).collect();
+        assert_eq!(folds, [(1, 11), (19, 30)], "the start up to three lines before, from three lines after to the end");
+        let visible = shown.iter().filter(|s| matches!(s, Shown::Row(_))).count();
+        assert_eq!(visible, 3 + 1 + 3);
+    }
+
+    #[test]
+    fn a_short_run_between_two_changes_stays_whole() {
+        let (a, b) = text(12, &[3, 10]);
+        let rows = side_by_side(&a, &b);
+        let shown = fold_same(&rows, 3);
+        // Between 3 and 10 lie six unchanged lines: three after the first change, three before the
+        // second, nothing left to fold.
+        assert!(shown.iter().all(|s| !matches!(s, Shown::Fold { old: (4, _), .. })), "{shown:?}");
+    }
+
+    #[test]
+    fn one_line_is_never_folded() {
+        let (a, b) = text(8, &[1]);
+        let rows = side_by_side(&a, &b);
+        // Seven unchanged lines after the change: three kept, four folded.
+        let shown = fold_same(&rows, 3);
+        assert!(shown.contains(&Shown::Fold { rows: 4..8, old: (5, 8), new: (5, 8) }), "{shown:?}");
+        let (a, b) = text(5, &[1]);
+        assert!(fold_same(&side_by_side(&a, &b), 3).iter().all(|s| matches!(s, Shown::Row(_))), "four lines after: one would fold");
+    }
+
+    #[test]
+    fn a_file_without_changes_folds_to_one_row() {
+        let (a, _) = text(10, &[]);
+        assert_eq!(fold_same(&side_by_side(&a, &a), 3), [Shown::Fold { rows: 0..10, old: (1, 10), new: (1, 10) }]);
+    }
+}
