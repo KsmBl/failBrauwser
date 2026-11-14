@@ -4,6 +4,7 @@
 //! modifications ("Working Tree"), Settings and About.
 
 use super::super::window::Window;
+use super::Wc;
 use super::dialog::{self, BaseOn};
 use super::filelist::{self, FileList};
 use super::progress::{self, Cmd};
@@ -168,7 +169,7 @@ pub fn pull(w: &Window, t: Target, repo: Repo) {
         let c = |i: usize| checks[i].is_active();
         let cmd = pull_cmd(&remote, &dialog::combo_text(&rb), c(0), c(1), c(2), c(3), c(4), c(5));
         let r2 = repo.clone();
-        let posts: Vec<progress::Post> = vec![("Log".into(), Rc::new(move |w: &Window| super::log::show(w, &r2, &r2.root, Vec::new())))];
+        let posts: Vec<progress::Post> = vec![("Log".into(), Rc::new(move |w: &Window| super::log::show(w, &super::wc(&r2), &r2.root, Vec::new())))];
         progress::run(&w, &repo.root, &repo.root, vec![cmd], posts, |_, _| {});
         true
     });
@@ -218,7 +219,7 @@ pub fn fetch(w: &Window, t: Target, repo: Repo) {
             None => a.push("--all".into()),
         }
         let r2 = repo.clone();
-        let posts: Vec<progress::Post> = vec![("Log".into(), Rc::new(move |w: &Window| super::log::show(w, &r2, &r2.root, Vec::new())))];
+        let posts: Vec<progress::Post> = vec![("Log".into(), Rc::new(move |w: &Window| super::log::show(w, &super::wc(&r2), &r2.root, Vec::new())))];
         progress::run(&w, &repo.root, &repo.root, vec![progress::cmd(&a)], posts, |_, _| {});
         true
     });
@@ -734,7 +735,7 @@ pub fn resolve(w: &Window, t: Target, repo: Repo) {
         let (ww, r3) = (Rc::downgrade(&w.me()), repo.clone());
         list.connect_activated(move |c| {
             if let Some(w) = ww.upgrade() {
-                super::diff::working(&w, &r3, &c.path);
+                super::diff::working(&w, &super::wc(&r3), &c.path);
             }
         });
     });
@@ -1013,83 +1014,21 @@ pub fn clone_cmd(url: &str, dir: &str, depth: Option<i32>, recursive: bool, bran
     progress::cmd(&a)
 }
 
-pub fn clone(w: &Window, path: &Path) {
-    let d = dialog::new(w, &dialog::title(path, "Git clone"), "clone");
-    d.set_default_size(560, -1);
-    let area = d.content_area();
-    let g = dialog::grid();
-    let clip = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).wait_for_text().map(|s| s.to_string()).filter(|s| s.contains("://") || s.starts_with("git@"));
-    let url = dialog::entry("url", clip.as_deref().unwrap_or(""));
-    let dir = dialog::entry("directory", &path.join(clip.as_deref().map(git::clone_dir_name).unwrap_or_default()).to_string_lossy());
-    dialog::grid_row(&g, 0, "URL:", &url);
-    dialog::grid_row(&g, 1, "Directory:", &dir);
-    area.pack_start(&g, false, false, 0);
-    let (d2, base) = (dir.clone(), path.to_path_buf());
-    url.connect_changed(move |u| d2.set_text(&base.join(git::clone_dir_name(&u.text())).to_string_lossy()));
-    let og = dialog::grid();
-    let depth = dialog::check("Depth", "use-depth", false);
-    let depth_n = gtk::SpinButton::with_range(1.0, 100000.0, 1.0);
-    depth_n.set_widget_name("depth");
-    let recursive = dialog::check("Recursive", "recursive", false);
-    let branch = dialog::check("Branch", "use-branch", false);
-    let branch_name = dialog::entry("branch", "");
-    let no_checkout = dialog::check("No Checkout", "no-checkout", false);
-    let bare = dialog::check("Bare", "bare", false);
-    og.attach(&depth, 0, 0, 1, 1);
-    og.attach(&depth_n, 1, 0, 1, 1);
-    og.attach(&recursive, 2, 0, 1, 1);
-    og.attach(&branch, 0, 1, 1, 1);
-    og.attach(&branch_name, 1, 1, 1, 1);
-    og.attach(&no_checkout, 2, 1, 1, 1);
-    og.attach(&bare, 2, 2, 1, 1);
-    og.set_column_spacing(12);
-    og.set_row_spacing(6);
-    area.pack_start(&dialog::frame("Options", &og), false, false, 0);
-    dialog::ok_cancel(&d);
-    let (ww, base) = (Rc::downgrade(&w.me()), path.to_path_buf());
-    on_ok(&d, move || {
-        let Some(w) = ww.upgrade() else { return true };
-        let (u, target) = (url.text().trim().to_string(), dir.text().trim().to_string());
-        if u.is_empty() || target.is_empty() {
-            dialog::error(&w.win, "Enter the URL to clone and the directory to clone into.");
-            return false;
+/// `git init` in `path` (bare where asked), and TortoiseGit's word that it is there.
+pub fn init_here(w: &Window, path: &Path, bare: bool) {
+    let mut a = vec!["init".to_string()];
+    if bare {
+        a.push("--bare".into());
+    }
+    let p = path.to_path_buf();
+    quick(w, path, a, move |w| {
+        if git::repo_at(&p).is_some() || p.join("HEAD").is_file() {
+            let m = gtk::MessageDialog::new(Some(&w.win), gtk::DialogFlags::DESTROY_WITH_PARENT, gtk::MessageType::Info, gtk::ButtonsType::Ok, &format!("Empty Git repository created in {}", p.display()));
+            m.set_title(dialog::SUFFIX);
+            m.connect_response(|m, _| m.close());
+            m.show();
         }
-        let cmd = clone_cmd(&u, &target, depth.is_active().then(|| depth_n.value_as_int()), recursive.is_active(), branch.is_active().then(|| branch_name.text().to_string()).as_deref(), no_checkout.is_active(), bare.is_active());
-        progress::run(&w, &base, &base, vec![cmd], Vec::new(), |w, _| {
-            for p in w.panes() {
-                p.reload();
-            }
-        });
-        true
     });
-    d.show_all();
-}
-
-pub fn init(w: &Window, path: &Path) {
-    let d = dialog::new(w, &dialog::title(path, "Git init"), "createrepo");
-    let area = d.content_area();
-    let bare = dialog::check("Make it Bare (No working directory)", "bare", false);
-    area.pack_start(&bare, false, false, 0);
-    dialog::ok_cancel(&d);
-    let (ww, path) = (Rc::downgrade(&w.me()), path.to_path_buf());
-    on_ok(&d, move || {
-        let Some(w) = ww.upgrade() else { return true };
-        let mut a = vec!["init".to_string()];
-        if bare.is_active() {
-            a.push("--bare".into());
-        }
-        let p = path.clone();
-        quick(&w, &path, a, move |w| {
-            if git::repo_at(&p).is_some() || p.join("HEAD").is_file() {
-                let m = gtk::MessageDialog::new(Some(&w.win), gtk::DialogFlags::DESTROY_WITH_PARENT, gtk::MessageType::Info, gtk::ButtonsType::Ok, &format!("Empty Git repository created in {}", p.display()));
-                m.set_title(dialog::SUFFIX);
-                m.connect_response(|m, _| m.close());
-                m.show();
-            }
-        });
-        true
-    });
-    d.show_all();
 }
 
 /// TortoiseGit's RefLog: what HEAD pointed at, newest first.
@@ -1162,7 +1101,7 @@ pub fn reflog(w: &Window, t: Target, repo: Repo) {
 
 /// TortoiseGit's "Check for Modifications" ("Working Tree"): the changed files, with
 /// unversioned and ignored ones when asked; double-click for the diff.
-pub fn check_modifications(w: &Window, t: Target, repo: Repo) {
+pub fn check_modifications(w: &Window, t: Target, wc: Wc) {
     let d = dialog::new(w, &dialog::title(&t.title_path(), "Working Tree"), "checkmods");
     d.set_default_size(760, 480);
     let area = d.content_area();
@@ -1183,9 +1122,9 @@ pub fn check_modifications(w: &Window, t: Target, repo: Repo) {
     d.add_button("OK", gtk::ResponseType::Ok);
     let paths = t.rel();
     let reload = {
-        let (lw, repo, unv, ign, whole, summary) = (Rc::downgrade(&list), repo.clone(), unv.clone(), ign.clone(), whole.clone(), summary.clone());
+        let (lw, wc2, unv, ign, whole, summary) = (Rc::downgrade(&list), wc.clone(), unv.clone(), ign.clone(), whole.clone(), summary.clone());
         Rc::new(move || {
-            let (r, u, i) = (repo.clone(), unv.is_active(), ign.is_active());
+            let (r, u, i) = (wc2.clone(), unv.is_active(), ign.is_active());
             let p = if whole.is_active() { Vec::new() } else { paths.clone() };
             let (lw, summary) = (lw.clone(), summary.clone());
             super::background(move || r.changes(&p, u, i).unwrap_or_default(), move |changes| {
@@ -1214,7 +1153,7 @@ pub fn check_modifications(w: &Window, t: Target, repo: Repo) {
             unsafe { d.destroy() };
         }
     });
-    let (ww, r2) = (Rc::downgrade(&w.me()), repo.clone());
+    let (ww, r2) = (Rc::downgrade(&w.me()), wc.clone());
     list.connect_activated(move |c| {
         if let Some(w) = ww.upgrade() {
             if c.status.is_change() {
@@ -1222,7 +1161,7 @@ pub fn check_modifications(w: &Window, t: Target, repo: Repo) {
             }
         }
     });
-    let (ww, r2) = (Rc::downgrade(&w.me()), repo.clone());
+    let (ww, r2) = (Rc::downgrade(&w.me()), wc.clone());
     list.connect_menu(move |sel| {
         let m = gtk::Menu::new();
         let first = sel.first()?.clone();
@@ -1239,7 +1178,7 @@ pub fn check_modifications(w: &Window, t: Target, repo: Repo) {
             let (w1, r, files) = (ww.clone(), r2.clone(), sel.to_vec());
             i.connect_activate(move |_| {
                 if let Some(w) = w1.upgrade() {
-                    revert_files(&w, &r, &files);
+                    super::revert_files(&w, &r, &files);
                 }
             });
             m.append(&i);
@@ -1249,9 +1188,7 @@ pub fn check_modifications(w: &Window, t: Target, repo: Repo) {
             let (w1, r, files) = (ww.clone(), r2.clone(), sel.to_vec());
             i.connect_activate(move |_| {
                 if let Some(w) = w1.upgrade() {
-                    let mut a = vec!["add".to_string(), "--".into()];
-                    a.extend(files.iter().map(|c| c.path.clone()));
-                    run(&w, &r, vec![progress::cmd(&a)]);
+                    super::generic::run(&w, &r, &[failbrauwser::vcs::ops::Op::Add { paths: files.iter().map(|c| c.path.clone()).collect() }]);
                 }
             });
             m.append(&i);
@@ -1260,7 +1197,7 @@ pub fn check_modifications(w: &Window, t: Target, repo: Repo) {
         let (w1, r, c) = (ww.clone(), r2.clone(), first);
         i.connect_activate(move |_| {
             if let Some(w) = w1.upgrade() {
-                super::log::show(&w, &r, &r.root.join(&c.path), vec![c.path.clone()]);
+                super::log::show(&w, &r, &r.root().join(&c.path), vec![c.path.clone()]);
             }
         });
         m.append(&i);

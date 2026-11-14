@@ -21,6 +21,8 @@ pub enum Op {
     Fetch,
     Push,
     Switch { to: String },
+    /// The working copy at an earlier revision of the history (the log's right-click menu).
+    UpdateTo { rev: String },
     Merge { from: String },
     Branch { name: String, message: String },
     Tag { name: String, message: String },
@@ -52,7 +54,7 @@ impl Op {
             Op::Pull => Cap::Pull,
             Op::Fetch => Cap::Fetch,
             Op::Push => Cap::Push,
-            Op::Switch { .. } => Cap::Switch,
+            Op::Switch { .. } | Op::UpdateTo { .. } => Cap::Switch,
             Op::Merge { .. } => Cap::Merge,
             Op::Branch { .. } => Cap::Branch,
             Op::Tag { .. } => Cap::Tag,
@@ -179,6 +181,16 @@ pub fn runs(tool: Tool, op: &Op) -> Vec<Vec<String>> {
             Subversion => one(plain(&["switch", "--", to])),
             Cvs => one(plain(&["update", "-r", to])),
             VisualSourceSafe => one(plain(&["Get", "-R", "-I-Y", &format!("-V{to}")])),
+        },
+        Op::UpdateTo { rev } if rev.trim().is_empty() => Vec::new(),
+        Op::UpdateTo { rev } => match tool {
+            Git => one(plain(&["checkout", rev])),
+            Mercurial => one(plain(&["update", "--rev", rev])),
+            Subversion => one(plain(&["update", "--revision", rev])),
+            // A CVS changeset is named by its time; a file revision has a dot.
+            Cvs if rev.contains('.') => one(plain(&["update", "-r", rev])),
+            Cvs => one(plain(&["update", "-D", &super::cvs::date_arg(rev)])),
+            VisualSourceSafe => one(plain(&["Get", "-R", "-I-Y", &format!("-V{rev}")])),
         },
         Op::Merge { from } if from.trim().is_empty() => Vec::new(),
         Op::Merge { from } => match tool {
@@ -341,6 +353,13 @@ mod tests {
     fn a_cvs_address_is_its_root_and_its_module() {
         assert_eq!(runs(Tool::Cvs, &Op::Clone { url: ":pserver:me@host:/cvs mod".into(), dir: "out".into() }), [s(&["-d", ":pserver:me@host:/cvs", "checkout", "-d", "out", "mod"])]);
         assert!(runs(Tool::Cvs, &Op::Clone { url: "nomodule".into(), dir: "out".into() }).is_empty());
+    }
+
+    #[test]
+    fn updating_to_a_revision_of_the_history() {
+        assert_eq!(runs(Tool::Subversion, &Op::UpdateTo { rev: "7".into() }), [s(&["update", "--revision", "7"])]);
+        assert_eq!(runs(Tool::Cvs, &Op::UpdateTo { rev: "1.3".into() }), [s(&["update", "-r", "1.3"])]);
+        assert_eq!(runs(Tool::Cvs, &Op::UpdateTo { rev: "1794623599".into() }), [s(&["update", "-D", "2026-11-14 02:33:19 UTC"])]);
     }
 
     #[test]

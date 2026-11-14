@@ -578,7 +578,8 @@ impl super::backend::Backend for Repo {
         self.run(&["rev-parse", "--verify", "-q", &format!("{rev}^1")]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
     fn blame(&self, path: &str) -> Result<Vec<BlameLine>, String> {
-        Repo::blame(self, path, None)
+        // As TortoiseGitBlame shows it: the committed file, not the edits on top of it.
+        Repo::blame(self, path, if self.has_commits() { Some("HEAD") } else { None })
     }
     fn base_text(&self, path: &str) -> Vec<u8> {
         self.show_file("HEAD", path)

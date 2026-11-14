@@ -15,15 +15,27 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-/// One git command: its arguments and what it reads from its input.
+/// One client command: the client, its arguments and what it reads from its input.
 #[derive(Clone, Debug)]
 pub struct Cmd {
+    pub program: String,
     pub args: Vec<String>,
     pub stdin: Option<String>,
 }
 
+/// A git command.
 pub fn cmd<S: AsRef<str>>(args: &[S]) -> Cmd {
-    Cmd { args: args.iter().map(|a| a.as_ref().to_string()).collect(), stdin: None }
+    Cmd { program: "git".into(), args: args.iter().map(|a| a.as_ref().to_string()).collect(), stdin: None }
+}
+
+/// A command of a tool's own client.
+pub fn tool_cmd(tool: failbrauwser::vcs::Tool, args: &[String]) -> Cmd {
+    Cmd { program: tool.cli().into(), args: args.to_vec(), stdin: None }
+}
+
+/// The client calls of an item, one command each.
+pub fn tool_cmds(tool: failbrauwser::vcs::Tool, runs: Vec<Vec<String>>) -> Vec<Cmd> {
+    runs.iter().map(|a| tool_cmd(tool, a)).collect()
 }
 
 impl Cmd {
@@ -34,7 +46,7 @@ impl Cmd {
     /// How TortoiseGit shows it: "git commit -F -", names with spaces quoted.
     pub fn display(&self) -> String {
         let args: Vec<String> = self.args.iter().map(|a| if a.contains(' ') || a.is_empty() { format!("\"{a}\"") } else { a.clone() }).collect();
-        format!("git {}", args.join(" "))
+        format!("{} {}", self.program, args.join(" "))
     }
 }
 
@@ -52,14 +64,20 @@ pub enum Event {
     Done(Option<i32>),
 }
 
-/// "Success", or why not, as TortoiseGit words it.
-pub fn outcome(code: Option<i32>, aborted: bool) -> String {
+/// "Success", or why not, as TortoiseGit words it, naming the client that ran.
+pub fn outcome(program: &str, code: Option<i32>, aborted: bool) -> String {
     match code {
         Some(0) => "Success".into(),
-        Some(c) => format!("git did not exit cleanly (exit code {c})"),
+        Some(c) => format!("{program} did not exit cleanly (exit code {c})"),
         None if aborted => "Aborted by user".into(),
-        None => "git was terminated".into(),
+        None => format!("{program} was terminated"),
     }
+}
+
+/// The tool whose client a command runs, for the window's title ("Git Command Progress").
+fn tool_label(cmds: &[Cmd]) -> &'static str {
+    let program = cmds.first().map(|c| c.program.as_str()).unwrap_or("git");
+    failbrauwser::vcs::Tool::all().iter().find(|t| t.cli() == program).map(|t| t.label()).unwrap_or("Git")
 }
 
 /// Runs `cmds` one after the other in `dir` on a worker thread, until one fails; the
@@ -87,7 +105,7 @@ pub fn execute(dir: &Path, cmds: Vec<Cmd>, slot: Arc<Mutex<Option<Child>>>) -> a
 /// The environment the commands run in: no terminal prompts; passwords and passphrases
 /// are asked for in a window of ours.
 pub fn prepare(c: &mut std::process::Command) {
-    c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_LITERAL_PATHSPECS", "1").env("LC_ALL", "C.UTF-8").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_LITERAL_PATHSPECS", "1").env("HGPLAIN", "1").env("LC_ALL", "C.UTF-8").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Ok(exe) = std::env::current_exe() {
         c.env("GIT_ASKPASS", &exe).env("SSH_ASKPASS", &exe).env("SSH_ASKPASS_REQUIRE", "force").env(super::askpass::ENV, "1");
     }
@@ -110,7 +128,7 @@ pub struct Progress {
 /// Runs `cmds` in `dir`, shown in a progress window titled after `path`. `done` hears
 /// whether all of them succeeded; `posts` are offered afterwards when they did.
 pub fn run(w: &Window, dir: &Path, path: &Path, cmds: Vec<Cmd>, posts: Vec<Post>, done: impl Fn(&Window, bool) + 'static) -> Rc<Progress> {
-    let d = dialog::new(w, &dialog::title(path, "Git Command Progress"), "tgit");
+    let d = dialog::new(w, &dialog::title(path, &format!("{} Command Progress", tool_label(&cmds))), "tgit");
     d.set_default_size(720, 420);
     let area = d.content_area();
     let (sw, view) = dialog::text_view("git-output", false);
@@ -196,7 +214,8 @@ pub fn run(w: &Window, dir: &Path, path: &Path, cmds: Vec<Cmd>, posts: Vec<Post>
                 Event::Progress(s) => p2.show_progress(&s),
                 Event::Done(code) => {
                     ok = code == Some(0);
-                    p2.finish(ok, &outcome(code, p2.aborted.get()), started);
+                    let program = cmds.first().map(|c| c.program.clone()).unwrap_or_default();
+                    p2.finish(ok, &outcome(&program, code, p2.aborted.get()), started);
                 }
             }
         }
@@ -224,13 +243,13 @@ pub fn run(w: &Window, dir: &Path, path: &Path, cmds: Vec<Cmd>, posts: Vec<Post>
 
 /// Runs one command, sending what it prints; its exit code (None when killed).
 fn run_one(dir: &Path, c: &Cmd, slot: &Arc<Mutex<Option<Child>>>, tx: &async_channel::Sender<Event>) -> Option<i32> {
-    let mut command = std::process::Command::new("git");
+    let mut command = std::process::Command::new(&c.program);
     command.current_dir(dir).args(&c.args);
     prepare(&mut command);
     let mut child = match command.spawn() {
         Ok(ch) => ch,
         Err(e) => {
-            let _ = tx.send_blocking(Event::Out(format!("git cannot be started: {e}\n")));
+            let _ = tx.send_blocking(Event::Out(format!("{} cannot be started: {e}\n", c.program)));
             return Some(127);
         }
     };

@@ -87,6 +87,9 @@ fn menu_svg(name: &str) -> Option<String> {
         "patchapply" => format!(r##"{PAGE}<path d="M4.5 7h3M6 5.5v3" stroke="#2a9d3c" stroke-width="1.3"/><path d="M4.5 11h3" stroke="#d9302c" stroke-width="1.3"/><path d="M15 11h-4.5" stroke="#2c6fd6" stroke-width="1.6"/><path d="M11.4 8.6L8.6 11l2.8 2.4z" fill="#2c6fd6"/>"##),
         "settings" => r##"<path d="M6.8 1h2.4l.4 2 1.5.7 1.7-1.2 1.7 1.7-1.2 1.7.7 1.5 2 .4v2.4l-2 .4-.7 1.5 1.2 1.7-1.7 1.7-1.7-1.2-1.5.7-.4 2H6.8l-.4-2-1.5-.7-1.7 1.2-1.7-1.7 1.2-1.7-.7-1.5-2-.4V6.8l2-.4.7-1.5-1.2-1.7 1.7-1.7 1.7 1.2 1.5-.7z" fill="#8a96a8" stroke="#4a5568" stroke-width=".7"/><circle cx="8" cy="8" r="2.4" fill="#fff" stroke="#4a5568"/>"##.to_string(),
         "about" => r##"<circle cx="8" cy="8" r="7" fill="#2c6fd6"/><circle cx="8" cy="4.6" r="1.2" fill="#fff"/><path d="M8 7v5.2" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>"##.to_string(),
+        "update" => format!(r##"{PAGE}{LINES}<path d="M11 6.5v6" stroke="#2c6fd6" stroke-width="1.8"/><path d="M8.2 10.4l2.8 3.2 2.8-3.2z" fill="#2c6fd6"/>"##),
+        "lock" => r##"<path d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2" fill="none" stroke="#6b6b6b" stroke-width="1.6"/><path d="M2.5 7h11v7.5h-11z" fill="#f4c20d" stroke="#a07800"/><circle cx="8" cy="10.5" r="1.2" fill="#7a5523"/>"##.to_string(),
+        "unlock" => r##"<path d="M4.5 7V5a3.5 3.5 0 0 1 6.8-1.2" fill="none" stroke="#6b6b6b" stroke-width="1.6"/><path d="M2.5 7h11v7.5h-11z" fill="#f4c20d" stroke="#a07800"/><circle cx="8" cy="10.5" r="1.2" fill="#7a5523"/>"##.to_string(),
         "refresh" => r##"<path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="#2a9d3c" stroke-width="2"/><path d="M13.8 1.2v4.6H9.2z" fill="#2a9d3c"/>"##.to_string(),
         _ => return None,
     };
@@ -98,7 +101,7 @@ fn menu_svg(name: &str) -> Option<String> {
 const MENU_ICONS: &[&str] = &[
     "tgit", "commit", "pull", "fetch", "push", "sync", "clone", "createrepo", "diff", "diffprev", "log", "reflog", "checkmods", "stashsave", "stashpop", "resolve",
     "revert", "cleanup", "switch", "merge", "branch", "tag", "export", "add", "delete", "deletekeep", "rename", "ignore", "blame", "patchcreate", "patchapply",
-    "settings", "about", "refresh",
+    "settings", "about", "refresh", "update", "lock", "unlock",
 ];
 
 thread_local! {
@@ -131,7 +134,7 @@ pub fn gicon(name: &str) -> Option<gio::Icon> {
 /// The icon of a Git submenu by its text ("TortoiseGit", "Add to ignore list").
 pub fn submenu_icon(text: &str) -> Option<gio::Icon> {
     match text {
-        "TortoiseGit" => gicon("tgit"),
+        "Repository" => gicon("tgit"),
         "Add to ignore list" => gicon("ignore"),
         _ => None,
     }

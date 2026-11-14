@@ -4,7 +4,9 @@
 
 use super::super::window::Window;
 use super::dialog;
-use failbrauwser::vcs::git::{self, DiffKind, DiffRow, Repo};
+use super::Wc;
+use failbrauwser::vcs::git::{self, DiffKind, DiffRow};
+use failbrauwser::vcs::Tool;
 use gtk::prelude::*;
 use gtk::glib;
 use std::cell::RefCell;
@@ -19,33 +21,44 @@ thread_local! {
     static SHOWN: RefCell<Vec<(glib::WeakRef<gtk::Window>, Vec<DiffRow>)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The working tree file against HEAD.
-pub fn working(w: &Window, repo: &Repo, path: &str) {
-    let old = repo.show_file("HEAD", path);
-    let new = std::fs::read(repo.root.join(path)).unwrap_or_default();
-    open(w, repo, path, &format!("{path} - Base (HEAD)"), &format!("{path} - Working Tree"), old, new);
+/// What each tool compares a working file with, as the left pane names it.
+fn base_word(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Git => "HEAD",
+        Tool::Mercurial => "parent",
+        Tool::Subversion => "BASE",
+        Tool::Cvs => "checked out",
+        Tool::VisualSourceSafe => "current",
+    }
+}
+
+/// The working file against what its tool compares it with.
+pub fn working(w: &Window, wc: &Wc, path: &str) {
+    let old = wc.base_text(path);
+    let new = std::fs::read(wc.root().join(path)).unwrap_or_default();
+    open(w, wc, path, &format!("{path} - Base ({})", base_word(wc.tool())), &format!("{path} - Working Tree"), old, new);
 }
 
 /// The file as its last commit left it against the version before.
-pub fn previous(w: &Window, repo: &Repo, path: &str) {
-    let Some((latest, before)) = repo.last_two_versions(path) else {
+pub fn previous(w: &Window, wc: &Wc, path: &str) {
+    let Some((latest, before)) = wc.last_two_versions(path) else {
         dialog::error(&w.win, &format!("{path} has no history."));
         return;
     };
-    revisions(w, repo, path, path, &before, &latest);
+    revisions(w, wc, path, path, &before, &latest);
 }
 
 /// `path` at `new_rev` against `old_path` at `old_rev`.
-pub fn revisions(w: &Window, repo: &Repo, old_path: &str, path: &str, old_rev: &str, new_rev: &str) {
-    let short = |r: &str| if r == git::EMPTY_TREE { "(none)".to_string() } else { r[..r.len().min(8)].to_string() };
-    let old = if old_rev == git::EMPTY_TREE { Vec::new() } else { repo.show_file(old_rev, old_path) };
-    let new = repo.show_file(new_rev, path);
-    open(w, repo, path, &format!("{old_path} - Revision {}", short(old_rev)), &format!("{path} - Revision {}", short(new_rev)), old, new);
+pub fn revisions(w: &Window, wc: &Wc, old_path: &str, path: &str, old_rev: &str, new_rev: &str) {
+    let short = |r: &str| if r.is_empty() || r == git::EMPTY_TREE { "(none)".to_string() } else { r[..r.len().min(8)].to_string() };
+    let old = wc.text_at(old_rev, old_path);
+    let new = wc.text_at(new_rev, path);
+    open(w, wc, path, &format!("{old_path} - Revision {}", short(old_rev)), &format!("{path} - Revision {}", short(new_rev)), old, new);
 }
 
-fn open(w: &Window, repo: &Repo, path: &str, left: &str, right: &str, old: Vec<u8>, new: Vec<u8>) {
+fn open(w: &Window, wc: &Wc, path: &str, left: &str, right: &str, old: Vec<u8>, new: Vec<u8>) {
     let win = gtk::Window::new(gtk::WindowType::Toplevel);
-    win.set_title(&format!("{} - TortoiseGitMerge", repo.root.join(path).display()));
+    win.set_title(&format!("{} - TortoiseGitMerge", wc.root().join(path).display()));
     win.set_transient_for(Some(&w.win));
     win.set_destroy_with_parent(true);
     win.set_default_size(1000, 640);

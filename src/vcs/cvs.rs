@@ -255,6 +255,14 @@ pub fn previous_revision(rev: &str) -> Option<String> {
     Some(parts.iter().map(u64::to_string).collect::<Vec<_>>().join("."))
 }
 
+/// A changeset's name (seconds since 1970) as the date `-D` takes: "2026-11-14 02:33:19 UTC".
+pub fn date_arg(id: &str) -> String {
+    let secs: i64 = id.parse().unwrap_or(0);
+    let (y, m, d) = civil(secs.div_euclid(86_400));
+    let s = secs.rem_euclid(86_400);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC", s / 3600, s / 60 % 60, s % 60)
+}
+
 impl Cvs {
     /// A client call; CVS answers 1 for "there were differences", which is no failure here.
     fn client(&self, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -511,16 +519,8 @@ impl super::backend::Backend for Cvs {
         if rev.is_empty() {
             return Vec::new();
         }
-        let flag;
-        let args: Vec<&str> = if rev.contains('.') {
-            vec!["-Q", "update", "-p", "-r", rev, path]
-        } else {
-            let secs: i64 = rev.parse().unwrap_or(0);
-            let (y, m, d) = civil(secs.div_euclid(86_400));
-            let s = secs.rem_euclid(86_400);
-            flag = format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC", s / 3600, s / 60 % 60, s % 60);
-            vec!["-Q", "update", "-p", "-D", &flag, path]
-        };
+        let flag = date_arg(rev);
+        let args: Vec<&str> = if rev.contains('.') { vec!["-Q", "update", "-p", "-r", rev, path] } else { vec!["-Q", "update", "-p", "-D", &flag, path] };
         self.client(&args).unwrap_or_default()
     }
 

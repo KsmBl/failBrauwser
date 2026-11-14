@@ -7,7 +7,10 @@ use super::super::window::Window;
 use super::dialog;
 use super::filelist::{self, FileList};
 use super::progress::{self, Cmd};
+use super::Wc;
+use failbrauwser::vcs::caps::Cap;
 use failbrauwser::vcs::git::{Change, Repo, Status};
+use failbrauwser::vcs::ops::{self, Op};
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::Cell;
@@ -72,12 +75,30 @@ pub fn check_filter(which: &str, c: &Change) -> bool {
     }
 }
 
-pub fn show(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>) {
-    show_with(w, repo, path, paths, false);
+pub fn show(w: &Window, wc: &Wc, path: &Path, paths: Vec<String>) {
+    show_with(w, wc, path, paths, false);
+}
+
+/// What a tool other than Git runs for a commit of the ticked files: the unversioned ones among
+/// them added first, then the commit of exactly those, then a push where asked.
+pub fn tool_commit_ops(checked: &[Change], message: &str, amend: bool, push: bool) -> Vec<Op> {
+    let mut out = Vec::new();
+    let new: Vec<String> = checked.iter().filter(|c| c.status == Status::Unversioned).map(|c| c.path.clone()).collect();
+    if !new.is_empty() {
+        out.push(Op::Add { paths: new });
+    }
+    out.push(Op::Commit { paths: checked.iter().map(|c| c.path.clone()).collect(), message: message.to_string(), amend });
+    if push {
+        out.push(Op::Push);
+    }
+    out
 }
 
 /// The Commit dialog; `push` ticks Commit & Push from the start.
-pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push: bool) {
+pub fn show_with(w: &Window, wc: &Wc, path: &Path, paths: Vec<String>, push: bool) {
+    // Git's own options (a new branch, the author, Signed-off-by) are Git's alone.
+    let repo: Option<Repo> = wc.as_git().cloned();
+    let tool = wc.tool();
     let d = dialog::new(w, &dialog::title(path, "Commit"), "commit");
     d.set_default_size(760, 640);
     let area = d.content_area();
@@ -85,13 +106,15 @@ pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push:
     let to = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     to.pack_start(&dialog::label("Commit to:"), false, false, 0);
     let branch = gtk::Label::new(None);
-    branch.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&repo.branch_label())));
+    branch.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&wc.branch_label())));
     to.pack_start(&branch, false, false, 0);
     let new_branch = dialog::check("new branch", "new-branch", false);
     let new_name = dialog::entry("new-branch-name", "");
     new_name.set_sensitive(false);
-    to.pack_start(&new_branch, false, false, 12);
-    to.pack_start(&new_name, false, false, 0);
+    if repo.is_some() {
+        to.pack_start(&new_branch, false, false, 12);
+        to.pack_start(&new_name, false, false, 0);
+    }
     let nn = new_name.clone();
     new_branch.connect_toggled(move |c| nn.set_sensitive(c.is_active()));
     area.pack_start(&to, false, false, 0);
@@ -103,27 +126,31 @@ pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push:
     msg_box.pack_start(&msg_sw, true, true, 0);
     let opts = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let amend = dialog::check("Amend Last Commit", "amend", false);
-    amend.set_sensitive(repo.has_commits());
+    amend.set_sensitive(repo.as_ref().map_or(tool.has(Cap::Amend), |r| r.has_commits()));
     let set_author = dialog::check("Set author", "set-author", false);
-    let author = dialog::entry("author", &format!("{} <{}>", repo.config("user.name", None), repo.config("user.email", None)));
+    let author = dialog::entry("author", &repo.as_ref().map(|r| format!("{} <{}>", r.config("user.name", None), r.config("user.email", None))).unwrap_or_default());
     author.set_sensitive(false);
     let sign = dialog::check("Add \"Signed-off-by\"", "sign", false);
-    opts.pack_start(&amend, false, false, 0);
-    opts.pack_start(&set_author, false, false, 0);
-    opts.pack_start(&author, true, true, 0);
-    opts.pack_start(&sign, false, false, 0);
+    if tool.has(Cap::Amend) {
+        opts.pack_start(&amend, false, false, 0);
+    }
+    if repo.is_some() {
+        opts.pack_start(&set_author, false, false, 0);
+        opts.pack_start(&author, true, true, 0);
+        opts.pack_start(&sign, false, false, 0);
+    }
     msg_box.pack_start(&opts, false, false, 0);
     let au = author.clone();
     set_author.connect_toggled(move |c| au.set_sensitive(c.is_active()));
     let msg_frame = dialog::frame("Message:", &msg_box);
     area.pack_start(&msg_frame, false, false, 0);
-    let (r2, m2) = (repo.clone(), msg.clone());
+    let (r2, m2) = (wc.clone(), msg.clone());
     amend.connect_toggled(move |c| {
         // Amending starts from the message of the last commit.
         let b = m2.buffer().expect("buffer");
         if c.is_active() && dialog::buffer_text(&m2).trim().is_empty() {
-            if let Ok(t) = r2.run(&["log", "-1", "--format=%B"]) {
-                b.set_text(t.trim_end());
+            if let Some(last) = r2.log(&[], 1).ok().and_then(|l| l.into_iter().next()) {
+                b.set_text(last.message.trim_end());
             }
         }
     });
@@ -181,7 +208,10 @@ pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push:
     let split = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     split.style_context().add_class("linked");
     split.pack_start(&commit_btn, false, false, 0);
-    split.pack_start(&more, false, false, 0);
+    // Commit & Push only where there is something to push to.
+    if tool.has(Cap::Push) {
+        split.pack_start(&more, false, false, 0);
+    }
     let cancel = gtk::Button::with_label("Cancel");
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     buttons.pack_end(&cancel, false, false, 0);
@@ -208,7 +238,7 @@ pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push:
     let u = update.clone();
     amend.connect_toggled(move |_| u());
     let reload = {
-        let (repo, list, show_unversioned, whole, paths) = (repo.clone(), Rc::downgrade(&list), show_unversioned.clone(), whole.clone(), paths.clone());
+        let (repo, list, show_unversioned, whole, paths) = (wc.clone(), Rc::downgrade(&list), show_unversioned.clone(), whole.clone(), paths.clone());
         Rc::new(move || {
             let (r, unv) = (repo.clone(), show_unversioned.is_active());
             let p = if whole.is_active() { Vec::new() } else { paths.clone() };
@@ -225,13 +255,13 @@ pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push:
         c.connect_toggled(move |_| r());
     }
     reload();
-    let (ww, r2) = (Rc::downgrade(&w.me()), repo.clone());
+    let (ww, r2) = (Rc::downgrade(&w.me()), wc.clone());
     list.connect_activated(move |c| {
         if let Some(w) = ww.upgrade() {
             super::diff::working(&w, &r2, &c.path);
         }
     });
-    let (ww, r2) = (Rc::downgrade(&w.me()), repo.clone());
+    let (ww, r2) = (Rc::downgrade(&w.me()), wc.clone());
     list.connect_menu(move |sel| {
         let m = gtk::Menu::new();
         let one = sel.first().cloned()?;
@@ -247,7 +277,7 @@ pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push:
         let (w1, r1, c1) = (ww.clone(), r2.clone(), one.clone());
         log.connect_activate(move |_| {
             if let Some(w) = w1.upgrade() {
-                super::log::show(&w, &r1, &r1.root.join(&c1.path), vec![c1.path.clone()]);
+                super::log::show(&w, &r1, &r1.root().join(&c1.path), vec![c1.path.clone()]);
             }
         });
         m.append(&log);
@@ -255,7 +285,7 @@ pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push:
         let (w1, r1, files) = (ww.clone(), r2.clone(), sel.to_vec());
         revert.connect_activate(move |_| {
             if let Some(w) = w1.upgrade() {
-                super::dialogs::revert_files(&w, &r1, &files);
+                super::revert_files(&w, &r1, &files);
             }
         });
         m.append(&revert);
@@ -269,7 +299,7 @@ pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push:
         }
     });
 
-    let (ww, repo2, dd) = (Rc::downgrade(&w.me()), repo.clone(), d.clone());
+    let (ww, repo2, dd, wc2) = (Rc::downgrade(&w.me()), repo.clone(), d.clone(), wc.clone());
     let lw = Rc::downgrade(&list);
     let msg2 = msg.clone();
     commit_btn.connect_clicked(move |_| {
@@ -277,6 +307,20 @@ pub fn show_with(w: &Window, repo: &Repo, path: &Path, paths: Vec<String>, push:
         let (Some(w), Some(l)) = (ww.upgrade(), lw.upgrade()) else { return };
         let message = dialog::buffer_text(&msg);
         let checked = l.checked();
+        let Some(repo2) = repo2.clone() else {
+            // Another tool: its own client commits exactly what is ticked.
+            let tool = wc2.tool();
+            let cmds: Vec<Cmd> = tool_commit_ops(&checked, &message, amend.is_active(), and_push.get()).iter().flat_map(|op| progress::tool_cmds(tool, ops::runs(tool, op))).collect();
+            let wc3 = wc2.clone();
+            let posts: Vec<progress::Post> = if !and_push.get() && tool.has(Cap::Push) {
+                vec![("Push...".to_string(), Rc::new(move |w: &Window| super::generic::run(w, &wc3, &[Op::Push])))]
+            } else {
+                Vec::new()
+            };
+            unsafe { dd.destroy() };
+            progress::run(&w, wc2.root(), wc2.root(), cmds, posts, |w, _| super::overlay::refresh_all(w));
+            return;
+        };
         let staged = repo2.changes(&[], false, false).unwrap_or_default();
         let nb = new_branch.is_active().then(|| new_name.text().trim().to_string()).filter(|s| !s.is_empty());
         let au = set_author.is_active().then(|| author.text().to_string());

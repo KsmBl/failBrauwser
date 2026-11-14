@@ -156,7 +156,7 @@ impl super::backend::Backend for Svn {
     }
 
     fn branch_label(&self) -> String {
-        self.text(&["info", "--show-item", "relative-url", "--", "."]).map(|s| s.trim().to_string()).unwrap_or_default()
+        self.text(&["info", "--show-item", "relative-url", "--", "."]).map(|s| s.trim().to_string()).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "^/".into())
     }
 
     fn changes(&self, paths: &[String], unversioned: bool, ignored: bool) -> Result<Vec<Change>, String> {
