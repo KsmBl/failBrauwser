@@ -10,6 +10,7 @@ pub mod diff;
 pub mod git;
 pub mod hg;
 pub mod state;
+pub mod ops;
 pub mod run;
 pub mod svn;
 pub mod verbs;

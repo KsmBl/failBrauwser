@@ -255,3 +255,87 @@ fn each_tool_names_where_its_working_copy_is() {
         assert_eq!(b.branch_label(), want, "{}", b.tool().label());
     });
 }
+
+fn perform(f: &Fixture, op: failbrauwser::vcs::ops::Op) {
+    let runs = failbrauwser::vcs::ops::runs(f.tool, &op);
+    assert!(!runs.is_empty(), "{op:?} runs nothing on {}", f.tool.label());
+    let answer = failbrauwser::vcs::run::call_in_order(f.tool, &f.wc, &runs);
+    assert!(answer.ok, "{op:?} on {}: {}", f.tool.label(), answer.text);
+}
+
+#[test]
+fn a_commit_through_the_command_table_leaves_the_working_copy_clean() {
+    use failbrauwser::vcs::ops::Op;
+    each_tool(|f, b| {
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        f.write("one.txt", "third\n");
+        f.write("two.txt", "two\n");
+        perform(f, Op::Add { paths: vec!["two.txt".into()] });
+        perform(f, Op::Commit { paths: vec!["one.txt".into(), "two.txt".into()], message: "third commit".into(), amend: false });
+        if f.tool == Tool::Subversion {
+            f.client(&["update", "-q"]);
+        }
+        assert_eq!(b.summary().unwrap(), Status::Normal, "{}", b.tool().label());
+        assert_eq!(b.log(&[], 10).unwrap()[0].subject(), "third commit", "{}", b.tool().label());
+    });
+}
+
+#[test]
+fn a_commit_of_one_ticked_file_leaves_the_other_changed() {
+    use failbrauwser::vcs::ops::Op;
+    each_tool(|f, b| {
+        f.write("two.txt", "two\n");
+        perform(f, Op::Add { paths: vec!["two.txt".into()] });
+        perform(f, Op::Commit { paths: vec!["two.txt".into()], message: "only two".into(), amend: false });
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        f.write("one.txt", "changed again\n");
+        f.write("two.txt", "two changed\n");
+        perform(f, Op::Commit { paths: vec!["two.txt".into()], message: "two again".into(), amend: false });
+        assert_eq!(state(b, &f.wc, "one.txt"), Some(Status::Modified), "{}", b.tool().label());
+        assert_eq!(state(b, &f.wc, "two.txt"), Some(Status::Normal), "{}", b.tool().label());
+    });
+}
+
+#[test]
+fn revert_brings_back_the_committed_text() {
+    use failbrauwser::vcs::ops::Op;
+    each_tool(|f, b| {
+        f.write("one.txt", "scribble\n");
+        perform(f, Op::Revert { paths: vec!["one.txt".into()] });
+        assert_eq!(std::fs::read_to_string(f.wc.join("one.txt")).unwrap(), "alpha\nbeta changed\ngamma\n", "{}", b.tool().label());
+        assert_eq!(state(b, &f.wc, "one.txt"), Some(Status::Normal), "{}", b.tool().label());
+    });
+}
+
+#[test]
+fn delete_marks_the_file_deleted_and_keep_local_leaves_it_there() {
+    use failbrauwser::vcs::ops::Op;
+    each_tool(|f, b| {
+        perform(f, Op::Delete { paths: vec!["one.txt".into()], keep_local: false });
+        assert!(!f.wc.join("one.txt").exists(), "{}", b.tool().label());
+        assert_eq!(state(b, &f.wc, "one.txt"), Some(Status::Deleted), "{}", b.tool().label());
+    });
+    each_tool(|f, b| {
+        if !f.tool.has(failbrauwser::vcs::caps::Cap::DeleteKeepLocal) || f.tool == Tool::Cvs {
+            return;
+        }
+        perform(f, Op::Delete { paths: vec!["one.txt".into()], keep_local: true });
+        assert!(f.wc.join("one.txt").exists(), "{}", b.tool().label());
+        let changes = b.changes(&[], false, false).unwrap();
+        assert!(changes.iter().any(|c| c.path == "one.txt" && c.status == Status::Deleted), "{}: {changes:?}", b.tool().label());
+    });
+}
+
+#[test]
+fn rename_moves_the_file_under_the_tool_s_eyes() {
+    use failbrauwser::vcs::ops::Op;
+    each_tool(|f, b| {
+        if !f.tool.has(failbrauwser::vcs::caps::Cap::Rename) {
+            return;
+        }
+        perform(f, Op::Rename { from: "one.txt".into(), to: "moved.txt".into() });
+        assert!(f.wc.join("moved.txt").exists(), "{}", b.tool().label());
+        let st = state(b, &f.wc, "moved.txt");
+        assert!(matches!(st, Some(Status::Added) | Some(Status::Renamed)), "{}: {st:?}", b.tool().label());
+    });
+}
