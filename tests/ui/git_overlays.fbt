@@ -1,12 +1,12 @@
 # TortoiseGit's overlay icons and its items in the right-click menu.
 open $T/repo
-# Off until switched on in Edit → Git Integration: no overlays, no Git menu.
+# Off until switched on in Edit → Version Control Integration: no overlays, no version-control menu.
 wait-git-idle
 wait-git-overlay clean.txt = none
 select clean.txt
 expect-no-git-menu Git Commit -> "main"...
 expect-no-menu-item TortoiseGit
-action app.git-integration
+action app.vcs-integration
 click-empty
 wait-git-overlay clean.txt = Normal
 wait-git-overlay changed.txt = Modified

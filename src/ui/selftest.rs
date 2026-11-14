@@ -1358,7 +1358,7 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             println!("SELFTEST OK");
             std::process::exit(0);
         }
-        _ => match super::git::testing::step(&w, cmd, arg) {
+        _ => match super::vcs::testing::step(&w, cmd, arg) {
             Some(Ok(Some(check))) => wait(r, move |_| check()),
             Some(Ok(None)) => {}
             Some(Err(e)) => return Err(e),

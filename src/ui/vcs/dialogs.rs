@@ -1336,7 +1336,7 @@ pub fn settings(w: &Window, repo: Option<Repo>) {
     // Icon Overlays
     let page = gtk::Box::new(gtk::Orientation::Vertical, 8);
     page.set_border_width(8);
-    let overlays = dialog::check("Show overlay icons on files and folders in working trees", "show-overlays", w.app.settings.borrow().git_overlays);
+    let overlays = dialog::check("Show overlay icons on files and folders in working trees", "show-overlays", w.app.settings.borrow().vcs_overlays);
     page.pack_start(&overlays, false, false, 0);
     let legend = gtk::Grid::new();
     legend.set_row_spacing(4);
@@ -1366,8 +1366,8 @@ pub fn settings(w: &Window, repo: Option<Repo>) {
                 }
             }
             let on = overlays.is_active();
-            if w.app.settings.borrow().git_overlays != on {
-                w.app.settings.borrow_mut().git_overlays = on;
+            if w.app.settings.borrow().vcs_overlays != on {
+                w.app.settings.borrow_mut().vcs_overlays = on;
                 w.app.save_settings_soon();
                 w.app.for_each_window(|win| {
                     for p in win.panes() {

@@ -55,7 +55,7 @@ fn main() -> gtk::glib::ExitCode {
         std::process::exit(failbrauwser::lvm::helper_main(&args[2..]));
     }
     // Started by git or ssh to ask for a password while a Git command of ours runs.
-    if let Some(code) = ui::git::askpass::main_if_asked() {
+    if let Some(code) = ui::vcs::askpass::main_if_asked() {
         std::process::exit(code);
     }
     // Answered without GTK or D-Bus: never opens a window.

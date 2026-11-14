@@ -1,12 +1,12 @@
-//! Keeps the Git overlays of a tab up to date: the status of its folder's entries is read on
-//! a worker thread whenever the folder changes, the repository changes (a commit, a
-//! checkout, …: its `.git` folder is watched), the window comes back into use or a Git
-//! command of ours finished.
+//! Keeps the version-control overlays of a tab up to date, whatever tool owns the folder: the
+//! state of its entries is read on a worker thread whenever the folder changes, the tool's own
+//! data changes (a commit, a checkout, …: its `.git`, `.hg`, `.svn` or `CVS` folder is watched),
+//! the window comes back into use or a command of ours finished.
 
 use super::super::pane::Pane;
 use super::super::window::Window;
 use super::icons::status_code;
-use failbrauwser::vcs::git;
+use failbrauwser::vcs::{self, backend, Tool};
 use failbrauwser::location::Location;
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -48,30 +48,40 @@ fn with_watch<R>(pane: &Rc<Pane>, f: impl FnOnce(&mut Watch) -> R) -> R {
     })
 }
 
-/// The status of the entries of `dir`: from its working tree, and for folders that are
-/// working trees of their own, their summary.
-pub fn compute(dir: &Path, dirs: &[OsString]) -> (Option<git::Repo>, HashMap<OsString, u32>) {
-    let repo = git::discover(dir);
-    let mut out: HashMap<OsString, u32> = match &repo {
-        Some(r) => r.folder_status(dir).unwrap_or_default().into_iter().map(|(k, v)| (k, status_code(Some(v)))).collect(),
+/// The folders a tool keeps its own data in: never a working copy's content.
+const ADMIN: &[&str] = &[".git", ".hg", ".svn", "CVS"];
+
+/// The state of the entries of `dir`: from the working copy holding it, and for folders that are
+/// working copies of their own, their summary. Answers the folder to watch for the tool's data.
+pub fn compute(dir: &Path, dirs: &[OsString]) -> (Option<PathBuf>, HashMap<OsString, u32>) {
+    let wc = backend::discover(dir);
+    let mut out: HashMap<OsString, u32> = match &wc {
+        Some(b) => b.folder_status(dir).unwrap_or_default().into_iter().map(|(k, v)| (k, status_code(Some(v)))).collect(),
         None => HashMap::new(),
     };
-    for name in dirs.iter().filter(|n| n.as_os_str() != ".git").take(MAX_NESTED) {
+    let tool = wc.as_ref().map(|b| b.tool());
+    for name in dirs.iter().filter(|n| !ADMIN.iter().any(|a| n.as_os_str() == *a)).take(MAX_NESTED) {
         let sub = dir.join(name);
-        if git::repo_at(&sub).is_some() {
-            if let Ok(s) = git::summary(&sub) {
-                out.insert(name.clone(), status_code(Some(s)));
-            }
+        let Some(t) = vcs::marker_in(&sub) else { continue };
+        // CVS (and Subversion before 1.7) leave their marker in every folder they track: below a
+        // folder of the same tool it is the same working copy, not one of its own.
+        if tool == Some(t) && matches!(t, Tool::Cvs | Tool::Subversion) {
+            continue;
+        }
+        if let Some(s) = backend::open(&vcs::WorkingCopy { tool: t, root: sub.clone() }).and_then(|b| b.summary().ok()) {
+            out.insert(name.clone(), status_code(Some(s)));
         }
     }
-    (repo, out)
+    // CVS keeps its data per folder: the one shown is what a commit or update rewrites.
+    let watch = wc.as_ref().and_then(|b| if b.tool() == Tool::Cvs { Some(dir.join("CVS")) } else { b.admin_dir() });
+    (watch, out)
 }
 
 /// Reads the overlays of the tab's folder again (soon, when asked often).
 pub fn update(w: &Window, pane: &Rc<Pane>) {
     let enabled = {
         let s = w.app.settings.borrow();
-        s.git_integration && s.git_overlays
+        s.vcs_integration && s.vcs_overlays
     };
     let dir = match pane.location() {
         Location::Dir(d) if enabled && !failbrauwser::ops::gvfs::is_gvfs_path(&d) => d,
@@ -96,15 +106,15 @@ pub fn update(w: &Window, pane: &Rc<Pane>) {
     let (tx, rx) = async_channel::bounded(1);
     let d2 = dir.clone();
     std::thread::Builder::new()
-        .name("fb-git-status".into())
+        .name("fb-vcs-status".into())
         .spawn(move || {
             let _ = tx.send_blocking(compute(&d2, &dirs));
         })
-        .expect("spawn git status");
+        .expect("spawn vcs status");
     let weak = Rc::downgrade(pane);
     let ww = Rc::downgrade(&w.me());
     glib::spawn_future_local(async move {
-        let Ok((repo, codes)) = rx.recv().await else { return };
+        let Ok((watch, codes)) = rx.recv().await else { return };
         let Some(p) = weak.upgrade() else { return };
         let again = with_watch(&p, |wt| {
             wt.running = false;
@@ -112,7 +122,7 @@ pub fn update(w: &Window, pane: &Rc<Pane>) {
         });
         if p.generation() == generation && p.location() == Location::Dir(dir.clone()) {
             p.set_git_status(&codes);
-            watch_repo(&p, ww.clone(), repo.as_ref());
+            watch_repo(&p, ww.clone(), watch);
         }
         if again {
             if let Some(w) = ww.upgrade() {
@@ -122,10 +132,9 @@ pub fn update(w: &Window, pane: &Rc<Pane>) {
     });
 }
 
-/// Watches the repository's data folder (index, HEAD, refs written by commits, checkouts,
-/// merges) to read the overlays again.
-fn watch_repo(pane: &Rc<Pane>, window: Weak<Window>, repo: Option<&git::Repo>) {
-    let want = repo.map(|r| r.git_dir.clone());
+/// Watches the tool's data folder (Git's index, HEAD and refs, Mercurial's dirstate, Subversion's
+/// wc.db, CVS's Entries: what commits, checkouts and merges write) to read the overlays again.
+fn watch_repo(pane: &Rc<Pane>, window: Weak<Window>, want: Option<PathBuf>) {
     let current = with_watch(pane, |wt| wt.monitor.as_ref().map(|(p, _)| p.clone()));
     if current == want {
         return;

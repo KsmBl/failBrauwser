@@ -93,8 +93,12 @@ pub fn open(wc: &WorkingCopy) -> Option<Arc<dyn Backend>> {
     }
 }
 
-/// The backend of the working copy holding `path` (a file or folder).
+/// The backend of the working copy holding `path` (a file or folder). What lies inside a tool's
+/// own data folder belongs to no working copy.
 pub fn discover(path: &Path) -> Option<Arc<dyn Backend>> {
+    if path.components().any(|c| [".git", ".hg", ".svn", "CVS"].iter().any(|a| c.as_os_str() == *a)) {
+        return None;
+    }
     let dir = if path.is_dir() { path } else { path.parent()? };
     open(&super::find(dir)?)
 }

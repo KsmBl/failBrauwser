@@ -166,7 +166,7 @@ fn escape(s: &str) -> String {
 /// tree "Git Sync…", "Git Commit -> "branch"…" and the TortoiseGit submenu; elsewhere
 /// "Git Clone…" and "Git Create repository here…" for folders.
 pub fn menu_section(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> Option<gio::Menu> {
-    if !w.app.settings.borrow().git_integration || !git::available() {
+    if !w.app.settings.borrow().vcs_integration || !git::available() {
         return None;
     }
     let t = target_of(pane, items)?;
@@ -176,19 +176,19 @@ pub fn menu_section(w: &Window, pane: &Rc<Pane>, items: &[Item]) -> Option<gio::
     match &t.repo {
         None => {
             if all_dirs && t.paths.len() == 1 {
-                top.append_item(&item("Git _Clone...", "win.git-clone", "clone"));
-                top.append_item(&item("Git Create _repository here...", "win.git-init", "createrepo"));
+                top.append_item(&item("Git _Clone...", "win.vcs-clone", "clone"));
+                top.append_item(&item("Git Create _repository here...", "win.vcs-init", "createrepo"));
             }
         }
         Some(repo) => {
-            top.append_item(&item("Git _Sync...", "win.git-sync", "sync"));
-            top.append_item(&item(&format!("Git _Commit -> \"{}\"...", escape(&repo.branch_label())), "win.git-commit", "commit"));
+            top.append_item(&item("Git _Sync...", "win.vcs-sync", "sync"));
+            top.append_item(&item(&format!("Git _Commit -> \"{}\"...", escape(&repo.branch_label())), "win.vcs-commit", "commit"));
             for s in repo_submenu(repo, &t) {
                 sub.append_section(None, &s);
             }
         }
     }
-    let about = section(vec![item("_Settings", "win.git-settings", "settings"), item("_About", "win.git-about", "about")]).expect("items");
+    let about = section(vec![item("_Settings", "win.vcs-settings", "settings"), item("_About", "win.vcs-about", "about")]).expect("items");
     sub.append_section(None, &about);
     let tg = gio::MenuItem::new_submenu(Some("TortoiseGit"), &sub);
     if let Some(i) = icons::gicon("tgit") {
@@ -207,63 +207,63 @@ fn repo_submenu(repo: &Repo, t: &Target) -> Vec<gio::Menu> {
     let unversioned = t.any(|s| s == Some(Status::Unversioned));
     let conflicted = t.any(|s| s == Some(Status::Conflicted)) || ((t.background || t.is_dir.iter().any(|d| *d)) && repo.git_dir.join("MERGE_HEAD").exists());
     let stash = repo.common_dir().join("logs/refs/stash").exists();
-    out.extend(section(vec![item("_Pull...", "win.git-pull", "pull"), item("_Fetch...", "win.git-fetch", "fetch"), item("Pu_sh...", "win.git-push", "push")]));
+    out.extend(section(vec![item("_Pull...", "win.vcs-pull", "pull"), item("_Fetch...", "win.vcs-fetch", "fetch"), item("Pu_sh...", "win.vcs-push", "push")]));
     let mut diff = Vec::new();
     if one_file.is_some() && t.any(|s| s.is_some_and(Status::is_change)) {
-        diff.push(item("_Diff", "win.git-diff", "diff"));
+        diff.push(item("_Diff", "win.vcs-diff", "diff"));
     }
     if one_file.is_some() && versioned && !t.any(|s| s == Some(Status::Added)) {
-        diff.push(item("Diff with previous _version", "win.git-diff-prev", "diffprev"));
+        diff.push(item("Diff with previous _version", "win.vcs-diff-prev", "diffprev"));
     }
     out.extend(section(diff));
-    let mut log = vec![item("Show _log", "win.git-log", "log"), item("Show _Reflog", "win.git-reflog", "reflog")];
+    let mut log = vec![item("Show _log", "win.vcs-log", "log"), item("Show _Reflog", "win.vcs-reflog", "reflog")];
     if one_file.is_some() && versioned && !t.any(|s| s == Some(Status::Added)) {
-        log.push(item("_Blame", "win.git-blame", "blame"));
+        log.push(item("_Blame", "win.vcs-blame", "blame"));
     }
-    log.push(item("Check for _modifications", "win.git-checkmods", "checkmods"));
-    log.push(item("Stash Sa_ve", "win.git-stash-save", "stashsave"));
+    log.push(item("Check for _modifications", "win.vcs-checkmods", "checkmods"));
+    log.push(item("Stash Sa_ve", "win.vcs-stash-save", "stashsave"));
     if stash {
-        log.push(item("Stash P_op", "win.git-stash-pop", "stashpop"));
+        log.push(item("Stash P_op", "win.vcs-stash-pop", "stashpop"));
     }
     out.extend(section(log));
     let mut fix = Vec::new();
     if conflicted {
-        fix.push(item("Resol_ve...", "win.git-resolve", "resolve"));
+        fix.push(item("Resol_ve...", "win.vcs-resolve", "resolve"));
     }
     if changed {
-        fix.push(item("_Revert...", "win.git-revert", "revert"));
+        fix.push(item("_Revert...", "win.vcs-revert", "revert"));
     }
     if t.background || t.is_dir.iter().all(|d| *d) {
-        fix.push(item("Clean _up...", "win.git-cleanup", "cleanup"));
+        fix.push(item("Clean _up...", "win.vcs-cleanup", "cleanup"));
     }
     out.extend(section(fix));
     out.extend(section(vec![
-        item("S_witch/Checkout...", "win.git-switch", "switch"),
-        item("_Merge...", "win.git-merge", "merge"),
-        item("Create _Branch...", "win.git-branch", "branch"),
-        item("Create _Tag...", "win.git-tag", "tag"),
-        item("_Export...", "win.git-export", "export"),
+        item("S_witch/Checkout...", "win.vcs-switch", "switch"),
+        item("_Merge...", "win.vcs-merge", "merge"),
+        item("Create _Branch...", "win.vcs-branch", "branch"),
+        item("Create _Tag...", "win.vcs-tag", "tag"),
+        item("_Export...", "win.vcs-export", "export"),
     ]));
     let mut files = Vec::new();
     if t.background || unversioned || t.is_dir.iter().any(|d| *d) {
-        files.push(item("_Add...", "win.git-add", "add"));
+        files.push(item("_Add...", "win.vcs-add", "add"));
     }
     if !t.background && versioned {
-        files.push(item("_Delete", "win.git-delete", "delete"));
-        files.push(item("Delete (_keep local)", "win.git-delete-keep", "deletekeep"));
+        files.push(item("_Delete", "win.vcs-delete", "delete"));
+        files.push(item("Delete (_keep local)", "win.vcs-delete-keep", "deletekeep"));
     }
     if !t.background && versioned && t.paths.len() == 1 {
-        files.push(item("Re_name...", "win.git-rename", "rename"));
+        files.push(item("Re_name...", "win.vcs-rename", "rename"));
     }
     if !t.background && t.any(|s| s == Some(Status::Unversioned)) {
         let ig = gio::Menu::new();
         if let [p] = t.paths.as_slice() {
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             for pat in git::ignore_patterns(&name) {
-                ig.append_item(&item_with(&escape(&pat), "win.git-ignore", &pat, "ignore"));
+                ig.append_item(&item_with(&escape(&pat), "win.vcs-ignore", &pat, "ignore"));
             }
         } else {
-            ig.append_item(&item_with(&format!("{} items by _name", t.paths.len()), "win.git-ignore", "", "ignore"));
+            ig.append_item(&item_with(&format!("{} items by _name", t.paths.len()), "win.vcs-ignore", "", "ignore"));
         }
         let sm = gio::MenuItem::new_submenu(Some("Add to _ignore list"), &ig);
         if let Some(i) = icons::gicon("ignore") {
@@ -272,7 +272,7 @@ fn repo_submenu(repo: &Repo, t: &Target) -> Vec<gio::Menu> {
         files.push(sm);
     }
     out.extend(section(files));
-    out.extend(section(vec![item("Create _Patch Serial...", "win.git-patch-create", "patchcreate"), item("Appl_y Patch Serial...", "win.git-patch-apply", "patchapply")]));
+    out.extend(section(vec![item("Create _Patch Serial...", "win.vcs-patch-create", "patchcreate"), item("Appl_y Patch Serial...", "win.vcs-patch-apply", "patchapply")]));
     out
 }
 
@@ -288,66 +288,66 @@ fn with_repo(w: &Window, f: impl FnOnce(&Window, Target, Repo)) {
 pub fn install_actions(w: &Rc<Window>) {
     overlay::window_created(w);
     let repo_actions: &[(&str, fn(&Window, Target, Repo))] = &[
-        ("git-sync", sync::show),
-        ("git-commit", |w, t, r| commit::show(w, &r, &t.title_path(), t.rel())),
-        ("git-pull", dialogs::pull),
-        ("git-fetch", dialogs::fetch),
-        ("git-push", dialogs::push),
-        ("git-diff", |w, t, r| {
+        ("vcs-sync", sync::show),
+        ("vcs-commit", |w, t, r| commit::show(w, &r, &t.title_path(), t.rel())),
+        ("vcs-pull", dialogs::pull),
+        ("vcs-fetch", dialogs::fetch),
+        ("vcs-push", dialogs::push),
+        ("vcs-diff", |w, t, r| {
             if let Some(f) = t.single_file() {
                 diff::working(w, &r, &f);
             }
         }),
-        ("git-diff-prev", |w, t, r| {
+        ("vcs-diff-prev", |w, t, r| {
             if let Some(f) = t.single_file() {
                 diff::previous(w, &r, &f);
             }
         }),
-        ("git-log", |w, t, r| log::show(w, &r, &t.title_path(), t.rel())),
-        ("git-reflog", dialogs::reflog),
-        ("git-blame", |w, t, r| {
+        ("vcs-log", |w, t, r| log::show(w, &r, &t.title_path(), t.rel())),
+        ("vcs-reflog", dialogs::reflog),
+        ("vcs-blame", |w, t, r| {
             if let Some(f) = t.single_file() {
                 blame::show(w, &r, &f);
             }
         }),
-        ("git-checkmods", dialogs::check_modifications),
-        ("git-stash-save", dialogs::stash_save),
-        ("git-stash-pop", dialogs::stash_pop),
-        ("git-resolve", dialogs::resolve),
-        ("git-revert", dialogs::revert),
-        ("git-cleanup", dialogs::cleanup),
-        ("git-switch", dialogs::switch),
-        ("git-merge", dialogs::merge),
-        ("git-branch", dialogs::branch),
-        ("git-tag", dialogs::tag),
-        ("git-export", dialogs::export),
-        ("git-add", dialogs::add),
-        ("git-delete", |w, t, r| dialogs::delete(w, t, r, false)),
-        ("git-delete-keep", |w, t, r| dialogs::delete(w, t, r, true)),
-        ("git-rename", dialogs::rename),
-        ("git-patch-create", dialogs::patch_create),
-        ("git-patch-apply", dialogs::patch_apply),
+        ("vcs-checkmods", dialogs::check_modifications),
+        ("vcs-stash-save", dialogs::stash_save),
+        ("vcs-stash-pop", dialogs::stash_pop),
+        ("vcs-resolve", dialogs::resolve),
+        ("vcs-revert", dialogs::revert),
+        ("vcs-cleanup", dialogs::cleanup),
+        ("vcs-switch", dialogs::switch),
+        ("vcs-merge", dialogs::merge),
+        ("vcs-branch", dialogs::branch),
+        ("vcs-tag", dialogs::tag),
+        ("vcs-export", dialogs::export),
+        ("vcs-add", dialogs::add),
+        ("vcs-delete", |w, t, r| dialogs::delete(w, t, r, false)),
+        ("vcs-delete-keep", |w, t, r| dialogs::delete(w, t, r, true)),
+        ("vcs-rename", dialogs::rename),
+        ("vcs-patch-create", dialogs::patch_create),
+        ("vcs-patch-apply", dialogs::patch_apply),
     ];
     for (name, f) in repo_actions {
         let f = *f;
         w.add_action(name, move |w| with_repo(w, f));
     }
-    w.add_action("git-clone", |w| {
+    w.add_action("vcs-clone", |w| {
         if let Some(t) = target(w) {
             dialogs::clone(w, &t.title_path());
         }
     });
-    w.add_action("git-init", |w| {
+    w.add_action("vcs-init", |w| {
         if let Some(t) = target(w) {
             dialogs::init(w, &t.title_path());
         }
     });
-    w.add_action("git-settings", |w| {
+    w.add_action("vcs-settings", |w| {
         let t = target(w);
         dialogs::settings(w, t.and_then(|t| t.repo));
     });
-    w.add_action("git-about", dialogs::about);
-    let a = gio::SimpleAction::new("git-ignore", Some(glib::VariantTy::STRING));
+    w.add_action("vcs-about", dialogs::about);
+    let a = gio::SimpleAction::new("vcs-ignore", Some(glib::VariantTy::STRING));
     let weak = Rc::downgrade(w);
     a.connect_activate(move |_, v| {
         let (Some(w), Some(pattern)) = (weak.upgrade(), v.and_then(|v| v.get::<String>())) else { return };
