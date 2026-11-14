@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Command;
 
 fn have(tool: &str) -> bool {
-    Command::new(tool).arg("--version").output().is_ok_and(|o| o.status.success())
+    Command::new("sh").arg("-c").arg(format!("command -v {tool}")).output().is_ok_and(|o| o.status.success())
 }
 
 /// The clients' settings for a test: no user configuration, a fixed identity.
@@ -63,7 +63,7 @@ fn working_copy(t: &Path, tool: &str) {
 }
 
 fn run(script: &str, tool: &str, needs: &[&str]) {
-    if !(have("sway") || have("tilewin")) || !have("grim") {
+    if !(have("sway") || have("tilewin")) || !["grim", "dbus-run-session"].iter().all(|t| have(t)) {
         eprintln!("headless UI tools missing, skipping {script}");
         return;
     }

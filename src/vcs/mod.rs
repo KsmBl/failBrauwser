@@ -126,8 +126,25 @@ fn names_a_repository(pointer: &Path) -> bool {
     std::fs::read_to_string(pointer).is_ok_and(|s| s.trim_start().starts_with("gitdir:"))
 }
 
+/// Whether a name appearing in a tool's data folder is only there while the client works: Git's
+/// `*.lock`, Mercurial's `wlock`/`lock` and the `tmp…` file every `hg status` writes and removes.
+/// Watching them would read the overlays again after each read of their own.
+pub fn is_transient(name: &str) -> bool {
+    name.ends_with(".lock") || name == "wlock" || name == "lock" || name.starts_with("tmp")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn what_a_client_writes_while_it_reads_is_transient() {
+        for n in ["index.lock", "HEAD.lock", "wlock", "lock", "tmpxm232cmf"] {
+            assert!(super::is_transient(n), "{n}");
+        }
+        for n in ["index", "HEAD", "MERGE_HEAD", "dirstate", "branch", "wc.db", "Entries"] {
+            assert!(!super::is_transient(n), "{n}");
+        }
+    }
+
     use super::*;
     use std::fs;
 

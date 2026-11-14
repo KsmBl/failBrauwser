@@ -22,6 +22,6 @@ wait-git-overlay one.txt = Normal
 wait-git-overlay new.txt = Normal
 git-menu Repository/Show log
 wait-git-window Log Messages - TortoiseGit
-wait-git-log Log Messages - TortoiseGit = from the window | second | first
+wait-git-log Log Messages - TortoiseGit = from the window | second | first | layout
 git-snapshot Log Messages - TortoiseGit = $T/log.png
 quit

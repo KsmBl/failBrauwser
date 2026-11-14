@@ -48,7 +48,7 @@ impl Hg {
 
     /// The files `hg resolve --list` still marks unresolved.
     fn conflicted(&self) -> Vec<String> {
-        self.text(&["resolve", "--list", "--print0"]).map(|t| parse_resolve(&t)).unwrap_or_default()
+        self.text(&["resolve", "--list", "--template", "{mergestatus} {path}\\0"]).map(|t| parse_resolve(&t)).unwrap_or_default()
     }
 }
 
@@ -77,7 +77,7 @@ pub fn parse_status(text: &str) -> Vec<Change> {
         .collect()
 }
 
-/// `hg resolve --list --print0`: "U path\0" for what still waits, "R path\0" for what is resolved.
+/// `hg resolve --list` with the template "{mergestatus} {path}\0" (resolve has no --print0): "U path\0" for what still waits, "R path\0" for what is resolved.
 pub fn parse_resolve(text: &str) -> Vec<String> {
     text.split('\0').filter_map(|r| r.trim_start_matches('\n').strip_prefix("U ")).map(str::to_string).collect()
 }

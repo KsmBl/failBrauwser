@@ -133,6 +133,13 @@ impl Svn {
         self.text(&["info", "--show-item", "relative-url", "--", "."]).map(|s| s.trim().trim_start_matches('^').to_string()).unwrap_or_default()
     }
 
+    /// The history up to the repository's newest revision: a working copy's own revision stays
+    /// where its last update left it, so a commit made since would be missing. A path the newest
+    /// revision does not hold yet (added, not committed) falls back to the working copy's own.
+    fn newest_first(&self, limit: &str, paths: &[String]) -> Result<Vec<LogEntry>, String> {
+        self.log_entries(&["--revision", "HEAD:1", "--limit", limit], paths).or_else(|_| self.log_entries(&["--limit", limit], paths))
+    }
+
     fn log_entries(&self, extra: &[&str], paths: &[String]) -> Result<Vec<LogEntry>, String> {
         let mut args = vec!["log", "--xml", "--verbose"];
         args.extend_from_slice(extra);
@@ -198,12 +205,12 @@ impl super::backend::Backend for Svn {
 
     fn log(&self, paths: &[String], max: usize) -> Result<Vec<Commit>, String> {
         let limit = max.to_string();
-        Ok(self.log_entries(&["--limit", &limit], paths)?.into_iter().map(|e| e.commit).collect())
+        Ok(self.newest_first(&limit, paths)?.into_iter().map(|e| e.commit).collect())
     }
 
     fn log_actions(&self, paths: &[String], max: usize) -> HashMap<String, Vec<char>> {
         let limit = max.to_string();
-        self.log_entries(&["--limit", &limit], paths)
+        self.newest_first(&limit, paths)
             .unwrap_or_default()
             .into_iter()
             .map(|e| {

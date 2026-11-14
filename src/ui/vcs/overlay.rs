@@ -143,8 +143,8 @@ fn watch_repo(pane: &Rc<Pane>, window: Weak<Window>, want: Option<PathBuf>) {
         let m = gio::File::for_path(dir).monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE).ok()?;
         let pw = Rc::downgrade(pane);
         m.connect_changed(move |_, file, _, _| {
-            // Lock files come and go while git works; what they become is what counts.
-            if file.basename().is_some_and(|n| n.extension().is_some_and(|e| e == "lock")) {
+            // Lock and scratch files come and go while a client works; what they become counts.
+            if file.basename().is_some_and(|n| failbrauwser::vcs::is_transient(&n.to_string_lossy())) {
                 return;
             }
             let (Some(p), Some(w)) = (pw.upgrade(), window.upgrade()) else { return };

@@ -300,6 +300,8 @@ fn a_commit_of_one_ticked_file_leaves_the_other_changed() {
 fn revert_brings_back_the_committed_text() {
     use failbrauwser::vcs::ops::Op;
     each_tool(|f, b| {
+        // CVS tells a change by the file's time in whole seconds, as the other tests wait for.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
         f.write("one.txt", "scribble\n");
         perform(f, Op::Revert { paths: vec!["one.txt".into()] });
         assert_eq!(std::fs::read_to_string(f.wc.join("one.txt")).unwrap(), "alpha\nbeta changed\ngamma\n", "{}", b.tool().label());
@@ -338,4 +340,19 @@ fn rename_moves_the_file_under_the_tool_s_eyes() {
         let st = state(b, &f.wc, "moved.txt");
         assert!(matches!(st, Some(Status::Added) | Some(Status::Renamed)), "{}: {st:?}", b.tool().label());
     });
+}
+
+#[test]
+fn a_merge_that_collides_leaves_the_file_unresolved() {
+    // Mercurial measured; Git's conflicts are covered by its own tests.
+    let Some(f) = Fixture::make(Tool::Mercurial) else { return };
+    let b = backend::open(&vcs::WorkingCopy { tool: f.tool, root: f.wc.clone() }).unwrap();
+    std::fs::write(f.wc.join("one.txt"), "theirs\n").unwrap();
+    sh(&f.wc, "hg", &["commit", "-m", "theirs"]);
+    sh(&f.wc, "hg", &["update", "-q", "--rev", ".^"]);
+    std::fs::write(f.wc.join("one.txt"), "ours\n").unwrap();
+    sh(&f.wc, "hg", &["commit", "-q", "-m", "ours"]);
+    let merge = Command::new("hg").current_dir(&f.wc).args(["merge", "--tool", "internal:fail"]).env("HGRCPATH", "").output().unwrap();
+    assert!(!merge.status.success());
+    assert!(b.has_conflicts(), "{}{}", String::from_utf8_lossy(&merge.stdout), String::from_utf8_lossy(&merge.stderr));
 }
