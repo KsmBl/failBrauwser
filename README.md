@@ -42,7 +42,8 @@ A fast, native GTK 3 file manager for Linux and Windows, in the spirit of Thunar
   results streaming in.
 - **Copy jobs you control:** a progress window with a speed chart in the window manager's
   theme, the time and items left; pause and resume, copies to the same drive wait in a queue instead
-  of fighting each other, and optional read-back verification.
+  of fighting each other, optional read-back verification, and a copy or move cut off by a crash or
+  an update going on exactly where it stopped.
 - **Custom actions** from Thunar (`uca.xml`) in the right-click menu, and *Open Terminal Here*.
 - **Version control the TortoiseGit way, for Git, Mercurial, Subversion, CVS and Visual
   Source Safe.** Overlay icons on the files and folders of working copies (a green tick, a red
@@ -113,20 +114,27 @@ winpack\install.ps1 -Prefix D:\Apps\failBrauwser
 `package.ps1` also builds `failbrauwser-<version>-x86_64-windows.exe`: the whole application
 as one file — run it once and it unpacks itself into your Programs folder and starts; that
 single file is all that folder needs (see [docs/WINDOWS.md](docs/WINDOWS.md)). An unpack that
-cannot be applied — a running instance holding that folder's program file, say — leaves your
-installed copy untouched and says why in a window rather than doing nothing quietly.
+cannot be applied — a copy that stays open after being asked to close, still holding that folder's
+program file — leaves your installed copy untouched and says why in a window, naming the process that
+holds it, rather than doing nothing quietly.
 
 Starting failBrauwser on Windows never opens a console window: the program file is linked as
 a windowed program, so a double-click, the Start Menu entry and the single-file launcher each
 show only failBrauwser's own window. Started from a terminal it still answers `--help`,
 `--version` and `--quit` in that terminal, and the archive helper it starts runs without a
-window of its own and ends together with the instance that started it.
+window of its own and ends together with the instance that started it. The same holds for every
+program it starts in the background — a version-control client, `curl`, the update's swap script —
+and where a window is the point (a terminal asked for, the administrator's password) it does
+appear: [docs/TOOL-STARTS.md](docs/TOOL-STARTS.md) lists every start, on both systems, and what
+bounds it.
 
 `winpack\bootstrap.ps1` fetches the pinned GTK stack (list in `winpack\packages.txt`) into
 `winpack\sysroot` from the MSYS2 repository named in `winpack\mirror.txt` — here the company
 Artifactory's mirror of `repo.msys2.org`; point it at any reachable MSYS2 tree — and
 `winpack\genimports.ps1` makes its MSVC import libraries; `winpack\build.ps1 -Release` is the
 plain build without packaging. Uninstalling is deleting that folder and the Start Menu entry.
+On Linux, `winpack/cross/setup.sh` and `winpack/cross/env.sh` build the same Windows program and
+run its tests under Wine (docs/WINDOWS.md: *Building on Linux, testing under Wine*).
 See [docs/WINDOWS.md](docs/WINDOWS.md) for the full picture of how the two systems line up.
 
 ### Updating
@@ -134,7 +142,7 @@ See [docs/WINDOWS.md](docs/WINDOWS.md) for the full picture of how the two syste
 *Help → Check for Updates* says whether GitHub has a newer release and installs either the
 newest **release** — its ready-built package (`failbrauwser-<version>-<arch>-linux.tar.gz`,
 installed with `install.sh --prebuilt`; on Windows `failbrauwser-<version>-x86_64-windows.zip`,
-whose files replace the install folder while the program runs) — or builds the current
+whose files replace the install folder once every copy of it has closed) — or builds the current
 **source** (needs what a build needs, below; Linux only, since it runs `install.sh`). Both install into the same place with the options of the last install (kept in
 `~/.config/failbrauwser/install-options`); the download, source included, is deleted when it is
 done, and failBrauwser restarts as the new version. The window shows the installer's output
@@ -155,6 +163,27 @@ build takes about 1½ minutes on 28 cores, an update of the program's own code a
 seconds, and one that changed nothing a second. A git checkout builds into its own `target`
 as before. A copy installed for everyone (`--system`) is updated from a terminal. `scripts/package.sh` and
 `winpack\package.ps1` make the release packages.
+
+**Updating with more than one copy open:** an update closes them all, and it asks rather than
+reaches in. Each running copy keeps a record of what it was showing — every window with its folder,
+its tabs, which tab stood in front and which entry was selected — in `failbrauwser\sessions\<process
+id>` below the folder this program keeps its per-user state in (`~/.local/share/failbrauwser` on
+Linux, `%LOCALAPPDATA%\failbrauwser` on Windows, and it survives an update because the update only
+touches the install folder). Asked to close, a copy writes that record once more, cleans up what it
+staged for itself, and closes by itself, which is why a window that was waiting for an answer closes
+as if cancelled and a job that was running is left in the state *Resuming an interrupted operation*
+describes. The ask is an ask: a copy that does not close in the time given is named by its process id
+and the update stops there with nothing replaced, because nothing here ends a process it did not
+start, and a copy held open by a modal dialog or a job says so in its own window instead of being
+killed. Only when the last record is gone does the swap run — a script that belongs to no window, on
+Windows as on Linux, since it outlives the program whose files it replaces — and the new version is
+started with those records handed to it, so every window comes back where it was. A remembered folder
+that no longer exists (an unplugged stick, a removed folder) opens at the nearest folder that does and
+says what it could not open. A record whose process no longer runs and whose windows nobody restored
+is a leftover, and the next start clears it; a record that lies about itself restores nothing and is
+reported, never obeyed. The single-file launcher obeys the same rule where it only refused: it asks
+the copies it finds running, waits for them, and installs only once nothing holds the folder; a copy
+that stays open leaves the refusal standing and names the process holding it.
 
 ### Requirements
 
@@ -664,6 +693,33 @@ already being written to waits in a queue and starts when the first one is done.
 *Edit → Verify Copies* every copied file is flushed to the device, dropped from the cache and
 read back to compare it with the source.
 
+**Resuming an interrupted operation:** a copy or a move writes down what it is doing as it goes —
+the plan it made, and one line for every file it finished — into `failbrauwser\jobs` below the same
+per-user state folder the window records of *Updating with more than one copy open* live in, each
+line holding that file's source, its destination, its size and its times. Every file is written
+under a name of its own beside the one it will get, and renamed into place only once its last byte
+is there, so a half-written file never stands where a finished one should and a finished one is
+never written twice. The bytes already paid for are not paid again: a file the record says is done
+is skipped, and the one that was cut off is written again from its start. failBrauwser looks for
+such a record when it starts. A record whose process no longer runs is checked against the disk
+first — the source still there with the size and the times it wrote down, still the same file, and
+the destination still the folder it was going into — and when it matches, the job goes on exactly
+where it stopped: the same progress window, the same speed chart and the same numbers, pausable and
+cancellable as before. *Undo* then takes away every file that job put in the destination, the ones
+copied before the break included; a resumed move says plainly which files it cannot take back
+because their sources had already moved over, instead of pretending to undo what it cannot. When the
+disk no longer says what the record was told — a source edited, renamed or gone, a destination
+folder deleted or now somewhere else, the same name standing for a different file — nothing is
+touched and the reason is said, because continuing from a guess could destroy what someone else
+changed in the meantime. A job cancelled on purpose is not resumed: cancelling was the decision, and
+a record left by an instance that was killed or crashed is the only thing that resumes. Two copies
+starting at once cannot work through one record, since the one that works through it renames the
+record to its own process id before reading it. That record is read under the same bounds as any
+file this program did not write: one that lies about itself resumes nothing, is reported, and is
+dropped. A delete, a move to the trash, an extract and a compress are outside this — they either
+happened or they did not, and a half-done delete is refused rather than half-undone; what resumes is
+a copy or a move of files.
+
 **Custom actions:** actions you made in Thunar (*Edit → Configure custom actions*, stored in
 `~/.config/Thunar/uca.xml`) appear in the right-click menu, filtered by file patterns and
 types like in Thunar. Actions only for failBrauwser go into
@@ -817,7 +873,290 @@ where they came from, recreating missing folders and asking if the name is taken
 deleted for good. The status bar shows where a selected item was deleted from.
 
 **Drives:** *Drives* on the left lists every volume; the button at the end of a row (or a
-right-click, or <kbd>Alt</kbd>+<kbd>Enter</kbd>) shows its properties.
+right-click, or <kbd>Alt</kbd>+<kbd>Enter</kbd>) shows its properties. Its *Volume* section holds
+the volume name, and the page has *Format…*, *Create device icon* and *Remove device icon*. A volume
+whose own files name it (see *Device icons*) is listed under that name and drawn with that picture.
+
+**Renaming a volume:** the *Label* row of a drive's properties window is an entry you can type
+into; a *Rename* button appears beside it as soon as the text differs from what the volume says, and
+disappears again when it does not. A USB stick is renamed without asking anyone: writing the label of
+a volume you do not own runs this same program elevated, so Windows asks for the administrator's
+approval at that moment — and cancelling that prompt changes nothing at all.
+
+**A name too long for the file system is kept, not thrown away.** What you type is the name the
+volume is *called*; what the volume itself can *hold* is shorter on the file systems that name
+things shortly, and the difference is bridged rather than lost:
+
+| File system | What its own label holds | Where a longer name still survives |
+|---|---|---|
+| FAT, FAT32 | 11 characters, upper case, without `+ , ; = [ ] " * ? \ / : < > |` | pinned in `autorun.inf` and in `desktop.ini` |
+| exFAT | 11 characters, though its own field would hold 15 | pinned in `autorun.inf` and in `desktop.ini` |
+| NTFS, ReFS, UDF | 32 characters | pinned in `autorun.inf` and in `desktop.ini` |
+
+The volume's own label is a **short variant** of the name: the characters that file system forbids are
+dropped, FAT's is upper-cased, and a cut that would land inside a word is pulled back to the word
+boundary before it. The window shows that variant beside the entry, so a *Rename* of
+`Samsung 64 GB` onto FAT is seen to write the label `SAMSUNG 64` and to pin `Samsung 64 GB` in both
+files — and the volume is still *called* `Samsung 64 GB` wherever the shell reads those files. A name
+that nothing can carry (only forbidden characters, or nothing left after shortening) is refused with
+the reason, and where the machine answers differently from this table its own words are shown. Only
+the files this feature wrote itself are ever rewritten or removed.
+
+Two conditions make those two text files present, and either one is enough: **the volume carries a device icon
+of ours**, or **its name is one the file system's own label cannot hold**. Whichever of the two asked for them,
+a file that already stands there is **updated in place** rather than skipped, so the keys of both conditions end
+up in the same pair of files whoever came first — an icon written onto a volume that already carries the pin,
+and a long name written onto a volume that already carries the icon, both leave one pair naming the picture,
+the device and the name.
+Pinning is **the naming act's own work**, not something that only arrives with a device icon: a *Rename* or a
+*Format* that settles on a short label writes those two text files itself, carries the same section of ours in
+them, and takes them back again when a later name needs no pin. Where no picture was asked for, the two files
+**say nothing about one** — no `icon=` line in `autorun.inf`, no `IconResource=` in `desktop.ini` — because a
+reference the shell cannot resolve is worse than none, and those keys appear only where `folder.ico` actually
+stands. In a file no icon wrote, the name the volume is *called* is what `ModelName=` says — that file exists
+to carry the name, and the single-byte rule applies to it as it does to every other word of `autorun.inf`. A
+text file an icon already wrote keeps its device description word for word, since those words describe the
+device and not the volume's name; there the name is carried by `LocalizedResourceName=` of `desktop.ini`, which
+is the one file measured to render a name beyond a single-byte codepage. Where the volume names no folder to write into, the act says so
+instead of pinning nothing quietly, and where the rights are what is missing, the **one** privileged run of this
+program's own file writes the label and the pin together, so naming a volume never asks for consent twice. What
+that pin is worth on a given system is a measured question, answered for this one under *Device icons*: this
+Windows names the drive by its own label while the pair of files stands on it. What **failBrauwser** makes of
+that pair is its own answer and not the shell's, and it is the reading promise under *Device icons* below: the
+pinned name is the name the program lists that volume by.
+
+The exFAT row reads **11** because that is what this machine honours. Measured on 2026-11-19 on the 64 GB
+stick with the same call this window uses: an eleven-character name was written and read back, and the
+twelfth character of a name was refused by Windows itself with win32 154, *the entered volume label exceeds
+the limit of the target file system* — while the volume was in fact exFAT, whose own label field would hold
+fifteen. The promise follows the machine, so a `Samsung 64 GB` on exFAT is seen to write `Samsung 64` and to
+pin the name it was given.
+
+**Formatting a volume:** *Format…* on the drive's row menu and on its properties window. The
+dropdown lists the file systems this machine offers for *that* volume, and on Windows the machine
+answers through the tool that will run: its own usage text is asked once (`format /?`, started without
+a window) and only the file-system words that text names are offered, so a build whose tool answers
+for fewer of them offers fewer. There is no system answer to prefer: `FSCTL_QUERY_FILE_SYSTEM_SUPPORT`
+measured on this build fails for `C:` and `F:` alike, with and without rights on the handle, and names
+nothing about what a volume could be formatted to. `format.exe` on this build names FAT, FAT32, exFAT,
+NTFS, ReFS and UDF, and a volume narrows that list by its size and kind. Choosing one shows only the options that file system has, and
+nothing outside the table below can reach the command — the table also says which switch each option
+contributes, which is what its test compares against. The dropdown opens on the file system the volume
+holds already, wherever this machine offers it for that volume, because formatting a volume back into
+what it already is the common case; where it does not, the dropdown opens on the first of the offer, and
+that offer is in this program's own order rather than the order the machine answered in.
+
+| Option | FAT / FAT32 | exFAT | NTFS | ReFS | UDF |
+|---|---|---|---|---|---|
+| volume name | `/V:` | `/V:` | `/V:` | `/V:` | `/V:` |
+| allocation unit (cluster size) | `/A:` | `/A:` | `/A:` | `/A:` | — |
+| quick instead of full | `/Q` | `/Q` | `/Q` | `/Q` | `/Q` |
+| overwrite the whole volume first | `/P:` | `/P:` | `/P:` | `/P:` | `/P:` |
+| compress new files by default | — | — | `/C` | — | — |
+| bigger file records | — | — | `/L:` | — | — |
+| log size | — | — | `/LogSize:` | — | — |
+| short (8.3) names | — | — | `/S:` | — | — |
+| write repair logs | — | — | `/NoRepairLogs` | — | — |
+| trim while formatting | `/NoTrim` | `/NoTrim` | `/NoTrim` | `/NoTrim` | `/NoTrim` |
+| direct access storage (DAX) | — | — | `/DAX:` | — | — |
+| transactional naming (TxF) | — | — | `/TXF:` | — | — |
+| integrity | — | — | — | `/I:` | — |
+| dev drive | — | — | — | `/DevDrv` | — |
+| SHA-256 checksums | — | — | — | `/SHA256Checksums` | — |
+| UDF revision | — | — | — | — | `/R:` |
+| duplicate UDF metadata | — | — | — | — | `/D` |
+| device icon (see *Device icons*) | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+The name row holds a word of its own, because the tool's switch carries a name **only where the tool can
+take it**. Measured on 2026-11-19 by naming a value to the tool on a letter that holds no volume, so the
+answer came from its own parameter check and no volume was reached: a `/V:` value holding a space is refused
+outright — `Unzulässiger Parameter`, exit 4, one space or several, leading or trailing — while a value
+without one gets as far as the drive lookup. A `/` inside the value is refused as a switch of its own
+(`/V:A/B` answers *invalid parameter* for `/B`), and a `"` is refused outright; both are characters the name
+plan above already forbids, so what is left over is the space, and a name holding one is never handed to the
+tool. The format command then carries no `/V:` at all, and the same privileged run writes that name with the
+machine's own label call once the format has worked, so the one elevation still covers both halves and the
+answer names them separately: the tool's own words, and *the volume's name is now …*. Over there the same
+shape holds — `mkfs.<type>` is asked alone and the file system's own label program writes the name after it —
+named here and never run on this machine.
+
+Every switch, every value list and every "only for this file system" above is measured from that
+tool's own usage text on this build (2026-11-18, German locale — the switch names and numbers are the
+same in any locale). It says: `/FS:` takes FAT, FAT32, exFAT, NTFS, UDF and ReFS; ReFS takes
+allocation units of 4096 and 64 KB; NTFS takes 512 B, 1 KiB, 2 KiB, 4 KiB, 8 KiB, 16 KiB, 32 KiB,
+64 KiB, 128 KiB, 256 KiB, 512 KiB, 1 MiB and 2 MiB; FAT and FAT32 take 512 B to 64 KiB (128 KiB and
+256 KiB only above a 512-byte sector); exFAT takes 512 B to 32 MiB; the state words are `enable` and
+`disable`; UDF revisions are 1.02, 1.50, 2.00, 2.01 and 2.50, 2.01 by default, and `/D` belongs to
+2.50 alone; the NTFS log size is counted in kilobytes with 2 MB as its floor and `0` meaning the
+tool's own size-dependent default; `/C`, `/L:`, `/S:`, `/TXF:`, `/DAX:`, `/LogSize:` and
+`/NoRepairLogs` are marked NTFS-only, `/I:`, `/DevDrv` and `/SHA256Checksums` ReFS-only; and `/Q`
+overrides `/P:`. Three cross-option rules come from the same text and are checked before a command
+exists, because the tool states them as reasons it stops immediately: FAT takes at most 65 526
+clusters and FAT32 between 65 527 and 4 177 917 of them, so an allocation unit that puts this
+volume's size outside that count is refused; NTFS compression is not supported above a 4096-byte
+allocation unit; and a pass count is ignored once quick is ticked, so that control disappears with
+the tick. `format` is always asked with `/Y` and never with `/X`: a volume something of this program
+is using is refused outright rather than torn out from under it. Left out of the table on purpose are
+the diskette geometry switches `/F:`, `/T:` and `/N:` — this machine has no floppy drive to measure
+them against, so offering them would be guessing; the 3.5″ and 5.25″ *shapes* stay, since they belong
+to the device icon.
+
+The allocation-unit row follows what the tool **takes**, and on this build that is far less than what its
+usage text lists. Measured on 2026-11-19 by asking `/A:` of the tool on a letter that holds no volume, so the
+answer came from its own parameter check and no volume was reached: 512, 1024, 2048, 4096 and 8192 get as far
+as the drive lookup for FAT, FAT32, exFAT and NTFS alike, while 12 288, 16 384 and everything above are
+answered `Unzulässiger Parameter` (exit 4) in front of any drive being opened — the same for every file
+system the tool names, so ReFS is left with 4096 alone. The usage text's larger numbers (up to 2 MiB for NTFS,
+up to 32 MiB for exFAT, up to 64 KiB for FAT) are therefore not offered here: a dropdown whose choice can only
+end in another program's refusal is not an offer, and the reaching of those larger units belongs to the
+machine's own disk tools rather than to this window. One offer follows from that ceiling: a volume of 64 GB
+is no longer offered as FAT32, because 8192-byte clusters over that size are 7 831 836 clusters and FAT32
+stops at 4 177 917 of them — the cluster-count rule above is what refuses it, in its own words, and no unit
+this tool takes can bring that volume inside the band. What the tool refuses at run time is still quoted in its
+own words wherever it answers, so nothing is claimed about a value that was never asked.
+
+to the device icon.
+
+A volume the machine names no size for is refused a format outright, in the words *the machine names no
+usable size for this volume, so no file system can be chosen for it*, and its offer comes back empty. That was
+read on purpose on 2026-11-18 on a 64 GB stick left without a recognizable file system: it still enumerated by
+its letter and named its model and its bus, but its own size and the size of the drive behind it both answered
+nothing. Windows' own disk tools answer 64 160 400 896 bytes for that same disk while this program reads
+nothing, so what brings such a volume back is their doing rather than this window's, and afterwards the volume
+is offered again. Named here as a limitation and not as an aim: the disk behind such a volume does name its
+size to this machine, and reading it from there instead of from the volume would let this window perform the
+very format that repairs one — a decision left open, since widening that guard widens what any format of this
+program can be pointed at.
+
+What the machine itself answers on top of that is quoted as it says it. Measured the same day through
+`Format-Volume -WhatIf`, which writes nothing: it refused FAT for the 64 GB stick as `Size Not
+Supported`, refused ReFS for it as *the specified file system is not supported*, offered FAT32,
+exFAT and NTFS there, and does not name UDF as a parameter at all. There is no per-volume MFT reserve
+on this Windows to offer — the MFT zone is set machine-wide by `fsutil behavior set mftzone`, which
+this feature never touches — so the NTFS space knob the window offers is the log size.
+
+The volume name is pre-filled with the manufacturer and the size the device icon prints, quick is on
+by default because a full format of a big stick runs for hours, and no command exists until the
+confirmation has the drive's **letter typed into it**, which also states how many bytes are in use
+there. Where this machine names no letter for that volume, the words to type are the device it does
+name instead, because a wrong device is as fatal as a wrong letter. Refused before anything is asked
+for: the system or boot volume, the volume this program's own file sits on, a read-only volume, a
+network share, a volume one of this program's own operations is using, and a volume too small for the
+smallest file system offered. The format runs elevated: the
+UAC dialog names the command, and a cancelled prompt is a no-op. The tool's own output is shown,
+whether it succeeded or refused.
+
+**Device icons:** the picture and the name a device shows with its own folder. *Create device icon*
+and *Remove device icon* on a drive's row menu and on its properties window write and take away
+those files, and the format window has a box for the same thing, so a stick gets its picture as it is
+formatted. *Create device icon* opens a small window first: the shape the machine detected with its
+evidence spelled out beside it — the same dropdown the format window has — and *Create* writes what that
+window names. Where writing those files needs the administrator, this same program is started elevated, so
+Windows asks at that moment and a cancelled prompt changes nothing at all. Refused before a file exists:
+a read-only volume, and a volume that names no folder this program can write into — one that is not
+mounted, a phone, or one this machine gives no drive letter. The art is drawn here for the shapes a device comes in — nvme, solid-state disk, hard
+disk, usb stick, sd card, µsd card, 3.5″ floppy, 5.25″ floppy, optical drive — and the words are
+composited when the icon is written: the manufacturer the machine reported (`SanDisk Ultra`,
+`Samsung SSD 870 QVO` …, reduced to the brand word a long model string begins with) and the size in
+the units the packaging prints, decimal (1 GB = 1 000 000 000 bytes, so a 64 160 400 896-byte stick
+reads `64 GB`). Only the size is drawn at 16, 32 and 48 pixels, and the manufacturer goes on at 256
+pixels alone: at 48 a line of both words fits only by shrinking below the height the size word has by
+itself, which measured here as *less* ink on the picture than the size word carries alone (17
+against 27 sampled pixels of the band) — the mush the earlier rule meant to avoid.
+
+The shape is detected where the machine can tell one (`bus sdio` at 64 GB is a memory card, an nvme
+disk is nvme, a disk with no seek penalty is a solid-state one); where it cannot — an sd card in a
+reader looks exactly like a µsd card, and a 3.5″ floppy exactly like a 5.25″ one — the format window and
+the *Create device icon* window both show a *Device shape* dropdown set to the detected answer with the
+evidence spelled out next to it, and the shape can be changed. The same words go into the volume name the format window proposes.
+
+Two of those files also carry the volume's long name: `autorun.inf` names it as the drive's label and
+`desktop.ini` names it as the folder's display name, which is what makes a `Samsung 64 GB` name work
+on a file system whose own label holds 11 characters. How that second pin behaves is measured here
+(2026-11-18) on a plain folder rather than assumed: the folder shows the pinned name **only while the
+folder itself carries the system attribute** — with that attribute taken off, the folder's own name shows
+again — and of the three encodings tried, UTF-16 with a byte-order mark and the machine's own single-byte
+codepage show the name while UTF-8 shows what a single-byte reader makes of it (`Große` came back as
+`GroÃŸÃ¶e`), so `desktop.ini` is written in UTF-16 with that mark. What the pin does on a mounted volume was read
+back on one (2026-11-19), and a volume answers differently from a folder: the drive is named by its own label
+there — `Samsung 64 (F:)`, both where the drives are listed and as the browsed folder's name — while the pair of
+files stands, because the root of that exFAT volume takes no system attribute at all (the write itself is
+refused), and an unmarked root shows the label. So the pin holds the long name where the volume's own label
+cannot, and this Windows was measured not to read it for that drive. `autorun.inf` is a single-byte file, so every word it carries is plain
+ASCII: the shape's data name (`micro SD card`, `3.5 inch floppy`) and the brand the machine reported, since
+the shown label of a shape holds a `µ` and a `″` that a single-byte file cannot carry — and its `label=`
+line names the volume only where the short label the file system itself carries is plain ASCII, because a
+name reaching past that codepage is not written down in a form that would lose characters, leaving the long
+name to rest on `desktop.ini` alone.
+
+The four files arrive **only with the bytes they carry**: each one is written under a name of ours — the
+file's own name with `.fbtmp` behind it — its length is read back where it stands, and only then is it moved
+into the name the systems read. So a slot never holds a file of ours that was opened but not filled, and a
+volume whose root was written to halfway through a failing act is told about it rather than left holding a
+0-byte `DevIcon.fil`. A name **another program holds open** is refused **by that name** and nothing of ours is
+left at any of the four — and because a held-open name is not a question of rights, that refusal never asks
+for the administrator (an elevated run cannot take a name away from whoever holds it). A staged name of ours
+that some act left behind is taken away by *Remove device icon* along with the four.
+
+**failBrauwser reads those files back for its own listing.** Where a volume's root holds a text file carrying
+the section of ours, the device is shown by what that file says about itself: the name is the long name pinned
+there — ahead of the label the volume carries, ahead of the folder it is mounted on, ahead of the image file a
+mounted image is called by — and the picture is the image file that marked text file names, `DevIcon.fil` where
+our own section names one and `folder.ico` otherwise, scaled to the size the row draws. A picture that will not
+decode leaves the themed drive icon standing, so a damaged file costs a picture and never a row. A pair of
+*somebody else's* — an `autorun.inf` or `desktop.ini` without that section — names no name and lends no picture
+here, exactly as *Remove device icon* keeps every byte of it: a drive renaming itself from a file an archive or
+another program left in its root would be wearing a name this program never earned, so the marker is what makes
+a name readable and not merely present. Three places name and draw a device — the drives page row, the side
+panel's drive row, and a volume's properties window — and all three read one answer, because it is the volume's
+name and picture rather than a widget's. The file tree's folder rows keep their own icons: the picture belongs
+to the row that names the volume, not to every folder below it. The listing redraws when one of this program's
+own acts changes those files — *Create device icon*, *Remove device icon*, and a rename that pins a name or
+takes the pin back — so the row answers the verb without a restart.
+
+**What that reading is given has a bound**, so that a broken file or a planted one in somebody's volume root
+cannot cost this program anything beyond a row drawn without a picture. The two text files of ours measure 219
+and 300 bytes on a real volume, so a text file past 64 KiB is not read at all: not by the listing, and not by
+*Remove device icon*, which reads those same two names and would otherwise treat a planted file of a hundred
+megabytes as one of ours. The pinned name is shown only where it is a name a row can show — not empty, no
+longer than the 255 characters one component of a path ever is, carrying no control character and no
+directional override, which would make a row read as something its name is not. A picture is drawn only where
+what stands there is an icon container honest about itself: every image of it inside the file, every image's
+own header where its directory entry says it is, and every image within the 256 pixels such a directory can
+name; and only within 8 MiB, the icon files of one written device icon measuring 408 966 bytes each. Reading
+stops at those bounds rather than reading up to them, so **nothing about the size or the shape of a file
+decides how much memory or time this program spends**, and no decoder is ever handed a container whose own
+header names a picture bigger than an icon can be. Where a named picture fails that answer, the next picture
+the marked file names is asked instead; where none answers, the themed icon of the volume's kind stands. Each
+answer falls back on its own: a volume whose pinned name is nonsense keeps the picture its files name, and a
+volume whose picture is nonsense keeps its pinned name.
+
+Four files go on the volume, because the systems ask for four different ones: `DevIcon.fil`, an icon
+file in the shape Windows describes for a device icon — twelve images, the sizes 16×16, 32×32, 48×48
+and 256×256 in 24-bit colour with an 8-bit alpha channel, 8-bit with 1-bit transparency and 4-bit
+with 1-bit transparency; on a case-insensitive file system the two spellings `DevIcon.fil` and
+`devicon.fil` are the same one file; `autorun.inf`, naming that icon and describing the device
+(`ModelName`, `Manufacturer`); and `desktop.ini` with `folder.ico` for the folder's own picture, the
+volume's root marked system-and-hidden where the file system takes that mark, so the shell honours it.
+
+Each of the two text files carries a section of its own saying so: `[failBrauwser]` with `DeviceIcon=1`,
+with the name of the image file `DevIcon.fil`, and with whether the root's system attribute stands there
+because this feature put it there — the marker states **what the machine answers afterwards**, never what
+this feature tried to do, so a root that refuses the mark (the root of an exFAT stick answers so on this
+Windows, measured 2026-11-19) is recorded as unmarked and the removal afterwards names no unmarking it did
+not do. That section is what *Remove device icon* removes by, and it removes by
+nothing else: it reads the two files, and only where one of them carries the marker does it delete that
+file and the icon files the marked file names. An `autorun.inf` or `desktop.ini` of somebody else — one
+without that section — keeps every byte and the verb says so; a `folder.ico` no marked file names stays
+where it is; and the root is unmarked again only where the marker says the marking came from here. The two text
+files can also have come from a naming act (see *Renaming a volume*): such a file carries the section of ours
+and names no image file, and *Remove device icon* takes it away exactly like its own — while a rename that no
+longer needs a pin takes those two back itself, leaving a picture that stands to be taken away by the verb.
+Measured on this machine, none of that removal needs a trick: an ordinary delete takes a hidden-and-system file, a
+system-and-hidden folder still enumerates its own children, and both attributes come back off. *Create
+device icon* writes files and nothing else — it never dismounts, never formats, never touches a file
+system — and the section of our own leaves the shell's own keys working: a folder carrying it and no pinned
+name still shows its own name.
 
 **Phones:** plug in an Android phone, unlock it and choose *File transfer* in its USB
 notification. It shows up on the Drives page with the USB sticks, called by its name, with a
@@ -833,7 +1172,10 @@ the phone can be unplugged; tabs showing its files move to the Drives page first
 *Edit → Keep Running in Background* and *Edit → Smooth Writes to Slow Drives* switch off the
 daemon and the write pacing.
 
-`failbrauwser --quit` ends the background instance; `failbrauwser --help` lists the options.
+`failbrauwser --quit` asks every running copy to close — the background one included — each writing
+down the windows it had open first, the ask *Updating with more than one copy open* describes. It
+waits the same bounded time for them and says in the terminal how many closed, which is what
+`install.sh` leans on before it replaces the files; `failbrauwser --help` lists the options.
 
 ## How it is fast
 
@@ -896,6 +1238,11 @@ src/
                    overlays, making and retargeting links, the tree operations, Smart Move,
                    hard link siblings, Volume Mountpoints, Backup Mode and its administrator
                    helper (`failbrauwser --links …`, run through pkexec)
+    fsformat/      a volume's name, its format with the file systems this machine offers and their
+                   options, and the device icon: the closed option table, the name that is too long for
+                   the file system and where it survives, and the administrator half of those acts, run as
+                   `failbrauwser --rename-volume …` / `--format …` / `--device-icon …` /
+                   `--remove-device-icon …` and told which outcome file to write by `--outcome <path>`
     search.rs      file name search, also inside archives
     shortcuts.rs   side panel entries: order, names, hidden ones, saved
     thumbs.rs      freedesktop.org thumbnail cache
@@ -1009,6 +1356,11 @@ such a script (see `src/ui/selftest.rs` for the commands).
   SHA-512 volume, five to thirteen for one written with Whirlpool, BLAKE2s or Streebog, and about
   half a minute to refuse a wrong passphrase, which has to try every candidate first. The candidates
   run side by side and stop at the one that opens, but the arithmetic belongs to the volume.
+- A device icon's four files are written as the systems ask for them, but this Windows gives the drive itself
+  neither its picture nor its name from those files: measured on the stick, the drive answers the shell's own
+  generic drive icon and `ExtractIconExW` names none, and My Computer shows the volume's label — as does the
+  browsed folder itself while a pinned name stands there, because the root of that exFAT volume takes no system
+  attribute, and an unmarked root shows the label.
 - Edits to formats without in-place modification rebuild the archive.
 - Hybrid ISO images are read-only; Rock Ridge names longer than about 170 bytes are
   shortened when an ISO is rebuilt.

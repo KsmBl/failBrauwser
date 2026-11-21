@@ -57,6 +57,10 @@ struct FakeDrive {
     lvm: bool,
     unlocked: bool,
     mounted: bool,
+    /// The file system the volume says it holds and the file systems it says this machine offers for it, as
+    /// the scenario names them (`add_fake_volume`); a stand-in disk image names its own where it is built.
+    fs: String,
+    supported: Vec<String>,
 }
 
 impl FakeDrive {
@@ -97,7 +101,8 @@ impl FakeDrive {
         let contents = |object: String, backing: String| Volume {
             device: format!("/dev/fake-{}", self.label),
             label: self.label.clone(),
-            fs_type: "ext4".into(),
+            fs_type: self.fs.clone(),
+            supported_file_systems: self.supported.clone(),
             mountable: true,
             block_object: object,
             crypto_backing: backing,
@@ -119,14 +124,22 @@ impl FakeDrive {
 
 /// A stand-in USB stick (self-test), not mounted; with a passphrase it is encrypted and locked.
 pub fn add_fake(label: &str, dir: PathBuf, passphrase: Option<String>, lvm: bool) {
-    FAKES.with(|f| f.borrow_mut().push(FakeDrive { label: label.into(), dir, image: None, passphrase, lvm, unlocked: false, mounted: false }));
+    FAKES.with(|f| f.borrow_mut().push(FakeDrive { label: label.into(), dir, image: None, passphrase, lvm, unlocked: false, mounted: false, fs: "ext4".into(), supported: Vec::new() }));
     changed();
 }
 
 /// A stand-in disk image (self-test): mounting it shows `dir`.
 pub fn add_fake_image(image: PathBuf, dir: PathBuf) {
     let label = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    FAKES.with(|f| f.borrow_mut().push(FakeDrive { label, dir, image: Some(image), passphrase: None, lvm: false, unlocked: false, mounted: false }));
+    FAKES.with(|f| f.borrow_mut().push(FakeDrive { label, dir, image: Some(image), passphrase: None, lvm: false, unlocked: false, mounted: false, fs: "ntfs".into(), supported: Vec::new() }));
+}
+
+/// A stand-in volume (self-test) whose file system and whose format offer are named by the scenario, so a
+/// format window can be driven over a volume this machine does not hold. It is never mounted, so no act of
+/// ours reaches a real volume through it: the act's own answer is what the scenario reads.
+pub fn add_fake_volume(label: &str, dir: PathBuf, fs: &str, supported: Vec<String>) {
+    FAKES.with(|f| f.borrow_mut().push(FakeDrive { label: label.into(), dir, image: None, passphrase: None, lvm: false, unlocked: false, mounted: false, fs: fs.into(), supported }));
+    changed();
 }
 
 /// Answers a UDisks2 call on a stand-in stick like UDisks2 would.
@@ -293,7 +306,25 @@ async fn gather_local() -> Vec<(Volume, Option<Usage>)> {
             }));
         }
     });
-    with_usage
+    // What a volume's own files say about it — the long name pinned there and the picture named there — is read
+    // of its folder, off the UI thread like the fill levels: a root that does not answer is left to answer for
+    // itself (README: *Device icons*). A share is not asked at all, because a dead one hangs a read of its root
+    // and the picture of a share belongs to the machine that serves it.
+    gio::spawn_blocking(move || {
+        with_usage
+            .into_iter()
+            .map(|(mut v, u)| {
+                if let (false, Some(root)) = (v.network, v.mount_point().cloned()) {
+                    let said = failbrauwser::fsformat::icon::shown(&root);
+                    v.pinned_name = said.pinned;
+                    v.picture_file = said.picture;
+                }
+                (v, u)
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_else(|_| Vec::new())
 }
 
 fn page_for(pane: &Rc<Pane>) -> Option<Rc<DrivesPage>> {
@@ -593,7 +624,7 @@ impl DrivesPage {
         grid.set_margin_top(8);
         grid.set_margin_bottom(8);
 
-        let icon = gtk::Image::from_gicon(&gio::ThemedIcon::from_names(&v.icon_names()), gtk::IconSize::Dialog);
+        let icon = super::icons::volume_image(v, gtk::IconSize::Dialog);
         icon.set_valign(gtk::Align::Center);
         grid.attach(&icon, 0, 0, 1, 4);
 
@@ -749,6 +780,38 @@ impl DrivesPage {
             let vol = v.clone();
             add("_Eject", Box::new(move |p| p.unmount(&vol, true)));
         }
+        // The format of the volume, wherever the act could reach it at all; where it cannot, the item is
+        // shut and its tooltip says why (README: *Formatting a volume*).
+        let vol = v.clone();
+        match failbrauwser::fsformat::refusal(&v) {
+            None => add("_Format…", Box::new(move |p| p.format(&vol, u))),
+            Some(why) => {
+                let item = super::menuicons::item("_Format…");
+                item.set_sensitive(false);
+                item.set_tooltip_text(Some(&format!("This volume cannot be formatted: {why}.")));
+                menu.append(&item);
+            }
+        }
+        // The two device-icon verbs write files and nothing else. Where the volume cannot take them the items
+        // are shut and the reason the act gives stands on their tooltip (README: *Device icons*).
+        match failbrauwser::fsformat::act::icon_refusal(&v) {
+            None => {
+                menu.append(&gtk::SeparatorMenuItem::new());
+                let vol = v.clone();
+                add("_Create device icon…", Box::new(move |p| p.create_icon_window(&vol)));
+                let vol = v.clone();
+                add("_Remove device icon", Box::new(move |p| p.remove_icon(&vol)));
+            }
+            Some(why) => {
+                menu.append(&gtk::SeparatorMenuItem::new());
+                for label in ["_Create device icon…", "_Remove device icon"] {
+                    let item = super::menuicons::item(label);
+                    item.set_sensitive(false);
+                    item.set_tooltip_text(Some(&why));
+                    menu.append(&item);
+                }
+            }
+        }
         if let Some(link) = super::desktoplink::for_volume(&v) {
             menu.append(&gtk::SeparatorMenuItem::new());
             add("Create _Link on Desktop", Box::new(move |p| {
@@ -792,6 +855,31 @@ impl DrivesPage {
             show_properties(&w, &p, v, usage);
         }
     }
+
+    /// The format window of this volume, whose *Format* hands the choice to the act (README: *Formatting a
+    /// volume*). The page keeps no handle of its own: the act marks the volume busy, and the page follows
+    /// that.
+    fn format(&self, v: &Volume, usage: Option<Usage>) {
+        if let Some((w, _)) = self.context() {
+            let (win, vol) = (Rc::downgrade(&w), v.clone());
+            super::format::show(&w, v, usage, move |fs, chosen| format_volume(win.clone(), &vol, fs, chosen));
+        }
+    }
+
+    /// The window naming the shape a device icon is drawn for, which then hands that shape to the act
+    /// (README: *Device icons*).
+    fn create_icon_window(&self, v: &Volume) {
+        if let Some((w, _)) = self.context() {
+            icon_window(&w, v);
+        }
+    }
+
+    /// Taking a device icon away: the two text files of ours and the image files they name, nothing else.
+    fn remove_icon(&self, v: &Volume) {
+        if let Some((w, _)) = self.context() {
+            remove_device_icon(&w, v);
+        }
+    }
 }
 
 /// Everything known about a volume, its drive and how full it is.
@@ -803,7 +891,7 @@ pub fn show_properties(w: &Rc<Window>, pane: &Rc<Pane>, v: &Volume, usage: Optio
     area.set_spacing(12);
 
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    header.pack_start(&gtk::Image::from_gicon(&gio::ThemedIcon::from_names(&v.icon_names()), gtk::IconSize::Dialog), false, false, 0);
+    header.pack_start(&super::icons::volume_image(v, gtk::IconSize::Dialog), false, false, 0);
     let titles = gtk::Box::new(gtk::Orientation::Vertical, 2);
     let title = gtk::Label::new(None);
     title.set_markup(&format!("<big><b>{}</b></big>", glib::markup_escape_text(&v.title())));
@@ -857,12 +945,19 @@ pub fn show_properties(w: &Rc<Window>, pane: &Rc<Pane>, v: &Volume, usage: Optio
         area.add(&counts);
     }
 
+    // A row of the properties grid: words the volume answers, or the volume's own name as it is written
+    // here.
+    enum Row {
+        Text(String),
+        Named(gtk::Box),
+    }
+
     let grid = gtk::Grid::new();
     grid.set_column_spacing(12);
     grid.set_row_spacing(4);
     let mut y = 0;
-    let mut section = |name: &str, rows: Vec<(&str, String)>| {
-        let rows: Vec<_> = rows.into_iter().filter(|(_, v)| !v.is_empty()).collect();
+    let mut section = |name: &str, rows: Vec<(&str, Row)>| {
+        let rows: Vec<_> = rows.into_iter().filter(|(_, row)| !matches!(row, Row::Text(v) if v.is_empty())).collect();
         if rows.is_empty() {
             return;
         }
@@ -872,19 +967,26 @@ pub fn show_properties(w: &Rc<Window>, pane: &Rc<Pane>, v: &Volume, usage: Optio
         h.set_margin_top(if y == 0 { 0 } else { 8 });
         grid.attach(&h, 0, y, 2, 1);
         y += 1;
-        for (k, val) in rows {
+        for (k, row) in rows {
             let kl = gtk::Label::new(Some(k));
             kl.set_xalign(1.0);
             kl.set_yalign(0.0);
             kl.style_context().add_class("dim-label");
-            let vl = gtk::Label::new(Some(&val));
-            vl.set_xalign(0.0);
-            vl.set_selectable(true);
-            vl.set_line_wrap(true);
-            vl.set_line_wrap_mode(gtk::pango::WrapMode::WordChar);
-            vl.set_max_width_chars(44);
             grid.attach(&kl, 0, y, 1, 1);
-            grid.attach(&vl, 1, y, 1, 1);
+            match row {
+                Row::Text(val) => {
+                    let vl = gtk::Label::new(Some(&val));
+                    vl.set_xalign(0.0);
+                    vl.set_selectable(true);
+                    vl.set_line_wrap(true);
+                    vl.set_line_wrap_mode(gtk::pango::WrapMode::WordChar);
+                    vl.set_max_width_chars(44);
+                    grid.attach(&vl, 1, y, 1, 1);
+                }
+                // The name of the volume is written from this window, so it is typed here (README:
+                // *Renaming a volume*).
+                Row::Named(root) => grid.attach(&root, 1, y, 1, 1),
+            }
             y += 1;
         }
     };
@@ -895,47 +997,118 @@ pub fn show_properties(w: &Rc<Window>, pane: &Rc<Pane>, v: &Volume, usage: Optio
     let mounted = v.mount_points.iter().map(|m| m.display().to_string()).collect::<Vec<_>>().join("\n");
     let options = v.mount_point().and_then(|m| drives::mount_options(m)).unwrap_or_default();
     let yes_no = |b: bool| if b { "Yes".to_string() } else { "No".to_string() };
+    // The name of the volume is written from this window wherever it could be written at all: the file
+    // system is one this program names a label for, the gate lets the volume through, and no act of ours is
+    // running on it. Elsewhere the row is the name as the volume says it (README: *Renaming a volume*).
+    let named = match (failbrauwser::fsformat::FileSystem::parse(&v.fs_type), failbrauwser::fsformat::refusal(v)) {
+        (Some(fs), None) if !is_busy(v) => Some(name_row(v, fs, Rc::downgrade(w))),
+        _ => None,
+    };
     section(
         "Volume",
         vec![
-            ("Label:", v.label.clone()),
-            ("Device:", v.device.clone()),
-            ("File system:", fs),
-            ("UUID:", v.uuid.clone()),
-            ("Mounted at:", if mounted.is_empty() { "Not mounted".into() } else { mounted }),
-            ("Mount options:", options),
-            ("Read-only:", yes_no(v.read_only || v.mount_point().and_then(|m| drives::mount_options(m)).is_some_and(|o| o.split(',').any(|x| x == "ro")))),
+            ("Label:", match &named { Some(root) => Row::Named(root.clone()), None => Row::Text(v.label.clone()) }),
+            ("Device:", Row::Text(v.device.clone())),
+            ("File system:", Row::Text(fs)),
+            ("UUID:", Row::Text(v.uuid.clone())),
+            ("Mounted at:", Row::Text(if mounted.is_empty() { "Not mounted".into() } else { mounted })),
+            ("Mount options:", Row::Text(options)),
+            ("Read-only:", Row::Text(yes_no(v.read_only || v.mount_point().and_then(|m| drives::mount_options(m)).is_some_and(|o| o.split(',').any(|x| x == "ro"))))),
         ],
     );
     section(
         "Partition",
         vec![
-            ("Number:", if v.partition_number > 0 { v.partition_number.to_string() } else { String::new() }),
-            ("Name:", v.partition_name.clone()),
-            ("Type:", if v.partition_type.is_empty() { String::new() } else { drives::partition_type_name(&v.partition_type) }),
+            ("Number:", Row::Text(if v.partition_number > 0 { v.partition_number.to_string() } else { String::new() })),
+            ("Name:", Row::Text(v.partition_name.clone())),
+            ("Type:", Row::Text(if v.partition_type.is_empty() { String::new() } else { drives::partition_type_name(&v.partition_type) })),
         ],
     );
     section(
         "Drive",
         vec![
-            ("Model:", v.drive_name.clone()),
-            ("Serial number:", v.serial.clone()),
-            ("Firmware:", v.revision.clone()),
-            ("Kind:", drives::drive_kind(v)),
-            ("Connection:", match v.bus.as_str() {
+            ("Model:", Row::Text(v.drive_name.clone())),
+            ("Serial number:", Row::Text(v.serial.clone())),
+            ("Firmware:", Row::Text(v.revision.clone())),
+            ("Kind:", Row::Text(drives::drive_kind(v))),
+            ("Connection:", Row::Text(match v.bus.as_str() {
                 "usb" if v.is_device() => format!("USB ({})", v.protocol.to_uppercase()),
                 "usb" => "USB".into(),
-                "sdio" => "SD card reader".into(),
+                "sdio" | "mmc" => "SD card reader".into(),
                 "ieee1394" => "FireWire".into(),
+                "nvme" => "NVMe".into(),
+                "sata" => "SATA".into(),
+                "ata" | "atapi" => "ATA".into(),
+                "raid" => "RAID".into(),
+                "virtual" => "Virtual disk".into(),
                 "" if v.device.starts_with("/dev/nvme") => "NVMe".into(),
                 "" if !v.drive_object.is_empty() => "Internal".into(),
                 other => other.to_string(),
-            }),
-            ("Drive size:", if v.drive_size > 0 { human_size(v.drive_size) } else { String::new() }),
-            ("Removable:", if v.drive_object.is_empty() { String::new() } else { yes_no(v.removable || v.usb) }),
+            })),
+            ("Drive size:", Row::Text(if v.drive_size > 0 { human_size(v.drive_size) } else { String::new() })),
+            ("Removable:", Row::Text(if v.drive_object.is_empty() { String::new() } else { yes_no(v.removable || v.usb) })),
         ],
     );
     area.add(&grid);
+
+    // *Format…* opens the format window of this volume. Where the gate refuses the volume it stays shut,
+    // and the reason the act gives is the words on its tooltip: the refusal exists before a command does,
+    // so the window has nothing to offer that volume (README: *Formatting a volume*).
+    let acts = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let format = gtk::Button::with_mnemonic("_Format…");
+    format.set_widget_name("format-button");
+    match failbrauwser::fsformat::refusal(v) {
+        None => {
+            format.connect_clicked({
+                let (win, vol, u) = (Rc::downgrade(w), v.clone(), usage);
+                move |_| {
+                    let Some(w) = win.upgrade() else { return };
+                    let (act_on, act_vol) = (win.clone(), vol.clone());
+                    super::format::show(&w, &vol, u, move |fs, chosen| format_volume(act_on.clone(), &act_vol, fs, chosen));
+                }
+            });
+        }
+        Some(why) => {
+            format.set_sensitive(false);
+            format.set_tooltip_text(Some(&format!("This volume cannot be formatted: {why}.")));
+        }
+    }
+    acts.pack_start(&format, false, false, 0);
+
+    // The two device-icon verbs write files and nothing else: they never dismount, never format, never touch a
+    // file system. Where the volume cannot take them the buttons stay shut, with the act's own reason on their
+    // tooltip (README: *Device icons*).
+    let create = gtk::Button::with_mnemonic("_Create device icon…");
+    let remove = gtk::Button::with_mnemonic("_Remove device icon");
+    match failbrauwser::fsformat::act::icon_refusal(v) {
+        None => {
+            create.connect_clicked({
+                let (win, vol) = (Rc::downgrade(w), v.clone());
+                move |_| {
+                    if let Some(w) = win.upgrade() {
+                        icon_window(&w, &vol);
+                    }
+                }
+            });
+            remove.connect_clicked({
+                let (win, vol) = (Rc::downgrade(w), v.clone());
+                move |_| {
+                    if let Some(w) = win.upgrade() {
+                        remove_device_icon(&w, &vol);
+                    }
+                }
+            });
+        }
+        Some(why) => {
+            for button in [&create, &remove] {
+                button.set_sensitive(false);
+                button.set_tooltip_text(Some(&why));
+            }
+        }
+    }
+    acts.pack_start(&create, false, false, 0);
+    acts.pack_start(&remove, false, false, 0);
+    area.add(&acts);
 
     if v.mount_point().is_some() && !no_storage(v) || v.is_device() {
         d.add_button("_Open", gtk::ResponseType::Accept);
@@ -957,6 +1130,237 @@ pub fn show_properties(w: &Rc<Window>, pane: &Rc<Pane>, v: &Volume, usage: Optio
     d.show_all();
 }
 
+/// The *Label* row of a drive's properties window: an entry you type into, the *Rename* button beside it
+/// that appears while the typed name differs from what the volume says and disappears again when it does
+/// not, and the words naming the shorter name the file system really carries (README: *Renaming a volume*,
+/// *A name too long for the file system is kept, not thrown away*).
+///
+/// The row answers as long as its own widgets do and holds none of them strongly: what the handlers pass
+/// each other is a weak handle and three words of state, so closing the window ends the row with the
+/// widgets, and an act that outlives it finds nothing to answer to.
+fn name_row(v: &Volume, fs: failbrauwser::fsformat::FileSystem, win: Weak<Window>) -> gtk::Box {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let entry = gtk::Entry::new();
+    entry.set_widget_name("label-entry");
+    entry.set_text(&v.label);
+    entry.set_width_chars(26);
+    entry.set_max_width_chars(26);
+    let rename = gtk::Button::with_mnemonic("_Rename");
+    rename.set_widget_name("rename-button");
+    rename.set_no_show_all(true);
+    rename.set_visible(false);
+    let carried = gtk::Label::new(None);
+    carried.set_widget_name("label-carried");
+    carried.set_xalign(0.0);
+    carried.set_line_wrap(true);
+    carried.set_max_width_chars(48);
+    carried.style_context().add_class("dim-label");
+    line.pack_start(&entry, true, true, 0);
+    line.pack_start(&rename, false, false, 0);
+    root.pack_start(&line, false, false, 0);
+    root.pack_start(&carried, false, false, 0);
+
+    let typed = Rc::new(RefCell::new(v.label.clone()));
+    let loaded = Rc::new(RefCell::new(v.label.clone()));
+    let running = Rc::new(Cell::new(false));
+    let mark: Rc<dyn Fn()> = {
+        let (rename, carried, typed, loaded, running) = (rename.downgrade(), carried.downgrade(), typed.clone(), loaded.clone(), running.clone());
+        Rc::new(move || {
+            let (Some(rename), Some(carried)) = (rename.upgrade(), carried.upgrade()) else { return };
+            let name = typed.borrow().clone();
+            let plan = failbrauwser::fsformat::name_plan(fs, &name);
+            carried.set_text(&match &plan {
+                Ok(p) if p.pinned => format!("the volume itself carries “{}” — {} holds {} characters at most", p.label, fs.word(), fs.label_limit()),
+                Ok(p) if p.label.is_empty() && !p.called.is_empty() => "the volume would hold no name at all".into(),
+                Ok(_) => String::new(),
+                Err(why) => why.clone(),
+            });
+            let differs = name.trim() != loaded.borrow().trim();
+            rename.set_visible(differs);
+            // A name the file system cannot carry is refused where it is typed: the button is there, because
+            // the text differs, and shut, because there is nothing to write.
+            rename.set_sensitive(differs && plan.is_ok() && !running.get());
+        })
+    };
+    entry.connect_changed({
+        let (typed, mark) = (typed.clone(), mark.clone());
+        move |e| {
+            *typed.borrow_mut() = e.text().to_string();
+            mark();
+        }
+    });
+    rename.connect_clicked({
+        let (mark, vol, win, typed, loaded, running) = (mark.clone(), v.clone(), win, typed.clone(), loaded.clone(), running.clone());
+        move |_| {
+            if running.replace(true) {
+                return;
+            }
+            mark();
+            let name = typed.borrow().clone();
+            rename_volume(win.clone(), &vol, &name, {
+                let (loaded, running, mark) = (loaded.clone(), running.clone(), mark.clone());
+                move |answer: Result<String, String>| {
+                    running.set(false);
+                    // What the volume carries is what the row holds as loaded from then on, so a name the file
+                    // system shortened is not offered back to the entry as a change of its own.
+                    if let Ok(label) = answer {
+                        *loaded.borrow_mut() = label;
+                    }
+                    mark();
+                }
+            });
+        }
+    });
+    mark();
+    root
+}
+
+/// Writes a volume's name off the UI thread (README: *Renaming a volume*), the volume marked busy while the
+/// act runs. What comes back is the name the volume now carries — the short variant, where the typed name
+/// was longer than the file system holds — and a refusal is the act's own words. What became of the longer
+/// name is told in a window of its own, like the two device-icon verbs tell theirs: whether it stands pinned
+/// in the two text files, was taken back, or could not be pinned at all.
+fn rename_volume(win: Weak<Window>, v: &Volume, name: &str, on_answer: impl Fn(Result<String, String>) + 'static) {
+    let (key, vol, name) = (busy_key(v), v.clone(), name.to_string());
+    set_busy(&key, true);
+    glib::spawn_future_local(async move {
+        let answer = gio::spawn_blocking(move || failbrauwser::fsformat::act::rename(&vol, &name)).await.map_err(|_| "the rename run ended".to_string()).and_then(|r| r);
+        set_busy(&key, false);
+        match answer {
+            Ok(named) => {
+                on_answer(Ok(named.label.clone()));
+                if !named.words.is_empty() { notice(&win, "The volume's name", &named.words); }
+            }
+            Err(e) => {
+                error(&win, "Cannot rename the volume", &e);
+                on_answer(Err(e));
+            }
+        }
+    });
+}
+
+/// Formats a volume off the UI thread (README: *Formatting a volume*) with the choice its format window
+/// answered, the volume marked busy while the act runs. What comes back is the machine's own words, because
+/// the tool that wrote the file system is the one that refused to.
+fn format_volume(win: Weak<Window>, v: &Volume, fs: failbrauwser::fsformat::FileSystem, chosen: Vec<(failbrauwser::fsformat::FormatOption, failbrauwser::fsformat::Value)>) {
+    let (key, vol) = (busy_key(v), v.clone());
+    set_busy(&key, true);
+    glib::spawn_future_local(async move {
+        let answer = gio::spawn_blocking(move || failbrauwser::fsformat::act::format(&vol, fs, &chosen)).await.map_err(|_| "the format run ended".to_string()).and_then(|r| r);
+        set_busy(&key, false);
+        if let Err(e) = answer {
+            error(&win, "Cannot format the volume", &e);
+        }
+    });
+}
+
+/// The window a *Create device icon* verb opens (README: *Device icons*): the shape the machine detected with
+/// its evidence spelled out beside it — the same dropdown and the same words the format window carries — and a
+/// *Create* button that hands that shape to the act. Nothing is written before it is pressed.
+fn icon_window(w: &Rc<Window>, v: &Volume) {
+    let d = gtk::Dialog::with_buttons(Some(&format!("{} — Device icon", v.title())), Some(&w.win), gtk::DialogFlags::DESTROY_WITH_PARENT, &[("_Cancel", gtk::ResponseType::Cancel)]);
+    d.set_resizable(false);
+    let area = d.content_area();
+    area.set_border_width(12);
+    area.set_spacing(10);
+
+    let heading = gtk::Label::new(None);
+    heading.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&format!("Device icon of “{}”", v.title()))));
+    heading.set_xalign(0.0);
+    area.add(&heading);
+    let files = gtk::Label::new(Some("The four files are written onto this volume: DevIcon.fil and folder.ico, autorun.inf and desktop.ini. Nothing else is touched."));
+    files.set_xalign(0.0);
+    files.set_line_wrap(true);
+    files.set_max_width_chars(52);
+    area.add(&files);
+
+    let grid = gtk::Grid::new();
+    grid.set_column_spacing(12);
+    grid.set_row_spacing(6);
+    let shape = gtk::ComboBoxText::new();
+    shape.set_widget_name("device-shape");
+    for kind in failbrauwser::fsformat::Shape::all() {
+        shape.append(Some(kind.asset()), kind.label());
+    }
+    shape.set_active_id(Some(failbrauwser::fsformat::Shape::detected(v).unwrap_or(failbrauwser::fsformat::Shape::UsbStick).asset()));
+    let key = gtk::Label::new(Some("Device shape:"));
+    key.set_xalign(1.0);
+    key.style_context().add_class("dim-label");
+    let evidence = gtk::Label::new(Some(&failbrauwser::fsformat::Shape::evidence(v)));
+    evidence.set_widget_name("shape-carried");
+    evidence.set_xalign(0.0);
+    evidence.set_line_wrap(true);
+    evidence.set_max_width_chars(52);
+    evidence.style_context().add_class("dim-label");
+    grid.attach(&key, 0, 0, 1, 1);
+    grid.attach(&shape, 1, 0, 1, 1);
+    grid.attach(&evidence, 1, 1, 1, 1);
+    area.add(&grid);
+
+    let create = gtk::Button::with_mnemonic("_Create");
+    create.set_widget_name("create-icon-button");
+    create.style_context().add_class("suggested-action");
+    d.add_action_widget(&create, gtk::ResponseType::Accept);
+    d.set_default_response(gtk::ResponseType::Cancel);
+    d.connect_response({
+        let (win, vol) = (Rc::downgrade(w), v.clone());
+        move |d, resp| {
+            if resp == gtk::ResponseType::Accept {
+                let chosen = shape.active_id().and_then(|id| failbrauwser::fsformat::Shape::parse(id.as_str())).unwrap_or(failbrauwser::fsformat::Shape::UsbStick);
+                if let Some(w) = win.upgrade() {
+                    create_device_icon(&w, &vol, chosen);
+                }
+            }
+            d.close();
+        }
+    });
+    d.show_all();
+}
+
+/// Writes the four files off the UI thread with the shape the window named, the volume marked busy while the
+/// act runs, and answers in the words the act wrote — which name the files that stand (README: *Device icons*).
+fn create_device_icon(w: &Rc<Window>, v: &Volume, shape: failbrauwser::fsformat::Shape) {
+    let win = Rc::downgrade(w);
+    let (key, vol, fs, name) = (busy_key(v), v.clone(), v.fs_type.clone(), v.label.clone());
+    set_busy(&key, true);
+    glib::spawn_future_local(async move {
+        let answer = gio::spawn_blocking(move || failbrauwser::fsformat::act::create_icon(&vol, &fs, shape, &name)).await.map_err(|_| "the device-icon run ended".to_string()).and_then(|r| r);
+        set_busy(&key, false);
+        match answer {
+            Ok(words) => notice(&win, "Device icon", &words),
+            Err(e) => error(&win, "Cannot write the device icon", &e),
+        }
+    });
+}
+
+/// Takes a device icon away off the UI thread, the volume marked busy while the act runs. What was kept — an
+/// `autorun.inf` or `desktop.ini` of somebody else — is told, because the verb promises to say so (README:
+/// *Device icons*).
+fn remove_device_icon(w: &Rc<Window>, v: &Volume) {
+    let win = Rc::downgrade(w);
+    let (key, vol) = (busy_key(v), v.clone());
+    set_busy(&key, true);
+    glib::spawn_future_local(async move {
+        let answer = gio::spawn_blocking(move || failbrauwser::fsformat::act::remove_icon(&vol)).await.map_err(|_| "the device-icon run ended".to_string()).and_then(|r| r);
+        set_busy(&key, false);
+        match answer {
+            Ok(words) => notice(&win, "Device icon", &words),
+            Err(e) => error(&win, "Cannot take the device icon away", &e),
+        }
+    });
+}
+
+/// The words of an act that worked, told in a window of its own: for the two device-icon verbs the answer —
+/// which files stand, which were kept and why — is the point of the verb, not a side note.
+fn notice(w: &Weak<Window>, title: &str, detail: &str) {
+    if let Some(w) = w.upgrade() {
+        let d = gtk::MessageDialog::new(Some(&w.win), gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT, gtk::MessageType::Info, gtk::ButtonsType::Close, title);
+        d.set_secondary_text(Some(detail));
+        d.connect_response(|d, _| d.close());
+        d.show();
+    }
+}
 
 /// Shows a volume's files in `pane` (or a new tab), mounting it or connecting to the phone
 /// first when needed.

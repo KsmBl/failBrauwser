@@ -34,17 +34,19 @@ fn no_tree_iterators_changed_in_place() {
 
 /// This program is linked windowed, so a console tool it starts is given a console of its own unless
 /// the start says otherwise — that is the black window a user sees for every overlay refresh, log
-/// read, blame run and commit. `win::console::no_window` says otherwise, and `progress::prepare`
-/// applies it for the windows that build their commands through it. A VCS file that starts a client
-/// either way is the rule break this catches, because the code still works: only the desktop shows it.
+/// read, blame run and commit. `win::console::no_window` says otherwise, `progress::prepare` applies
+/// it for the windows that build their commands through it, and a file built by the launcher crate
+/// repeats the flag itself (portable.rs). Any start in `src` without one of those nearby is the rule
+/// break this catches, because the code still works: only the desktop shows it.
+///
+/// A start the compiler only builds for Unix is exempt — the window cannot appear there; the Linux
+/// answer to the same complaint is recorded in docs\TOOL-STARTS.md.
 #[test]
-fn every_vcs_client_start_hides_its_console_window() {
+fn every_start_of_another_program_hides_its_console_window() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    for sub in ["vcs", "ui/vcs"] {
-        rust_files(&root.join(sub), &mut files);
-    }
-    assert!(!files.is_empty(), "the version-control trees are expected to exist");
+    rust_files(&root, &mut files);
+    assert!(!files.is_empty(), "the source tree is expected to exist");
     let mut found = Vec::new();
     for f in &files {
         let text = std::fs::read_to_string(f).unwrap();
@@ -53,11 +55,37 @@ fn every_vcs_client_start_hides_its_console_window() {
             if !line.split("//").next().unwrap_or("").contains("Command::new(") {
                 continue;
             }
-            let near = lines[n..(n + 12).min(lines.len())].iter().any(|l| l.contains("no_window(") || l.contains("prepare("));
-            if !near {
+            let unix_only = lines[n.saturating_sub(8)..n].iter().any(|l| l.contains("#[cfg(unix)]") || l.contains("#[cfg(not(windows))]"));
+            let guarded = lines[n..(n + 14).min(lines.len())].iter().any(|l| l.contains("no_window(") || l.contains("prepare(") || l.contains("creation_flags("));
+            if !(unix_only || guarded) {
                 found.push(format!("{}:{}", f.display(), n + 1));
             }
         }
     }
-    assert!(found.is_empty(), "start each console client with win::console::no_window: {found:?}");
+    assert!(found.is_empty(), "start each outside program with win::console::no_window: {found:?}");
+}
+
+/// The client of a read ends with the instance that started it (docs\TOOL-STARTS.md). One way an
+/// instance ends is `main` returning; the other is the process ending itself, which is what a
+/// self-test run does — and an end of its own skips `main`'s tail, where the clients are ended.
+/// Measured 2026-11-17 with only the return path covered: a failing Git scenario left
+/// `git ls-files -z -- .` running with its own process gone, still there a quarter of an hour later.
+/// Everything below `src\ui` therefore ends the instance through `vcs::run::end_and_exit`, which ends
+/// the clients first — the code still works without it, and only a process list shows the difference.
+#[test]
+fn no_end_of_the_process_in_the_ui_skips_the_reading_clients() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("ui");
+    let mut files = Vec::new();
+    rust_files(&root, &mut files);
+    assert!(!files.is_empty(), "the ui tree is expected to exist");
+    let mut found = Vec::new();
+    for f in &files {
+        for (n, line) in std::fs::read_to_string(f).unwrap().lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            if code.contains("process::exit(") || code.contains("process::abort(") {
+                found.push(format!("{}:{}", f.display(), n + 1));
+            }
+        }
+    }
+    assert!(found.is_empty(), "end the instance through vcs::run::end_and_exit, which ends the clients of reads still in flight: {found:?}");
 }

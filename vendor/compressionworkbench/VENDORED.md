@@ -48,6 +48,17 @@ Still local (candidates for upstream pull requests):
   3.11.0: the 5.3 analyzers do not load on the .NET 10.0.10x SDK compiler (CS9057), which the
   Windows build uses
 
+Taken from upstream ahead of the next re-vendoring (this copy carries them on top of `ab61c59f`):
+
+- (feat) AES and Triple DES of the library's own, upstream pull request #946, in upstream's main since
+  batch #956 (`fdd37080`): `Compression.Core/Crypto/AesBlockCipher.cs` (AES-NI where the processor
+  has it, tables otherwise), `ManagedAes.cs`, a drop-in `Aes`, and `TripleDes.cs`, all converted
+  from Bouncy Castle C# (MIT — `THIRD-PARTY-NOTICE.BouncyCastle.txt`). Every `Aes.Create()` of this
+  copy takes `ManagedAes`, and `TcBlockCipher` runs AES and Triple DES on them directly. Before,
+  both came from the operating system, and Wine's refuses ECB, so no TrueCrypt/VeraCrypt volume
+  opened in the Windows build there. Pinned by `helper/FbArchive.Tests/ManagedAesTests.cs` and
+  `TripleDesTests.cs`.
+
 Earlier changes, all taken over upstream by 2026-11-13 (in its own words and code):
 
 - `39965dfa` (test) rebuild edit semantics: exact names, folders, case, times

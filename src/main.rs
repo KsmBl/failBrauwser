@@ -20,6 +20,10 @@ Options:
 ";
 
 fn main() -> gtk::glib::ExitCode {
+    // Before anything is started: the streams this program was given stay its own, so no tool it
+    // runs holds a second copy of them (win\console.rs).
+    #[cfg(windows)]
+    failbrauwser::win::console::keep_our_handles_from_children();
     // Windows keeps autostart in the per-user Run key (Linux ships an XDG autostart file);
     // managed from here so no installer magic is needed, and answered without opening GTK.
     #[cfg(windows)]
@@ -59,6 +63,13 @@ fn main() -> gtk::glib::ExitCode {
     if args.get(1).map(String::as_str) == Some("--lvm") {
         std::process::exit(failbrauwser::lvm::helper_main(&args[2..]));
     }
+    // A volume's name, its format, or the four files of its device icon, as the administrator
+    // (fsformat::act): this same file started again through the shell's `runas` verb, and told by --outcome
+    // which file to write its answer into. No window, no settings and no reading client belongs to that run
+    // (docs\WINDOWS.md), and the flags it answers are exactly the ones the act module names.
+    if failbrauwser::fsformat::act::is_act(args.get(1).map(String::as_str)) {
+        std::process::exit(failbrauwser::fsformat::act::execute(&args[1..]));
+    }
     // Started by git or ssh to ask for a password while a Git command of ours runs.
     if let Some(code) = ui::vcs::askpass::main_if_asked() {
         std::process::exit(code);
@@ -81,7 +92,11 @@ fn main() -> gtk::glib::ExitCode {
     }
     #[cfg(unix)]
     raise_open_file_limit();
-    ui::app::run()
+    let code = ui::app::run();
+    // A client of a read that was still in flight when this run ended must not keep running behind
+    // it: an invisible tool at no CPU, holding a pipe nobody reads (docs\TOOL-STARTS.md).
+    failbrauwser::vcs::run::end_our_clients();
+    code
 }
 
 /// Lifts the soft limit on open files (often 1024) to the hard limit: GLib aborts the whole

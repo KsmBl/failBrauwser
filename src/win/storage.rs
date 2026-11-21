@@ -12,9 +12,10 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 };
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, OPEN_EXISTING, BusTypeMmc, BusTypeSd, BusTypeUsb,
+    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, GetLogicalDrives, GetDiskFreeSpaceExW, GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, OPEN_EXISTING, SetVolumeLabelW, BusType1394, BusTypeAta, BusTypeAtapi, BusTypeFibre, BusTypeFileBackedVirtual, BusTypeMmc, BusTypeNvme, BusTypeRAID, BusTypeSCM, BusTypeSas, BusTypeSata, BusTypeScsi, BusTypeSd, BusTypeSsa, BusTypeSpaces, BusTypeUfs, BusTypeUsb, BusTypeVirtual, BusTypeiScsi, STORAGE_BUS_TYPE,
 };
 use windows::Win32::System::IO::DeviceIoControl;
+use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
 use windows::Win32::System::Ioctl::{
     DEVICE_SEEK_PENALTY_DESCRIPTOR, GET_LENGTH_INFORMATION, GUID_DEVINTERFACE_DISK, IOCTL_DISK_GET_LENGTH_INFO, IOCTL_STORAGE_EJECT_MEDIA, IOCTL_STORAGE_GET_DEVICE_NUMBER, IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery, STORAGE_DESCRIPTOR_HEADER, STORAGE_DEVICE_DESCRIPTOR, STORAGE_DEVICE_NUMBER, STORAGE_PROPERTY_QUERY, StorageDeviceProperty, StorageDeviceSeekPenaltyProperty,
 };
@@ -58,12 +59,12 @@ pub fn volumes() -> Vec<Volume> {
         let network = kind.0 == "Network Drive";
         let share_uri = if network { crate::win::wnet::connection_for(&root).as_deref().and_then(|unc| crate::win::wnet::smb_for_unc(std::path::Path::new(unc))).unwrap_or_default() } else { String::new() };
         let internal_fixed = kind.1 == false && kind.2 == false && letter_is_fixed(&root) && disk.bus != "usb";
-        out.push(Volume {
+        let mut volume = Volume {
             device: root.clone(),
             // Without a label Explorer's name for the kind: "Local Disk", "Removable Disk"…
             label: if label.is_empty() { kind.0.to_string() } else { label },
             fs_type: fs,
-            size: disk.length.unwrap_or(0),
+            size: volume_size(&root),
             mount_points: vec![PathBuf::from(&root)],
             drive_name: disk.model,
             removable: kind.1 || disk.removable,
@@ -73,6 +74,7 @@ pub fn volumes() -> Vec<Volume> {
             block_object: root.clone(),
             drive_object: root.clone(),
             share_uri,
+            network,
             // An empty drive (no media in a tray or reader) has nothing to mount.
             mountable: have_media,
             // The system's own drive and mapped network drives get no unmount button
@@ -85,7 +87,15 @@ pub fn volumes() -> Vec<Volume> {
             bus: disk.bus,
             rotation_rate: disk.rotation,
             ..Default::default()
-        });
+        };
+        // The device's own length, which is what the device icon prints, where the machine answers it;
+        // an un-elevated instance is refused that query here, and the shape's evidence line then names the
+        // volume's size as what is shown (docs\WINDOWS.md).
+        volume.drive_size = device_length(letter).or(disk.length).unwrap_or(0);
+        // The file systems this volume could be formatted to, read from the tool that would do it and
+        // narrowed to this volume (README: *Formatting a volume*); empty for a volume the gate refuses.
+        volume.supported_file_systems = crate::fsformat::offer(&volume);
+        out.push(volume);
     }
     crate::drives::sort_volumes(&mut out);
     out
@@ -193,6 +203,50 @@ fn disk_info(letter: char) -> Option<DiskInfo> {
     Some(out)
 }
 
+/// What the volume's own file system holds: the total bytes of it. The disk-length query is refused
+/// (win32 5) to the volume handle an un-elevated instance opens, while this answers for every lettered
+/// volume on this machine (docs\WINDOWS.md) — and without a size the format page cannot narrow the file
+/// systems it offers at all, so a volume holding media would be refused a format for a size it does have.
+fn volume_size(root: &str) -> u64 {
+    let (mut available, mut total, mut free) = (0u64, 0u64, 0u64);
+    unsafe { GetDiskFreeSpaceExW(PCWSTR(wide_text(root).as_ptr()), Some(&raw mut available), Some(&raw mut total), Some(&raw mut free)) }.map(|_| total).unwrap_or(0)
+}
+
+/// The whole device's length, which is what the device icon prints. Refused to an un-elevated instance on
+/// this build, so it answers nothing there and the window says which size it is showing instead of passing
+/// a volume's total off as the device's.
+fn device_length(letter: char) -> Option<u64> {
+    let number = disk_number(letter)?;
+    let h = unsafe { CreateFileW(PCWSTR(wide_text(&format!("\\\\.\\PhysicalDrive{number}")).as_ptr()), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, None, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES(0), None) }.ok()?;
+    let mut length = GET_LENGTH_INFORMATION::default();
+    let mut got = 0u32;
+    let ok = unsafe { DeviceIoControl(h, IOCTL_DISK_GET_LENGTH_INFO, None, 0, Some(&raw mut length as *mut _ as *mut c_void), std::mem::size_of::<GET_LENGTH_INFORMATION>() as u32, Some(&raw mut got), None) }.is_ok();
+    let _ = unsafe { CloseHandle(h) };
+    ok.then_some(length.Length as u64).filter(|length| *length > 0)
+}
+
+/// The letter of the volume Windows itself lives on, from the machine's own answer. This is the volume the
+/// format gate refuses as the system's: the drives model's `system` flag marks an internal fixed volume so
+/// that it gets no unmount button, and three lettered fixed volumes answer it here while only one holds
+/// Windows. Measured: `GetSystemWindowsDirectoryW` answers `C:\WINDOWS`, and the boot volume beside it
+/// carries no letter for the page to reach.
+pub fn system_volume_letter() -> Option<char> {
+    let mut buffer = [0u16; 261];
+    let taken = unsafe { GetSystemWindowsDirectoryW(Some(&mut buffer)) } as usize;
+    if taken < 3 { return None; }
+    crate::fsformat::drive_letter(&String::from_utf16_lossy(&buffer[..taken]))
+}
+
+/// The volume's own name, written by the call Explorer's Label row and `vol` read back. The answer of a
+/// refusal is the win32 code alone, because the caller has to tell one answer apart from another: `5` means
+/// the rights are what is missing, which is what sends an internal volume to the privileged run of this
+/// program (`fsformat::act`), while every other code is the machine refusing the name or the volume and is
+/// told to the user as it stands.
+pub fn set_label(root: &str, label: &str) -> Result<(), i32> {
+    unsafe { SetVolumeLabelW(PCWSTR(wide_text(root).as_ptr()), PCWSTR(wide_text(label).as_ptr())) }
+        .map_err(|e| (e.code().0 as u32 & 0xFFFF) as i32)
+}
+
 /// Opens the volume device (`\\.\C:`) for queries; no access rights needed for those.
 fn open_volume(letter: char) -> Option<windows::Win32::Foundation::HANDLE> {
     unsafe { CreateFileW(PCWSTR(wide_text(&format!("\\\\.\\{letter}:")).as_ptr()), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, None, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES(0), None) }.ok()
@@ -204,7 +258,7 @@ fn storage_property(h: windows::Win32::Foundation::HANDLE, property: i32) -> Opt
     let mut got = 0u32;
     unsafe {
         DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, Some(&query as *const _ as *const c_void), std::mem::size_of::<STORAGE_PROPERTY_QUERY>() as u32, Some(&mut header as *mut _ as *mut c_void), std::mem::size_of::<STORAGE_DESCRIPTOR_HEADER>() as u32, Some(&raw mut got), None).ok()?;
-        if header.Size <= 0 {
+        if header.Size == 0 {
             return None;
         }
         let mut buf = vec![0u8; header.Size as usize];
@@ -214,10 +268,23 @@ fn storage_property(h: windows::Win32::Foundation::HANDLE, property: i32) -> Opt
     }
 }
 
-/// A storage bus in the drives model's words ("usb", "sdio", empty for internal).
+/// A storage bus in the drives model's words. Wherever the machine has a word for the bus it answers,
+/// that word is kept, because the device shape the icon is drawn for and the *Connection:* row both read
+/// it: an NVMe drive, a SATA disk and an ATA disk behind a controller are not the same device to draw.
+/// Only an answer the machine itself calls unknown, and a number it has no name for, stay empty.
 fn bus_name(bus: i32) -> String {
-    if bus == BusTypeUsb.0 { "usb".into() } else if bus == BusTypeSd.0 || bus == BusTypeMmc.0 { "sdio".into() } else { String::new() }
+    BUSES.iter().find(|(known, _)| known.0 == bus).map(|(_, word)| (*word).to_string()).unwrap_or_default()
 }
+
+/// The buses this build's `STORAGE_BUS_TYPE` answers with and the word each one is shown as. The numbers
+/// are the API's own, taken from its metadata, so nothing here is a guess about a driver's value; the
+/// words are the drives model's. `BusTypeSd` keeps the word "sdio" the model has always used.
+const BUSES: &[(STORAGE_BUS_TYPE, &str)] = &[
+    (BusTypeScsi, "scsi"), (BusTypeAtapi, "atapi"), (BusTypeAta, "ata"), (BusType1394, "ieee1394"), (BusTypeSsa, "ssa"),
+    (BusTypeFibre, "fibre"), (BusTypeUsb, "usb"), (BusTypeRAID, "raid"), (BusTypeiScsi, "iscsi"), (BusTypeSas, "sas"),
+    (BusTypeSata, "sata"), (BusTypeSd, "sdio"), (BusTypeMmc, "mmc"), (BusTypeSpaces, "spaces"), (BusTypeVirtual, "virtual"),
+    (BusTypeFileBackedVirtual, "virtual"), (BusTypeNvme, "nvme"), (BusTypeSCM, "scm"), (BusTypeUfs, "ufs"),
+];
 
 /// The drive letter's own type again (the `kind` name alone cannot tell a USB-HDD from an
 /// internal one — the bus can, but a query can fail; this stays true for what GetDriveType saw).
@@ -354,7 +421,47 @@ mod tests {
     fn bus_names_match_the_drives_model() {
         assert_eq!(bus_name(BusTypeUsb.0), "usb");
         assert_eq!(bus_name(BusTypeSd.0), "sdio");
-        assert_eq!(bus_name(3), "");
+        assert_eq!(bus_name(BusTypeMmc.0), "mmc");
+        assert_eq!(bus_name(BusTypeNvme.0), "nvme");
+        assert_eq!(bus_name(BusTypeSata.0), "sata");
+        assert_eq!(bus_name(BusTypeAta.0), "ata");
+        assert_eq!(bus_name(BusTypeAtapi.0), "atapi");
+        assert_eq!(bus_name(BusTypeScsi.0), "scsi");
+        assert_eq!(bus_name(BusTypeRAID.0), "raid");
+        assert_eq!(bus_name(BusTypeVirtual.0), "virtual");
+        assert_eq!(bus_name(BusTypeFileBackedVirtual.0), "virtual");
+        assert_eq!(bus_name(BusType1394.0), "ieee1394");
+        assert_eq!(bus_name(windows::Win32::Storage::FileSystem::BusTypeUnknown.0), "", "an answer the machine itself calls unknown is left empty");
+        assert_eq!(bus_name(windows::Win32::Storage::FileSystem::BusTypeMaxReserved.0), "", "a number the API has no name for is nobody's word");
+    }
+
+    /// The size the format page narrows its file systems by and the one the device icon prints: a volume
+    /// that holds media has to name a size, or it would be refused a format for a size it does have. The
+    /// disk-length query is refused to an un-elevated instance on this build, which is why the total comes
+    /// from the call that does answer (docs\WINDOWS.md).
+    #[test]
+    fn every_volume_holding_media_names_a_size() {
+        let vols = volumes();
+        assert!(!vols.is_empty(), "the machine is expected to have lettered volumes");
+        for v in vols.iter().filter(|v| v.mountable) {
+            eprintln!("{}: size {}, drive size {}", v.device, v.size, v.drive_size);
+            assert!(v.size > 0, "{} holds media but names no size, so no file system could be chosen for it", v.device);
+        }
+    }
+
+    /// The buses and the formats of the volumes this machine actually has, printed for the record
+    /// (docs\WINDOWS.md): the point is that the words are the model's own and that the offer a window
+    /// would show is the same answer the format gate gives, whatever the hardware in front of it is.
+    #[test]
+    fn every_volume_offers_exactly_what_the_format_gate_answers() {
+        for v in volumes() {
+            eprintln!("{}: bus {:?}, rotation {}, formats {:?}", v.device, v.bus, v.rotation_rate, v.supported_file_systems);
+            assert!(v.bus.is_empty() || BUSES.iter().any(|(_, word)| *word == v.bus), "{} answers its bus as {:?}, which is no word of the model's", v.device, v.bus);
+            for word in &v.supported_file_systems {
+                assert!(crate::fsformat::FileSystem::parse(word).is_some(), "{word} is no file system of the format table");
+            }
+            assert_eq!(v.supported_file_systems.is_empty(), crate::fsformat::refusal(&v).is_some(), "{}: the field and the gate answer differently about {:?}", v.device, v.supported_file_systems);
+        }
     }
 
     #[test]

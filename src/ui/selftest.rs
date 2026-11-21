@@ -17,11 +17,11 @@
 //! `shortcut-menu <entry> : <item>` (`Show Hidden Entry/<name>` for the submenu),
 //! `shortcut-drag <entry> > <before entry>`, `shortcut-drop <folder> > <before entry>`,
 //! `window-snapshot <png>`, `wait-error <text>`, `wait-dialog <text>`,
-//! `dialog-button <dialog text> : <button>`, `dialog-entry <dialog text> = <text>`, `expect-dialog-entry <dialog text> = <text>`, `wait-no-dialog <text>`, `properties-choose-app <desktop id>`, `clipboard-text <text>`, `batch-set <field> = <value>`, `dialog-set <dialog> : <field> = <value>`, `expect-dialog-label <dialog> : <text>`, `network-add-server`, `expect-batch-preview <a -> b | …>`, `expect-batch-status <text>`, `properties-button <label>`, `wait-properties-text <text>`,
+//! `dialog-button <dialog text> : <button>`, `dialog-entry <dialog text> = <text>`, `expect-dialog-entry <dialog text> = <text>`, `wait-no-dialog <text>`, `properties-choose-app <desktop id>`, `clipboard-text <text>`, `batch-set <field> = <value>`, `dialog-set <dialog> : <field> = <value>`, `expect-dialog-label <dialog> : <text>`, `network-add-server`, `expect-batch-preview <a -> b | …>`, `expect-batch-status <text>`, `properties-button <label>`, `wait-properties-text <text>`, `properties-set <field> = <value>`, `expect-properties-button <label> = none|off|on`, `expect-format-button = none|off|on`, `format-set <field> = <value>`, `format-accept`, `expect-format-text <text>`, `expect-no-format-text <text>`, `icon-set <field> = <value>`, `expect-icon-text <text>`, `expect-icon-button = none|off|on`, `icon-accept`, `expect-drive-picture <title> : <file name>|none`,
 //! `expect-default-app <content type> = <desktop id>`, `fake-phone <name> = <folder>`,
 //! `wait-drive-text <title> : <text>`, `wait-no-drive-text <title> : <text>`,
-//! `drive-button <title> : <row text> : <button>`, `expect-tabs <a | b>`, `expect-title <text>`,
-//! `fake-share <folder>`, `fake-image <file> = <folder>`, `sleep-begin`, `sleep-end`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `wait-duplicates <n>`, `setenv NAME=value`, `wait-update-checked`, `expect-update-status <text>`, `wait-update-progress <text> @ <percent>`, `update-choose <release|source>`, `update-start`, `wait-update-done`, `run <command>`, `wait-file-text <path> = <text>`, `wait-chooser`, `chooser-open <folder>`, `chooser-select <a | b>`, `expect-chooser-rows <a | b>`, `chooser-name <text>`, `chooser-filter <n>`, `chooser-accept`, `chooser-cancel`, `chooser-activate`, `expect-duplicate-group <*kept | …>`, `duplicate-keep <name>`, `duplicate-click <delete|skip|previous>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `expect-file-mode <path> = <octal>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
+//! `drive-button <title> : <row text> : <button>`, `drives-menu <title> : <item>`, `expect-no-format-text <text>`, `expect-tabs <a | b>`, `expect-title <text>`,
+//! `fake-share <folder>`, `fake-image <file> = <folder>`, `fake-volume <label> = <folder> : <file system> [: <offer, …>]`, `sleep-begin`, `sleep-end`, `expect-menu-item <label>`, `wait-compare-rows <rows>`, `wait-duplicates <n>`, `setenv NAME=value`, `wait-update-checked`, `expect-update-status <text>`, `wait-update-progress <text> @ <percent>`, `update-choose <release|source>`, `update-start`, `wait-update-done`, `run <command>`, `wait-file-text <path> = <text>`, `wait-chooser`, `chooser-open <folder>`, `chooser-select <a | b>`, `expect-chooser-rows <a | b>`, `chooser-name <text>`, `chooser-filter <n>`, `chooser-accept`, `chooser-cancel`, `chooser-activate`, `expect-duplicate-group <*kept | …>`, `duplicate-keep <name>`, `duplicate-click <delete|skip|previous>`, `compare-show-identical <on|off>`, `compare-copy <left|right>`, `close-compare`, `expect-no-menu-item <label>`, `expect-file-mode <path> = <octal>`, `fake-job <seconds> <MB>`, `wait-progress-chart <points>`, `expect-progress-text <text>`, `progress-snapshot <png>`,
 //! `expect-network-subtitle <row> = <text>`, `wait-side-drive <name> : <place>`, `wait-no-side-drive <name>`, `expect-no-side-drive-at <path>`,
 //! `side-drive-click <name> : <place>`, `side-drive-menu <name> : <place> : <item>`,
 //! the Git steps of `git/testing.rs`,
@@ -80,18 +80,28 @@ pub fn script_path() -> Option<String> {
     std::env::var("FB_SELFTEST").ok().filter(|s| !s.is_empty())
 }
 
+/// A pending `wait` step: when it started and the check that must answer true before the budget runs
+/// out. A check that gets to explain what it saw writes into `Runner::note`.
+type Wait = (Instant, Box<dyn Fn(&Runner) -> Result<bool, String>>);
+
 struct Runner {
     steps: VecDeque<(usize, String)>,
     window: Rc<Window>,
     app: Rc<AppCtx>,
-    waiting: Option<(Instant, Box<dyn Fn(&Runner) -> Result<bool, String>>)>,
+    waiting: Option<Wait>,
+    /// What the current wait last saw, when that is worth more than "timed out": a file's text, a
+    /// row list. The timeout message appends it; `wait` starts each wait with an empty one.
+    note: RefCell<Option<String>>,
     /// The step being run or waited for, for failure messages.
     current: (usize, String),
 }
 
+/// Ends the run of a scenario that cannot go on. The end goes through `vcs::run::end_and_exit`
+/// rather than `std::process::exit`, because `main`'s tail — where the clients of reads still in
+/// flight are ended — is never reached from here (docs\TOOL-STARTS.md).
 fn fail(line: usize, msg: &str) -> ! {
     eprintln!("SELFTEST FAIL (line {line}): {msg}");
-    std::process::exit(1);
+    failbrauwser::vcs::run::end_and_exit(1);
 }
 
 pub fn start(app: &Rc<AppCtx>, window: &Rc<Window>) {
@@ -102,7 +112,7 @@ pub fn start(app: &Rc<AppCtx>, window: &Rc<Window>) {
     }
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         eprintln!("SELFTEST FAIL: cannot read {path}: {e}");
-        std::process::exit(2);
+        failbrauwser::vcs::run::end_and_exit(2);
     });
     let steps = text
         .lines()
@@ -122,7 +132,7 @@ pub fn start(app: &Rc<AppCtx>, window: &Rc<Window>) {
         })
         .filter(|(_, l)| !l.is_empty() && !l.starts_with('#'))
         .collect();
-    let runner = Rc::new(RefCell::new(Runner { steps, window: window.clone(), app: app.clone(), waiting: None, current: (0, String::new()) }));
+    let runner = Rc::new(RefCell::new(Runner { steps, window: window.clone(), app: app.clone(), waiting: None, note: Default::default(), current: (0, String::new()) }));
     glib::timeout_add_local(Duration::from_millis(50), move || {
         let mut r = runner.borrow_mut();
         if let Some((since, check)) = r.waiting.take() {
@@ -142,10 +152,11 @@ pub fn start(app: &Rc<AppCtx>, window: &Rc<Window>) {
                         _ => Vec::new(),
                     };
                     let selected: Vec<String> = p.selected_items().iter().map(|i| i.display_name()).collect();
+                    let note = r.note.borrow().clone().map(|n| format!(", {n}")).unwrap_or_default();
                     fail(
                         r.current.0,
                         &format!(
-                            "{}: timed out (location {}, {} rows, selected {:?}, archive root {:?}, error {:?}, loading {}, jobs busy {})",
+                            "{}: timed out (location {}, {} rows, selected {:?}, archive root {:?}, error {:?}, loading {}, jobs busy {}{note})",
                             r.current.1,
                             p.location().display(),
                             p.item_count(),
@@ -162,7 +173,7 @@ pub fn start(app: &Rc<AppCtx>, window: &Rc<Window>) {
         }
         let Some((line, step)) = r.steps.pop_front() else {
             println!("SELFTEST OK");
-            std::process::exit(0);
+            failbrauwser::vcs::run::end_and_exit(0);
         };
         r.current = (line, step.clone());
         if let Err(e) = run_step(&mut r, &step) {
@@ -231,10 +242,44 @@ fn find_named(w: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
 /// The Properties dialog shown.
 #[allow(deprecated)]
 fn properties_dialog() -> Option<gtk::Dialog> {
+    titled_dialog("— Properties")
+}
+
+/// The Format dialog shown.
+#[allow(deprecated)]
+fn format_dialog() -> Option<gtk::Dialog> {
+    titled_dialog("— Format")
+}
+
+/// The Device icon window shown — the shape a device icon is drawn for (README: *Device icons*).
+#[allow(deprecated)]
+fn icon_dialog() -> Option<gtk::Dialog> {
+    titled_dialog("— Device icon")
+}
+
+/// The shown dialog whose title ends with these words (the Properties window, the Format window …).
+#[allow(deprecated)]
+fn titled_dialog(suffix: &str) -> Option<gtk::Dialog> {
     gtk::Window::list_toplevels()
         .into_iter()
         .filter_map(|w| w.downcast::<gtk::Dialog>().ok())
-        .find(|d| d.is_visible() && d.title().is_some_and(|t| t.ends_with("— Properties")))
+        .find(|d| d.is_visible() && d.title().is_some_and(|t| t.ends_with(suffix)))
+}
+
+/// Tells a scenario what a button of a dialog answers: `none` where it is not shown at all, `off` where it
+/// is shown but cannot be pressed, `on` where it can. The windows of the acts show a control only where
+/// that control has something to do, so a scenario reads its absence as an answer and not as a miss.
+fn expect_button(w: &gtk::Widget, label: &str, want: &str) -> Result<(), String> {
+    let got = match find_button(w, label) {
+        None => "none",
+        Some(b) if !b.is_visible() => "none",
+        Some(b) if !b.is_sensitive() => "off",
+        Some(_) => "on",
+    };
+    if got != want {
+        return Err(format!("button {label:?} is {got}, not {want}"));
+    }
+    Ok(())
 }
 
 /// A button under `w` whose label (without mnemonic marks) is `label`.
@@ -494,6 +539,95 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let want = arg.to_string();
             wait(r, move |_| Ok(properties_dialog().is_some_and(|d| label_texts(d.upcast_ref()).iter().any(|t| t.contains(&want)))));
         }
+        "properties-set" => {
+            // properties-set <field name> = <value>: types into a named field of the open Properties dialog.
+            let (name, value) = arg.split_once(" = ").map(|(n, v)| (n.trim(), v)).ok_or("usage: properties-set <field> = <value>")?;
+            let d = properties_dialog().ok_or("no Properties dialog")?;
+            set_field(&find_named(d.upcast_ref(), name).ok_or("no such field")?, value)?;
+        }
+        "expect-properties-button" => {
+            // expect-properties-button <label> = none|off|on: that button of the open Properties dialog is
+            // not shown, shown and disabled, or shown and pressable.
+            let (label, want) = arg.split_once(" = ").ok_or("usage: expect-properties-button <label> = none|off|on")?;
+            let d = properties_dialog().ok_or("no Properties dialog")?;
+            expect_button(d.upcast_ref(), label.trim(), want)?;
+        }
+        "format-set" => {
+            // format-set <field name> = <value>: a field of the open Format dialog.
+            let (name, value) = arg.split_once(" = ").map(|(n, v)| (n.trim(), v)).ok_or("usage: format-set <field> = <value>")?;
+            let d = format_dialog().ok_or("no Format dialog")?;
+            set_field(&find_named(d.upcast_ref(), name).ok_or("no such field")?, value)?;
+        }
+        "expect-format-text" => {
+            // expect-format-text <text>: a label the open Format dialog shows holds these words.
+            let d = format_dialog().ok_or("no Format dialog")?;
+            let texts = label_texts(d.upcast_ref());
+            if !texts.iter().any(|t| t.contains(arg)) {
+                return Err(format!("labels: {texts:?}"));
+            }
+        }
+        "expect-no-format-text" => {
+            // expect-no-format-text <text>: no label the open Format dialog shows holds these words, which
+            // is how a scenario pins that an option a file system has no switch for shows no row at all.
+            let d = format_dialog().ok_or("no Format dialog")?;
+            let texts = label_texts(d.upcast_ref());
+            if texts.iter().any(|t| t.contains(arg)) {
+                return Err(format!("a label holds {arg:?}: {texts:?}"));
+            }
+        }
+        "expect-format-button" => {
+            // expect-format-button = none|off|on: the Format dialog's own Format button, where `none` also
+            // answers when the window itself is gone — a scenario reads its end as an answer.
+            let want = arg.trim().trim_start_matches('=').trim();
+            match format_dialog() {
+                Some(d) => expect_button(d.upcast_ref(), "Format", want)?,
+                None if want == "none" => {}
+                None => return Err("no Format dialog".into()),
+            }
+        }
+        "format-accept" => {
+            // Presses the Format dialog's Format button — the act it starts is the machine's own act, so a
+            // scenario only drives it against a volume the act refuses (a stand-in with no drive letter).
+            let d = format_dialog().ok_or("no Format dialog")?;
+            let b = find_button(d.upcast_ref(), "Format").ok_or("no Format button")?;
+            if !b.is_sensitive() {
+                return Err("the button is disabled".into());
+            }
+            b.clicked();
+        }
+        "icon-set" => {
+            // icon-set <field name> = <value>: a field of the open Device icon window.
+            let (name, value) = arg.split_once(" = ").map(|(n, v)| (n.trim(), v)).ok_or("usage: icon-set <field> = <value>")?;
+            let d = icon_dialog().ok_or("no Device icon window")?;
+            set_field(&find_named(d.upcast_ref(), name).ok_or("no such field")?, value)?;
+        }
+        "expect-icon-text" => {
+            // expect-icon-text <text>: a label the open Device icon window shows holds these words.
+            let d = icon_dialog().ok_or("no Device icon window")?;
+            let texts = label_texts(d.upcast_ref());
+            if !texts.iter().any(|t| t.contains(arg)) {
+                return Err(format!("labels: {texts:?}"));
+            }
+        }
+        "expect-icon-button" => {
+            // expect-icon-button = none|off|on: that window's Create button.
+            let want = arg.trim().trim_start_matches('=').trim();
+            match icon_dialog() {
+                Some(d) => expect_button(d.upcast_ref(), "Create", want)?,
+                None if want == "none" => {}
+                None => return Err("no Device icon window".into()),
+            }
+        }
+        "icon-accept" => {
+            // Presses the Device icon window's Create button. The act it starts is driven against a volume the
+            // act refuses, so no volume of this machine is written by a scenario.
+            let d = icon_dialog().ok_or("no Device icon window")?;
+            let b = find_button(d.upcast_ref(), "Create").ok_or("no Create button")?;
+            if !b.is_sensitive() {
+                return Err("the button is disabled".into());
+            }
+            b.clicked();
+        }
         "properties-choose-app" => {
             // In the open Properties dialog, picks the application with this desktop id.
             #[allow(deprecated)]
@@ -662,9 +796,22 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             }
         }
         "run" => {
-            // run <shell command>: started, not waited for.
-            let mut c = std::process::Command::new("sh");
-            c.arg("-c").arg(arg);
+            // run <command line>: started, not waited for. The line goes to the platform's own shell,
+            // as a custom action does (src/ui/customactions.rs): the scenario's paths are the harness's
+            // paths, and a POSIX shell would eat the backslashes of a Windows one.
+            #[cfg(windows)]
+            let (shell, flag) = ("cmd", "/C");
+            #[cfg(not(windows))]
+            let (shell, flag) = ("sh", "-c");
+            let mut c = std::process::Command::new(shell);
+            c.arg(flag).arg(arg);
+            // In the folder the window is looking at, which is what a `cd` in the line starts from:
+            // the harness launches this program from its own folder, and there a Windows `cd` of an
+            // absolute path cannot leave its drive (without /D), so the command would run somewhere
+            // else entirely — git_overlays.fbt's commit landed in the repository that happened to be
+            // the launch folder instead of the fixture's.
+            let cwd: std::path::PathBuf = w.current_location().nearest_dir().unwrap_or_else(glib::home_dir);
+            c.current_dir(cwd);
             #[cfg(windows)]
             failbrauwser::win::console::no_window(&mut c);
             c.spawn().map_err(|e| e.to_string())?;
@@ -678,10 +825,22 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
         }
         "use-newest-window" => r.window = r.app.windows().last().cloned().ok_or("no window")?,
         "wait-file-text" => {
-            // wait-file-text <path> = <text it contains>
+            // wait-file-text <path> = <text it contains>. A timeout also names what the file did
+            // hold: "timed out" alone cannot tell a checkout that landed on another commit from a
+            // file that never arrived, and the two want different fixes.
             let (path, want) = arg.split_once(" = ").ok_or("usage: wait-file-text <path> = <text>")?;
             let (path, want) = (path.to_string(), want.to_string());
-            wait(r, move |_| Ok(std::fs::read_to_string(&path).is_ok_and(|t| t.contains(&want))));
+            wait(r, move |r| {
+                let got = std::fs::read_to_string(&path);
+                let hit = got.as_ref().is_ok_and(|t| t.contains(&want));
+                if !hit {
+                    *r.note.borrow_mut() = Some(match got {
+                        Ok(t) => format!("{path} holds {:?}", t.chars().take(120).collect::<String>()),
+                        Err(e) => format!("{path} is unreadable: {e}"),
+                    });
+                }
+                Ok(hit)
+            });
         }
         "wait-chooser" => wait(r, |_| Ok(super::chooser::current().is_some_and(|(_, w)| !w.current_pane().is_loading()))),
         "chooser-open" => {
@@ -1236,6 +1395,12 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let want = arg.to_string();
             wait(r, move |r| Ok(super::drives::shown_volumes(&r.window.current_pane()).iter().any(|v| v.title() == want)));
         }
+        "drives-menu" => {
+            // drives-menu <title> : <item>: activates that item of the right-click menu of the drive with
+            // this title, without popping the menu up. Any row of that drive answers, so the item names it.
+            let (title, item) = arg.split_once(" : ").ok_or("usage: drives-menu <title> : <item>")?;
+            super::drives::menu_item(&w.current_pane(), title.trim(), "", item.trim())?;
+        }
         "fake-phone" => {
             // fake-phone <name> = <folder>: a phone whose storages are the folder's subfolders.
             let (name, dir) = arg.split_once(" = ").ok_or("usage: fake-phone <name> = <folder>")?;
@@ -1251,6 +1416,15 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
                 None => (pass, false),
             };
             super::drives::add_fake(label.trim(), PathBuf::from(dir.trim()), pass, lvm);
+        }
+        "fake-volume" => {
+            // fake-volume <label> = <folder> : <file system> [: <offer, …>]: a volume whose file system and
+            // whose format offer are the scenario's own words, so the format window is driven over a
+            // stand-in and never over a volume this machine actually holds.
+            let (label, rest) = arg.split_once(" = ").ok_or("usage: fake-volume <label> = <folder> : <file system> [: <offer, …>]")?;
+            let (dir, tail) = rest.split_once(" : ").ok_or("usage: fake-volume <label> = <folder> : <file system> [: <offer, …>]")?;
+            let (fs, offer) = tail.split_once(" : ").map_or((tail, ""), |(f, o)| (f, o));
+            super::drives::add_fake_volume(label.trim(), PathBuf::from(dir.trim()), fs.trim(), offer.split(',').map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect());
         }
         "fake-host" => {
             // fake-host <name> = <share>:<folder>, … [: <password>]: a computer on the network
@@ -1307,6 +1481,33 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             let (title, text) = arg.split_once(" : ").ok_or("usage: wait-no-drive-text <title> : <text>")?;
             let (title, text) = (title.trim().to_string(), text.trim().to_string());
             wait(r, move |r| Ok(!super::drives::row_texts(&r.window.current_pane(), &title).iter().any(|t| t.contains(&text))));
+        }
+        "expect-drive-picture" => {
+            // expect-drive-picture <title> : <file name>|none — the picture this volume names for itself: the
+            // image its own marked files point at, and whether those bytes reach pixels at all (README:
+            // *Device icons*). `none` is the answer for a volume that names no picture at all — nothing read and
+            // nothing drawn — which is what a volume with nothing of ours, a folder that is not mounted, and a
+            // file no icon this program reads are all shown as.
+            let (title, want) = arg.split_once(" : ").ok_or("usage: expect-drive-picture <title> : <file name>|none")?;
+            let title = title.trim();
+            let v = super::drives::shown_volumes(&w.current_pane()).into_iter().find(|v| v.title() == title).ok_or(format!("no drive {title:?}"))?;
+            match want.trim() {
+                "none" => {
+                    if let Some(named) = v.picture_file.as_ref() { return Err(format!("{title} names {named:?} as its picture where its files should name none")); }
+                    if super::icons::volume_picture(&v, gtk::IconSize::Dialog).is_some() {
+                        return Err(format!("{title} draws a picture of its own where its files name none"));
+                    }
+                }
+                file => {
+                    let named = v.picture_file.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    if named != file {
+                        return Err(format!("{title} names {named:?} as its picture, not {file:?}"));
+                    }
+                    if super::icons::volume_picture(&v, gtk::IconSize::Dialog).is_none() {
+                        return Err(format!("the picture {file:?} of {title} does not reach pixels"));
+                    }
+                }
+            }
         }
         "drive-button" => {
             // drive-button <title> : <text in the row> : <button>
@@ -1416,9 +1617,20 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
             wait(r, move |r| Ok(r.window.current_location() == want && idle(r)));
         }
         "screenshot" => {
+            // The whole-screen picture a menu inventory keeps: `grim` is the Wayland capture tool, and
+            // where it is not installed there is nothing to run. The step says so out loud instead of
+            // failing, because what the scenario asserts are the `expect-*` steps around it.
+            if gtk::glib::find_program_in_path("grim").is_none() {
+                println!("screenshot skipped: no grim to capture the screen with");
+                return Ok(());
+            }
             let file = arg.to_string();
             // Let GTK paint first.
-            let status = std::process::Command::new("grim").arg(&file).status().map_err(|e| e.to_string())?;
+            let mut c = std::process::Command::new("grim");
+            c.arg(&file).stdin(std::process::Stdio::null());
+            #[cfg(windows)]
+            failbrauwser::win::console::no_window(&mut c); // the rule in tests\source_rules.rs: no start raises a window
+            let status = c.status().map_err(|e| e.to_string())?;
             if !status.success() {
                 return Err("grim failed".into());
             }
@@ -1435,7 +1647,7 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
         }
         "quit" => {
             println!("SELFTEST OK");
-            std::process::exit(0);
+            failbrauwser::vcs::run::end_and_exit(0);
         }
         _ => match super::vcs::testing::step(&w, cmd, arg) {
             Some(Ok(Some(check))) => wait(r, move |_| check()),
@@ -1448,5 +1660,6 @@ fn run_step(r: &mut Runner, step: &str) -> Result<(), String> {
 }
 
 fn wait(r: &mut Runner, check: impl Fn(&Runner) -> Result<bool, String> + 'static) {
+    *r.note.borrow_mut() = None;
     r.waiting = Some((Instant::now(), Box::new(check)));
 }

@@ -11,6 +11,11 @@ fn have(tool: &str) -> bool {
     Command::new("sh").arg("-c").arg(format!("command -v {tool}")).output().is_ok_and(|o| o.status.success())
 }
 
+#[cfg(windows)]
+fn have(tool: &str) -> bool {
+    Command::new("where").arg(tool).output().is_ok_and(|o| o.status.success())
+}
+
 /// The plain-Python twin's name differs by platform.
 fn python() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
@@ -19,6 +24,17 @@ fn python() -> &'static str {
 /// A path inside a Python string literal: doubled backslashes, which a Unix path never has.
 fn pysafe(p: &Path) -> String {
     p.display().to_string().replace('\\', "\\\\")
+}
+
+/// The archive helper a scenario reads inside an archive through: what the machine names, or this
+/// checkout's own built helper. cargo never builds the C# side, so a built one can be absent.
+fn archive_helper() -> Option<std::path::PathBuf> {
+    let name = if cfg!(windows) { "fb-archive.exe" } else { "fb-archive" };
+    if let Some(p) = std::env::var_os("FB_ARCHIVE_HELPER") && Path::new(&p).is_file() {
+        return Some(std::path::PathBuf::from(p));
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    [format!("helper/FbArchive/bin/Release/net10.0/{name}"), format!("helper/FbArchive/bin/Debug/net10.0/{name}"), format!("target/helper/{name}")].iter().map(|p| root.join(p)).find(|p| p.is_file())
 }
 
 fn run(script: &str, setup: impl FnOnce(&Path)) {
@@ -48,26 +64,44 @@ fn drive(script: &str, dir: &Path, env: &[(&str, &str)], setup: impl FnOnce(&Pat
     }
     setup(dir);
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // The win32 twin of that harness: same arguments, same contract, same "SELFTEST OK".
     #[cfg(unix)]
-    let out = Command::new(root.join("tests/ui/harness.sh"))
-        .envs(env.iter().copied())
-        .arg(env!("CARGO_BIN_EXE_failbrauwser"))
-        .arg(root.join("tests/ui").join(script))
-        .arg(dir)
-        .output()
-        .unwrap();
+    let mut run = Command::new(root.join("tests/ui/harness.sh"));
     #[cfg(windows)]
-    let out = Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(root.join("tests/ui/harness.ps1"))
-        .envs(env.iter().copied())
+    let mut run = {
+        let mut c = Command::new("powershell");
+        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(root.join("tests/ui/harness.ps1"));
+        c
+    };
+    // A step that reads inside an archive asks the C# helper, and `archive::locate_helper` answers
+    // the bare name `fb-archive` when it finds no file: the step then finds nothing of its own,
+    // quietly. `search.fbt` read 0 rows for its archive hit here three times on 2026-11-17 until the
+    // built helper was named, which is why the scenario names it rather than trusting the machine.
+    let helper = archive_helper();
+    let mut env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    match &helper {
+        Some(p) => env.push(("FB_ARCHIVE_HELPER".into(), p.display().to_string())),
+        None => eprintln!("{script}: no built archive helper — a step reading inside an archive finds nothing (dotnet build helper/FbArchive -c Release)"),
+    }
+    // The harness answers into a file rather than a pipe, so that a tool still running when the run
+    // ends cannot leave this waiting for an end of file that never comes (see tests\ui_git.rs).
+    let log = dir.join("harness.log");
+    let file = std::fs::File::create(&log).unwrap();
+    let status = run
+        .envs(env)
         .arg(env!("CARGO_BIN_EXE_failbrauwser"))
         .arg(root.join("tests/ui").join(script))
         .arg(dir)
-        .output()
+        .stdout(file.try_clone().unwrap())
+        .stderr(file)
+        .status()
         .unwrap();
-    let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    assert!(out.status.success() && log.contains("SELFTEST OK"), "{script} failed:\n{log}");
+    // The log is read as the bytes it is: a Windows tool answers its errors in the machine's own
+    // codepage, and `custom_actions.fbt` reached this with such a message in it (measured
+    // 2026-11-17, where a strict UTF-8 read said only `stream did not contain valid UTF-8`).
+    let log = std::fs::read(&log).unwrap_or_else(|e| panic!("{script}: no harness log: {e}"));
+    let log = String::from_utf8_lossy(&log).into_owned();
+    assert!(status.success() && log.contains("SELFTEST OK"), "{script} failed:\n{log}");
     check(dir);
 }
 
@@ -392,6 +426,10 @@ fn other_applications_show_files_in_their_folder() {
 
 #[test]
 fn gtk3_applications_get_failbrauwsers_dialogs() {
+    if cfg!(windows) {
+        eprintln!("the module is built with cc and pkg-config and served through xdg-desktop-portal — no Windows twin, skipping");
+        return;
+    }
     if !Path::new("/usr/lib/xdg-desktop-portal").exists() && !Path::new("/usr/libexec/xdg-desktop-portal").exists() {
         eprintln!("xdg-desktop-portal not installed, skipping");
         return;
@@ -620,6 +658,59 @@ fn unmounted_drives_in_the_side_panel() {
 }
 
 #[test]
+fn renaming_and_formatting_a_volume() {
+    // The stand-in volume whose format and name are driven here is never mounted, so its folder is never read.
+    // The mounted image the two device-icon verbs write into is a folder of this run's own, which is why the
+    // folder and the image file both exist before the scenario starts.
+    run("drive_format.fbt", |t| {
+        std::fs::create_dir_all(t.join("inside")).unwrap();
+        std::fs::write(t.join("backup.ntfs"), "fake image").unwrap();
+    });
+}
+
+#[test]
+fn a_device_shows_what_its_own_files_name() {
+    // The four files of one device icon are staged by this program's own writer, into the folder the stand-in
+    // stick mounts on, before the scenario starts: what the listing reads is the bytes a create actually
+    // leaves, pinned against a file system whose own label holds eleven characters. A second stick holds the
+    // same pair with nonsense written over its two picture files, which is what the scenario shows the listing
+    // refuse to draw.
+    run_checked(
+        "device_shown.fbt",
+        &[],
+        |t| {
+            let stick = t.join("stick");
+            std::fs::create_dir_all(&stick).unwrap();
+            std::fs::create_dir_all(t.join("plain")).unwrap();
+            let plan = failbrauwser::fsformat::name_plan(failbrauwser::fsformat::FileSystem::ExFat, "Samsung 64 GB Family Pictures").expect("a name exFAT is given");
+            failbrauwser::fsformat::icon::create(&stick, failbrauwser::fsformat::Shape::UsbStick, "Samsung Flash Drive", 64_160_400_896, &plan).expect("the four files of one device icon");
+            // A second stand-in stick, its pair of ours standing and pinning a name, with nonsense written over
+            // the two picture files: the listing refuses the picture alone.
+            let broken = t.join("broken");
+            std::fs::create_dir_all(&broken).unwrap();
+            let rotten = failbrauwser::fsformat::name_plan(failbrauwser::fsformat::FileSystem::ExFat, "Broken Stick With A Rotten Picture").expect("a name exFAT is given");
+            failbrauwser::fsformat::icon::create(&broken, failbrauwser::fsformat::Shape::UsbStick, "Samsung Flash Drive", 64_160_400_896, &rotten).expect("the four files of the second device icon");
+            for name in ["folder.ico", "DevIcon.fil"] {
+                std::fs::write(broken.join(name), "no icon: what a half-written act or an archive leaves behind").expect("nonsense where a picture of ours stood");
+            }
+        },
+        |t| {
+            // The scenario's own removal took both sticks away again: no file of the four, no staged name of ours,
+            // and the mark of ours off the folders themselves (README: *Device icons*) — the folder whose pictures
+            // were nonsense included, since removal obeys the names a marked file carries and not their bytes.
+            for folder in ["stick", "broken"] {
+                let root = t.join(folder);
+                for name in ["autorun.inf", "desktop.ini", "folder.ico", "DevIcon.fil", "autorun.inf.fbtmp", "desktop.ini.fbtmp", "folder.ico.fbtmp", "DevIcon.fil.fbtmp"] {
+                    assert!(!root.join(name).exists(), "{name} is left in the folder whose device icon was taken away");
+                }
+                #[cfg(windows)]
+                assert_eq!(failbrauwser::osprim::attrs_of(&root) & failbrauwser::osprim::SYSTEM, 0, "the mark of ours stands on a folder its icon was taken off");
+            }
+        },
+    );
+}
+
+#[test]
 fn light_and_dark_follow_the_desktop() {
     run("appearance.fbt", |_| {});
 }
@@ -717,11 +808,13 @@ fn links_on_the_desktop() {
             let read = |name: &str| std::fs::read_to_string(t.join("Desktop").join(name)).unwrap();
             let music = read("Music.desktop");
             assert!(music.starts_with("[Desktop Entry]\n"), "{music}");
-            for line in ["Type=Link", "Name=Music", &format!("URL=file://{}/files/Music", t.display())] {
+            // A URL escapes what a path may hold (a space in the checkout's path, say), as the program's own writer does.
+            let music_url = format!("URL={}", failbrauwser::desktoplink::file_url(&t.join("files/Music")).expect("a path is a file URL"));
+            for line in ["Type=Link", "Name=Music", music_url.as_str()] {
                 assert!(music.lines().any(|l| l == line), "{line} missing in {music}");
             }
             assert!(read("notes.txt.desktop").contains("\nName=notes.txt\n"));
-            assert!(read("Projects.desktop").contains(&format!("\nURL=file://{}/projects\n", t.display())));
+            assert!(read("Projects.desktop").contains(&format!("\nURL={}\n", failbrauwser::desktoplink::file_url(&t.join("projects")).expect("a path is a file URL"))));
             assert!(read("Pixel 7 – SD card.desktop").contains("/phone/SD%20card\n"));
             let drives = read("Drives.desktop");
             assert!(drives.contains("\nType=Application\n") && drives.lines().any(|l| l.starts_with("Exec=") && l.ends_with(" drives:///")), "{drives}");
@@ -794,7 +887,7 @@ with zipfile.ZipFile("{w}/test.zip", "w") as z:
 for f; do
   case \"$f\" in */failbrauwser/open/fb-*/*) where=staged ;; *) where=elsewhere ;; esac
   [ -f \"$f\" ] || where=missing
-  printf '%s:%s:%s\\n' \"$(basename \"$f\")\" \"$(cat \"$f\")\" \"$where\" >> {got}
+  printf '%s:%s:%s\\n' \"$(basename \"$f\")\" \"$(cat \"$f\")\" \"$where\" >> '{got}'
   printf ' edited' >> \"$f\"
 done
 ",
@@ -806,7 +899,9 @@ done
         std::fs::create_dir_all(t.join("data/applications")).unwrap();
         std::fs::write(
             t.join("data/applications/fbtest-recorder.desktop"),
-            format!("[Desktop Entry]\nType=Application\nName=Recorder\nExec={} %F\nMimeType=text/plain;\n", recorder.display()),
+            // Quoted as the Desktop Entry specification asks of an argument holding a space, which a checkout
+            // path may: unquoted, GIO looks for the program at the first word and leaves the application out.
+            format!("[Desktop Entry]\nType=Application\nName=Recorder\nExec=\"{}\" %F\nMimeType=text/plain;\n", recorder.display()),
         )
         .unwrap();
         // GIO looks a folder's types up in its index (what update-desktop-database writes).
